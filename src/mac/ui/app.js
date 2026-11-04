@@ -200,28 +200,6 @@ function messageBox(text, title = "", buttons = ["OK"], labels = {}) {
   });
 }
 
-// Bỏ asks what is wrong (optional); null when closed without choosing Bỏ.
-function askReason(title) {
-  return new Promise((resolve) => {
-    const view = openWindow(title, 0, 0);
-    view.win.classList.add("msg");
-    view.body.style.width = view.body.style.height = "";
-    const box = el("textarea", "text", { placeholder: "Lỗi gì? Vd: sai màu sản phẩm, ảnh méo, chữ sai…" });
-    Object.assign(box.style, { width: "360px", height: "84px", margin: "12px 12px 0", display: "block" });
-    const bar = el("div", "bar");
-    const skip = el("button", "btn", { text: "Bỏ", type: "button" }), cancel = el("button", "btn", { text: "Hủy", type: "button" });
-    let answer = null;
-    skip.onclick = () => { answer = box.value.trim(); view.close(); };
-    cancel.onclick = () => view.close();
-    bar.append(skip, cancel);
-    view.body.append(box, bar);
-    view.onClose = () => resolve(answer);
-    view.win.style.left = Math.round((viewWidth() - view.win.offsetWidth) / 2) + "px";
-    view.win.style.top = Math.round((viewHeight() - view.win.offsetHeight) / 2) + "px";
-    box.focus();
-  });
-}
-
 // ---------- main window ----------
 const ui = { client: document.getElementById("client") };
 const state = { rows: [], fallback: false, library: "remote", group: "Áo", version: "", output: "", codex: false };
@@ -856,9 +834,7 @@ async function showReviewDialog() {
   };
   const decideFor = (item, paint) => async (value) => {
     const next = item.decision === value ? "" : value;
-    let reason = "";
-    if (next === "bad") { reason = await askReason("Bỏ đánh giá"); if (reason === null) return; }
-    await api("reviewDecide", { batch, id: item.id, decision: next, reason });
+    await api("reviewDecide", { batch, id: item.id, decision: next, reason: "" });
     item.decision = next;
     paint();
     refresh();
