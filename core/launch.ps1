@@ -103,7 +103,8 @@ try {
 
 $form = New-Object Windows.Forms.Form -Property @{ Text = 'Product Review'; Size = '1120,840'; MinimumSize = '640,480'; StartPosition = 'CenterScreen'; BackColor = [Drawing.Color]::FromArgb(240, 240, 240) }
 $hubIcon = Join-Path $root 'icon.png'
-if (Test-Path -LiteralPath $hubIcon) { $form.Icon = [Drawing.Icon]::FromHandle((New-Object Drawing.Bitmap($hubIcon)).GetHicon()) }
+# Read into memory, so the file stays free for Cập nhật to replace while the window is open.
+if (Test-Path -LiteralPath $hubIcon) { $form.Icon = [Drawing.Icon]::FromHandle((New-Object Drawing.Bitmap((New-Object IO.MemoryStream(, [IO.File]::ReadAllBytes($hubIcon))))).GetHicon()) }
 $form.Controls.Add($webView)
 # The page's title is the window's. The app's own pages stay in the window; other links (a new window too) open in
 # the default browser.

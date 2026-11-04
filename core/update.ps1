@@ -13,6 +13,9 @@ function Copy-AppUpdate([string]$Source, [string]$Target) {
         $relative = $file.FullName.Substring($Source.TrimEnd('\', '/').Length + 1) -replace '\\', '/'
         if ($relative -match $script:KeepPaths) { continue }
         $destination = Join-Path $Target $relative
+        # A file the running app holds open (its window icon, say) cannot be replaced; unchanged ones are left alone.
+        $current = Get-Item -LiteralPath $destination -ErrorAction SilentlyContinue
+        if ($current -and $current.Length -eq $file.Length -and (Get-FileHash -LiteralPath $current.FullName).Hash -eq (Get-FileHash -LiteralPath $file.FullName).Hash) { continue }
         New-Item -ItemType Directory -Force -Path (Split-Path $destination -Parent) | Out-Null
         Copy-Item -LiteralPath $file.FullName -Destination $destination -Force
     }
