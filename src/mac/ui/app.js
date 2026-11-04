@@ -1205,11 +1205,13 @@ async function checkUpdate() {
   placeSync();
 }
 
-// Cấu hình sits 8px left of the update button and the sync line ends 12px before it, however wide the button is.
+// Cấu hình sits 8px left of the update button, Tải lại 8px left of Cấu hình, and the sync line ends 12px before it,
+// however wide the update button is.
 function placeSync() {
-  ui.btnSetup.style.right = `${24 + ui.btnUpdate.offsetWidth + 8}px`;
-  const right = `${24 + ui.btnUpdate.offsetWidth + 8 + ui.btnSetup.offsetWidth + 12}px`;
-  ui.syncLabel.style.right = ui.syncBar.style.right = right;
+  const setup = 24 + ui.btnUpdate.offsetWidth + 8, reload = setup + ui.btnSetup.offsetWidth + 8;
+  ui.btnSetup.style.right = `${setup}px`;
+  ui.btnReload.style.right = `${reload}px`;
+  ui.syncLabel.style.right = ui.syncBar.style.right = `${reload + ui.btnReload.offsetWidth + 12}px`;
 }
 const syncView = { timer: 0, hide: 0 };
 // Starts Tải về máy for these danh mục; false when one is already running.
