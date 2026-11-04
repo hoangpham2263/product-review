@@ -86,6 +86,9 @@ try {
             try { Copy-Item -LiteralPath $file.FullName -Destination $to -Force } catch { }
         }
     }
+    # A ZIP saved by a browser marks its files as downloaded from the internet, and .NET will not load a marked DLL
+    # (0x80131515), so the window would fall back to the browser.
+    Get-ChildItem -LiteralPath $sdkSource, $sdk -Recurse -File -Filter *.dll | Unblock-File -ErrorAction SilentlyContinue
     Add-Type -Path (Join-Path $sdk 'Microsoft.Web.WebView2.Core.dll'), (Join-Path $sdk 'Microsoft.Web.WebView2.WinForms.dll')
     $arch = switch ($env:PROCESSOR_ARCHITECTURE) { 'ARM64' { 'arm64' } 'AMD64' { 'x64' } default { 'x86' } }
     [Microsoft.Web.WebView2.Core.CoreWebView2Environment]::SetLoaderDllFolderPath((Join-Path $sdk $arch))
