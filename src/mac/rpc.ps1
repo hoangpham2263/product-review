@@ -5,9 +5,8 @@ $ErrorActionPreference = 'Stop'
 $srcDir = Split-Path $PSScriptRoot -Parent
 $root = Split-Path $srcDir -Parent
 . (Join-Path $srcDir 'application/workspace.ps1')
-. (Join-Path $srcDir '../../../hub/setup/ai-settings.ps1')
-. (Join-Path $srcDir '../../../hub/ai/common.ps1')
-. (Join-Path $srcDir 'infrastructure/drive-storage.ps1')
+. (Join-Path $srcDir '../core/setup/ai-settings.ps1')
+. (Join-Path $srcDir '../core/ai/common.ps1')
 $workspace = Initialize-ProjectWorkspace $root
 . (Join-Path $srcDir 'infrastructure/source-catalog.ps1')
 . (Join-Path $srcDir 'infrastructure/source-sync.ps1')
@@ -19,7 +18,7 @@ $workspace = Initialize-ProjectWorkspace $root
 . (Join-Path $srcDir 'application/batch-review.ps1')
 . (Join-Path $srcDir 'application/progress.ps1')
 $mapPath = Join-Path $workspace.Root 'reference-inputs/references.json'
-$libraryRoot = Join-Path $root 'data/source-photos'
+$libraryRoot = Join-Path $root 'workspace/source-photos'
 
 function Test-HttpUrl([string]$Url) { $uri = $null; [Uri]::TryCreate($Url, [UriKind]::Absolute, [ref]$uri) -and $uri.Scheme -in @('http', 'https') }
 function Get-EntryInfo([string]$MapFile, [string]$Url) {
@@ -41,14 +40,13 @@ function Invoke-Rpc([string]$Cmd, $A) {
             $version = try { Get-AppVersion $root } catch { '' }
             return [pscustomobject]@{
                 rows = @($urls | ForEach-Object { Get-EntryInfo $mapPath $_ }); group = $map.preferred_source_group
-                drive = [bool](Test-Path -LiteralPath (Get-SharedConfigPath $workspace.Root 'drive.json'))
                 version = $version; output = $workspace.Output; codex = [bool](Get-Command codex -ErrorAction SilentlyContinue)
             }
         }
         'rows' { return @(@($A.urls) | ForEach-Object { Get-EntryInfo $mapPath ([string]$_) }) }
         'groups' { return @(if ($A.local) { Get-SourcePhotoGroups $libraryRoot } else { Get-SourceGroupChoices $root }) }
-        'sourceFiles' { return (Get-SourcePickerFiles (Get-DriveConfig $workspace.Root) $libraryRoot ([string]$A.group)) }
-        'quotaSummary' { . (Join-Path $srcDir '../../../hub/setup/quota.ps1'); return (Get-QuotaSummary) }
+        'sourceFiles' { return (Get-SourcePickerFiles $libraryRoot ([string]$A.group)) }
+        'quotaSummary' { . (Join-Path $srcDir '../core/setup/quota.ps1'); return (Get-QuotaSummary) }
         'aiModels' { return [pscustomobject]@{ settings = (Get-AiSettings $root); models = @(Get-AiModels) } }
         'aiSettingsSet' { Set-AiSettings $root ([string]$A.model) ([string]$A.effort); return $true }
         'sourceDefault' { return (Get-DefaultSourceGroup $root) }
@@ -57,7 +55,7 @@ function Invoke-Rpc([string]$Cmd, $A) {
         'sourcePick' { return @(Save-SourceGroupFiles $libraryRoot ([string]$A.group) @($A.files)) }
         'sourceLocalFiles' { return @(Get-LocalSourceFiles $libraryRoot ([string]$A.group)) }
         'reviewFolder' {
-            # "+ Máy" opens this app's own library: the group used last, else data/source-photos.
+            # "+ Máy" opens this app's own library: the group used last, else workspace/source-photos.
             $group = if ($A.group) { Join-Path $libraryRoot ([string]$A.group).Normalize([Text.NormalizationForm]::FormC) } else { '' }
             return $(if ($group -and (Test-Path -LiteralPath $group)) { $group } else { $libraryRoot })
         }
@@ -149,10 +147,8 @@ function Invoke-Rpc([string]$Cmd, $A) {
         }
         'reviewDecide' { Set-BatchReviewDecision ([string]$A.batch) ([string]$A.id) ([string]$A.decision) -Reason ([string]$A.reason); return $true }
         'reviewExport' { return (Export-ReviewedCsv ([string]$A.batch)) }
-        'driveLogin' { Connect-DriveAccount $workspace.Root ([string]$A.password); return $true }
-        'driveLogout' { Disconnect-DriveAccount $workspace.Root; return $true }
         'event' { return (ConvertTo-UiEvent ([string]$A.line) ([int]$A.index)) }
-        'updateCheck' { return (& (Join-Path (Get-HubRoot $root) 'hub/update.ps1') -Root (Get-HubRoot $root) -Check) }
+        'updateCheck' { return (& (Join-Path $root 'core/update.ps1') -Root $root -Check) }
         'openPath' { $p = [string]$A.path; New-Item -ItemType Directory -Force $p -ErrorAction SilentlyContinue | Out-Null; Open-SystemPath $p; return $true }
         'revealPath' { if ($script:OnWindows) { Start-Process explorer.exe -ArgumentList ('/select,"' + [string]$A.path + '"') } else { & open -R ([string]$A.path) }; return $true }
         default { throw "Unknown command: $Cmd" }

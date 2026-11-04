@@ -1,11 +1,20 @@
 ﻿# Hướng dẫn và bài học của dự án
 
-Áp dụng cho tool Product Review (`apps/product-review/`) trong Tools Hub. Đọc trước khi sửa workflow, prompt, giao diện hoặc dữ liệu mẫu. Yêu cầu mới nhất của người dùng có ưu tiên cao nhất; cập nhật quy tắc cũ khi yêu cầu thay đổi, không giữ chỉ dẫn mâu thuẫn.
+Áp dụng cho Product Review (repo `hoangpham2263/product-review`, tách từ Tools Hub). Đọc trước khi sửa workflow, prompt, giao diện hoặc dữ liệu mẫu.
+
+## 0. Cấu trúc
+
+- Gốc repo là app: `src/`, `data/`, `tests/`, `workspace/` (Git bỏ qua: cấu hình, ảnh nguồn đã tải, kết quả, log, báo cáo lỗi). `core/` là phần hạ tầng: gọi AI (`core/ai`), bridge (`core/bridge`, cổng 8775) và extension Chrome Product Review (`core/extension`), Cấu hình (`core/setup`), cửa sổ Windows (`core/launch.ps1`, WebView2), cập nhật (`core/update.ps1`).
+- Ảnh nguồn: repo công khai `hoangpham2263/product-review-sources` (`source-photos/manifest.json` nhóm/bật/tắt/md5, `catalog.json` nguồn ảnh); app đọc link raw, tải theo nhóm vào `workspace/source-photos/<nhóm>/` (`src/infrastructure/source-sync.ps1`). Thêm/bật nhóm là sửa repo đó, không có trang quản lý.
+- Ảnh kết quả: repo `hoangpham2263/product-review-results`, ghi qua Worker `product-review-api` (`worker/`, secret `GITHUB_TOKEN` chỉ có quyền ghi repo đó). App không có mật khẩu; Worker chỉ nhận PNG ≤ 20 MB và trả link raw cho CSV (`src/infrastructure/result-storage.ps1`).
+- Báo lỗi: AI viết một file vào `workspace/reports/` trên máy, không gửi đi đâu.
+- Phát hành: push tag `vX.Y.Z` → Release `product-review.zip`; Cập nhật thay file, giữ `workspace/`, `core/bridge/node_modules` và gộp bài học `AGENTS.md`. Trang tải: `docs/index.html` (GitHub Pages), chỉ có nút tải.
+- Chỉ nói đã cập nhật Git sau commit/push thành công. Không đưa `workspace/` hay ảnh vào Git. Yêu cầu mới nhất của người dùng có ưu tiên cao nhất; cập nhật quy tắc cũ khi yêu cầu thay đổi, không giữ chỉ dẫn mâu thuẫn.
 
 ## 1. Workflow hiện tại
 
 1. Nhận URL và ảnh tham khảo gắn riêng cho từng sản phẩm; kiểm tra link trùng, ảnh thiếu và file/hash trước khi gọi AI.
-2. Nếu người dùng gắn ảnh sản phẩm gốc, kiểm tra file/hash rồi dùng trực tiếp, không truy cập web kể cả link chưa public; nếu không có ảnh gốc thì tải từ URL. Nhận diện từ ảnh thực tế. Ảnh bối cảnh là đầu vào riêng, không nhầm với ảnh sản phẩm. Ảnh review luôn do người dùng chọn (từ máy hoặc kho Drive); app không tự tìm trong kho.
+2. Nếu người dùng gắn ảnh sản phẩm gốc, kiểm tra file/hash rồi dùng trực tiếp, không truy cập web kể cả link chưa public; nếu không có ảnh gốc thì tải từ URL. Nhận diện từ ảnh thực tế. Ảnh bối cảnh là đầu vào riêng, không nhầm với ảnh sản phẩm. Ảnh review luôn do người dùng chọn (từ máy hoặc kho ảnh); app không tự tìm trong kho.
 3. Lưu snapshot đầu vào và nguồn vào kết quả của lượt đang chạy. Đọc các bài học còn bật, khớp URL hoặc danh mục từ mục Bài học đã lưu bên dưới; áp dụng yêu cầu sửa hiện tại sau cùng.
 4. Tạo một ảnh hoàn chỉnh, kiểm tra PNG đọc được rồi xuất nguyên file AI tạo. Không chấm chất lượng bằng AI sau tạo, không tự sửa hoặc lặp tạo để cải thiện thẩm mỹ.
 5. Viết review mẫu theo ảnh hiện tại, học cách diễn đạt từ kho review tham khảo chung rồi xuất ảnh và CSV. Giữ URL chưa hoàn tất để thử lại. Có ảnh xuất chưa có nghĩa người dùng đã duyệt.
@@ -70,7 +79,7 @@ CLI exit 0 không xác nhận công cụ tạo ảnh thành công. Giữ console
 - Báo riêng code đã sửa, kiểm tra offline, ảnh đã tạo thật và ảnh đã xem đối chiếu. Không dùng mock để khẳng định chất lượng ảnh đã đạt. Ghi bài học không có nghĩa lỗi đã được sửa và kiểm chứng.
 - Chỉ nói đã cập nhật Git sau commit/push thành công. Kiểm tra diff, giữ thay đổi đang có và không đưa output tạm vào repository.
 - CSV Loox: giữ đúng 8 tên cột theo template tải trực tiếp của Loox, header không có dấu nháy hoặc BOM; xuất UTF-8, ngày `YYYY-MM-DD` và boolean viết hoa. Khi Loox báo lỗi cột, kiểm tra đúng file người dùng đã upload trước khi quy lỗi cho việc chọn nhầm file. Khác biệt định dạng chỉ là giả thuyết cho đến khi import thực tế được xác nhận.
-- Bàn giao Drive: kiểm tra kết nối trước khi tạo; upload tuần tự và chỉ ghi link HTTPS công khai vào CSV. Upload lỗi không được âm thầm thay bằng đường dẫn local hay đánh dấu hoàn tất. Giữ ảnh, nội dung và snapshot để thử lại upload, không tạo ảnh lại; giữ cả các cảnh đã thành công của cùng URL đến khi toàn bộ URL hoàn tất.
+- Bàn giao kho kết quả (GitHub): kiểm tra kết nối trước khi tạo; upload tuần tự và chỉ ghi link HTTPS công khai vào CSV. Upload lỗi không được âm thầm thay bằng đường dẫn local hay đánh dấu hoàn tất. Giữ ảnh, nội dung và snapshot để thử lại upload, không tạo ảnh lại; giữ cả các cảnh đã thành công của cùng URL đến khi toàn bộ URL hoàn tất.
 
 ## 7. Cách ghi bài học
 
@@ -91,8 +100,8 @@ CLI exit 0 không xác nhận công cụ tạo ảnh thành công. Giữ console
 - `src/workflow/steps/03-write-review.ps1`, `data/writing-style.json`: bộ quy tắc review duy nhất, đánh số theo nhãn (CONTENT, OPINION, VOICE, WORDS, STRUCTURE, FACTS, OUTPUT); sửa quy tắc viết review ở đây, không thêm câu rời vào prompt. `src/domain/writing-style.ps1`: kiểm tra bản nháp (dấu chấm than, thán từ, chép mẫu; lần đầu còn kiểm gạch dài, từ bóng bẩy, "not just…but", câu "overall", liệt kê ba ý, các câu cùng độ dài, và độ dài theo mẫu); câu mẫu ngẫu nhiên đưa vào prompt đã bỏ dấu chấm than. Một lần sửa nếu bản đầu vi phạm.
 - `src/workflow/steps/04-complete-metadata.ps1`, `05-export-results.ps1`: sao, tên, email, ngày; lưu kết quả và hàng đợi URL.
 - `src/application/reference-archive.ps1`: snapshot, nguồn và hash đầu vào.
-- `data/source-photos/catalog.json`: inventory và thông tin nguồn ảnh. Ảnh nằm trên Drive (tab Nguồn ảnh của trang quản lý), app tải theo nhóm về `data/source-photos/<nhóm>/`; không commit ảnh kho vào Git.
-- `src/infrastructure/ai.ps1` (`Invoke-AI`, nối cấu hình của tool với lõi chung `hub/ai`), `hub/ai/providers/browser.ps1`, `hub/extension/`, `hub/bridge/`: tạo ảnh qua tab Google Flow / ChatGPT, viết chữ qua Gemini web (ô Viết review / Tạo ảnh cạnh Bắt đầu → `-TextBackend` / `-ImageBackend`; Gemini thay Codex ở mọi bước chữ trong `Invoke-AI`). Không dùng API key; Gemini CLI không còn đăng nhập Google được. CLI dùng Antigravity (`agy`, `hub/ai/providers/antigravity.ps1`): prompt và ảnh vào một thư mục riêng vì agy chỉ nhận prompt qua `-p`. Không tự đổi AI: chạy lỗi với AI khác thì hỏi người dùng có chạy lại bằng Codex không. Chạy trong Chrome chính của máy (tab riêng, nhóm Tools Hub). Tab nền hay cửa sổ bị che thì trang không chạy: mỗi việc đưa tab của nó lên trước. Flow tạo ảnh theo tỷ lệ đặt trong ô nhập (mặc định 16:9, ảnh ra 1376×768) nên ảnh nền vuông/dọc bị dựng lại cả khung và góc máy: `hub/extension/sites/flow.js` chọn tỷ lệ gần nhất với ảnh review (16:9, 4:3, 1:1, 3:4, 9:16) trước khi dán ảnh; không chọn được thì chạy tiếp với tỷ lệ đang có. Flow chỉ nhận cú bấm thật (`chrome.debugger`); sau khi tải ảnh tham khảo Flow vẽ lại ô nhập, phải tìm lại.
+- `workspace/source-photos/catalog.json`: inventory và thông tin nguồn ảnh, tải từ repo product-review-sources cùng các nhóm ảnh; không commit ảnh kho vào Git.
+- `src/infrastructure/ai.ps1` (`Invoke-AI`, nối cấu hình của tool với lõi chung `core/ai`), `core/ai/providers/browser.ps1`, `core/extension/`, `core/bridge/`: tạo ảnh qua tab Google Flow / ChatGPT, viết chữ qua Gemini web (ô Viết review / Tạo ảnh cạnh Bắt đầu → `-TextBackend` / `-ImageBackend`; Gemini thay Codex ở mọi bước chữ trong `Invoke-AI`). Không dùng API key; Gemini CLI không còn đăng nhập Google được. CLI dùng Antigravity (`agy`, `core/ai/providers/antigravity.ps1`): prompt và ảnh vào một thư mục riêng vì agy chỉ nhận prompt qua `-p`. Không tự đổi AI: chạy lỗi với AI khác thì hỏi người dùng có chạy lại bằng Codex không. Chạy trong Chrome chính của máy (tab riêng, nhóm Tools Hub). Tab nền hay cửa sổ bị che thì trang không chạy: mỗi việc đưa tab của nó lên trước. Flow tạo ảnh theo tỷ lệ đặt trong ô nhập (mặc định 16:9, ảnh ra 1376×768) nên ảnh nền vuông/dọc bị dựng lại cả khung và góc máy: `core/extension/sites/flow.js` chọn tỷ lệ gần nhất với ảnh review (16:9, 4:3, 1:1, 3:4, 9:16) trước khi dán ảnh; không chọn được thì chạy tiếp với tỷ lệ đang có. Flow chỉ nhận cú bấm thật (`chrome.debugger`); sau khi tải ảnh tham khảo Flow vẽ lại ô nhập, phải tìm lại.
 - `tests/run.ps1`: chạy suite liên quan bằng Windows PowerShell khi được phép.
 - `workspace/output/`: kết quả và log cục bộ, Git bỏ qua.
 
@@ -177,4 +186,4 @@ Bài học được đúc kết thành nguyên tắc ngắn để áp dụng l�
 - Không phóng bàn quá lớn để lấp chỗ hoặc làm bàn ngắn, bè hơn mẫu; không suy ra kích thước thực khi nguồn không cho biết.
 
 <!-- app-lessons:end -->
-- Bridge từng do lần chạy bật (`Start-Process node`) với stdout là ống của lần chạy đó (giờ `hub/bridge/ensure.mjs` bật tách riêng); lần chạy xong ống đóng, dòng in tiếp theo làm bridge chết (EPIPE) và lần chạy sau bị "Response ended" rồi "Connection refused". Bridge bỏ qua lỗi ghi stdout/stderr, ghi lý do dừng vào `workspace/logs/bridge-exit.log`; gọi bridge lỗi mà bridge không trả lời thì `Restore-ImageBridge` bật lại trước lần thử sau.
+- Bridge từng do lần chạy bật (`Start-Process node`) với stdout là ống của lần chạy đó (giờ `core/bridge/ensure.mjs` bật tách riêng); lần chạy xong ống đóng, dòng in tiếp theo làm bridge chết (EPIPE) và lần chạy sau bị "Response ended" rồi "Connection refused". Bridge bỏ qua lỗi ghi stdout/stderr, ghi lý do dừng vào `workspace/logs/bridge-exit.log`; gọi bridge lỗi mà bridge không trả lời thì `Restore-ImageBridge` bật lại trước lần thử sau.

@@ -1,5 +1,5 @@
 ﻿# Step 2: create the image. The request (prompt + images) is built here without AI, the same for every image AI
-# (Codex, Google Flow): what only Codex needs (the file to save) is added by hub/ai. Then one image AI call, retried
+# (Codex, Google Flow): what only Codex needs (the file to save) is added by core/ai. Then one image AI call, retried
 # only for a lost connection, a timeout or a busy service. Visual review belongs to the user.
 #
 # Every prompt has the same layout: TASK, then numbered STEPS (base photo, product, placement, keep, output).

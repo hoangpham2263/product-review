@@ -97,7 +97,7 @@ function Read-ProductInput($Item, [string]$ItemId) {
     }
 }
 
-# The review photo the user attached to this link (computer, Drive library or clipboard), used as it is: no AI
+# The review photo the user attached to this link (computer, source library or clipboard), used as it is: no AI
 # picks or checks it. A missing or changed one stops this link.
 function Get-ReviewPhoto([string]$ItemId, $Context) {
     $entry=@($script:Config.ManualReferences.entries|Where-Object product_url -eq $script:Config.ActiveProductUrl)

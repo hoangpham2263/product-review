@@ -3,11 +3,11 @@ $ErrorActionPreference='Stop'
 $root=Split-Path $PSScriptRoot -Parent
 . (Join-Path $root 'src/bootstrap.ps1')
 function Assert($Value,[string]$Message){if(-not $Value){throw $Message}}
-$temp=Join-Path $TestWorkspaceRoot ('drive-delivery-'+[Guid]::NewGuid().ToString('N'))
+$temp=Join-Path $TestWorkspaceRoot ('result-delivery-'+[Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $temp|Out-Null
 try{
     $url='https://shop.test/products/table'
-    $script:Config=@{Drive=@{ApiUrl='https://api.test';AdminKey='test'};DriveRequired=$true;DeliveryRoot=(Join-Path $temp 'pending')}
+    $script:Config=@{Results=@{ApiUrl='https://api.test'};ResultsRequired=$true;DeliveryRoot=(Join-Path $temp 'pending')}
     $script:Batch=New-Batch (Join-Path $temp 'outputs')
     $image=Join-Path $script:Batch.Images '001-table.png';New-TestPng $image 2 2
     $refs=Join-Path $script:Batch.Refs '001-table';New-Item -ItemType Directory -Path $refs|Out-Null
@@ -16,8 +16,8 @@ try{
     $item=[pscustomobject]@{Url=$url;Handle='table'}
     $row=[pscustomobject]@{product_handle='table';rating='';author='';email='';body='Saved review text';created_at='';verified_purchase='false';photo_url='';photo_path=$image}
     Save-DeliveryCache $item '001-table' $row
-    function Publish-ImageToDrive {throw '[CAUSE:DRIVE_UPLOAD] simulated failure'}
-    $blocked=$false;try{Complete-DriveDelivery $row|Out-Null}catch{$blocked=$true}
+    function Publish-ResultImage {throw '[CAUSE:RESULT_UPLOAD] simulated failure'}
+    $blocked=$false;try{Complete-ResultDelivery $row|Out-Null}catch{$blocked=$true}
     Assert $blocked 'Upload error was swallowed.'
     $results=[Collections.Generic.List[object]]::new();$done=[Collections.Generic.List[string]]::new()
     $list=Join-Path $temp 'urls.txt';[IO.File]::WriteAllLines($list,[string[]]@($url))
@@ -30,28 +30,28 @@ try{
     $resumed=Invoke-ProductItem $item '002-table'
     Assert ($resumed.body -eq 'Saved review text' -and (Test-Path $resumed.photo_path)) 'Saved image or review was lost.'
     Assert ((Get-BytesHash ([IO.File]::ReadAllBytes($resumed.photo_path))) -eq (Get-BytesHash ([IO.File]::ReadAllBytes($image)))) 'Recovery changed image bytes.'
-    function Publish-ImageToDrive {return 'https://api.test/img/final.png'}
-    $resumed=Complete-DriveDelivery $resumed
+    function Publish-ResultImage {return 'https://api.test/img/final.png'}
+    $resumed=Complete-ResultDelivery $resumed
     Save-ProductCheckpoint $results $resumed $done $item $list $false
     Assert (@(Get-ChildItem $script:Config.DeliveryRoot -Filter '*.json').Count -eq 1) 'Successful scene was forgotten before its URL finished.'
     # Reopening this success must reuse its URL without uploading again.
     $script:Batch=New-Batch (Join-Path $temp 'outputs')
-    function Publish-ImageToDrive {throw 'Already uploaded images must not be uploaded again.'}
-    $again=Complete-DriveDelivery (Invoke-ProductItem $item '003-table')
+    function Publish-ResultImage {throw 'Already uploaded images must not be uploaded again.'}
+    $again=Complete-ResultDelivery (Invoke-ProductItem $item '003-table')
     Save-ProductCheckpoint $results $again $done $item $list $true
     Assert (@(Get-ChildItem $script:Config.DeliveryRoot -Filter '*.json').Count -eq 0 -and -not (Get-Content $list)) 'Finished URL did not clear its delivery cache and queue.'
     $csv=@(Import-BatchRows $script:Batch.Dir)
     Assert (@($csv|Where-Object photo_url -notmatch '^https://').Count -eq 0) 'Local path leaked into the handover CSV.'
-    $script:Config.Drive=$null
-    $blocked=$false;try{Complete-DriveDelivery $row|Out-Null}catch{$blocked=$_.Exception.Message -match 'DRIVE_CONFIG'}
-    Assert $blocked 'Required Drive configuration silently fell back to local.'
+    $script:Config.Results=$null
+    $blocked=$false;try{Complete-ResultDelivery $row|Out-Null}catch{$blocked=$_.Exception.Message -match 'RESULT_CONFIG'}
+    Assert $blocked 'A required result store silently fell back to local.'
     # Exercise the real parallel coordinator: one scene fails upload, then retry
     # must reuse both finished scenes and upload only the pending one.
     $integration=Join-Path $temp 'coordinator';New-Item -ItemType Directory -Path $integration|Out-Null
     $a=Join-Path $integration 'a.png';$b=Join-Path $integration 'b.png'
     New-TestPng $a 2 2 ([byte[]](1,0,0));New-TestPng $b 2 2 ([byte[]](0,1,0))
     $scenes=@(@{file=$a;sha256=(Get-BytesHash ([IO.File]::ReadAllBytes($a)))},@{file=$b;sha256=(Get-BytesHash ([IO.File]::ReadAllBytes($b)))})
-    $script:Config=@{Drive=@{ApiUrl='https://api.test';AdminKey='test'};DriveRequired=$true;DeliveryRoot=(Join-Path $integration 'pending');ManualReferences=@{entries=@([pscustomobject]@{product_url=$url;scenes=$scenes})}}
+    $script:Config=@{Results=@{ApiUrl='https://api.test'};ResultsRequired=$true;DeliveryRoot=(Join-Path $integration 'pending');ManualReferences=@{entries=@([pscustomobject]@{product_url=$url;scenes=$scenes})}}
     $fixture=Join-Path $integration 'worker.ps1'
     $code=@'
 function Invoke-ProductItem($Item,[string]$ItemId){
@@ -71,9 +71,9 @@ function Invoke-ProductItem($Item,[string]$ItemId){
 '@
     [IO.File]::WriteAllText($fixture,$code,[Text.UTF8Encoding]::new($true))
     $script:UploadCalls=0;$script:FailSecond=$true
-    function Publish-ImageToDrive($Path){
+    function Publish-ResultImage($Path){
         $script:UploadCalls++
-        if($script:FailSecond -and [IO.Path]::GetFileName($Path) -like '002-*'){throw '[CAUSE:DRIVE_UPLOAD] simulated coordinator failure'}
+        if($script:FailSecond -and [IO.Path]::GetFileName($Path) -like '002-*'){throw '[CAUSE:RESULT_UPLOAD] simulated coordinator failure'}
         return 'https://api.test/img/'+[IO.Path]::GetFileName($Path)
     }
     $list=Join-Path $integration 'queue.txt';[IO.File]::WriteAllLines($list,[string[]]@($url))
@@ -87,8 +87,8 @@ function Invoke-ProductItem($Item,[string]$ItemId){
     $exported=@(Import-BatchRows $script:Batch.Dir)
     Assert ($exported.Count -eq 2 -and @($exported|Where-Object photo_url -notmatch '^https://').Count -eq 0) 'Retried batch did not deliver two public image links.'
     foreach($file in @(Get-ChildItem $script:Config.DeliveryRoot -Filter '*.generated')){Assert (@(Get-Content $file.FullName).Count -eq 1) 'Retry regenerated a previously completed image.'}
-    Write-Host 'PASS: failed uploads block CSV/queue, recovery skips AI, multi-scene successes retain public links, and missing Drive cannot fall back.'
+    Write-Host 'PASS: failed uploads block CSV/queue, recovery skips AI, multi-scene successes retain public links, and a missing result store cannot fall back.'
 }finally{
     $resolved=[IO.Path]::GetFullPath($temp);$allowed=[IO.Path]::GetFullPath($TestWorkspaceRoot).TrimEnd('\')+'\'
-    if($resolved.StartsWith($allowed,[StringComparison]::OrdinalIgnoreCase) -and (Split-Path $resolved -Leaf) -like 'drive-delivery-*'){Remove-Item -LiteralPath $resolved -Recurse -Force}
+    if($resolved.StartsWith($allowed,[StringComparison]::OrdinalIgnoreCase) -and (Split-Path $resolved -Leaf) -like 'result-delivery-*'){Remove-Item -LiteralPath $resolved -Recurse -Force}
 }

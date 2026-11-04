@@ -1,12 +1,12 @@
-// Gets the bridge (server.mjs) and the Tools Hub extension ready for a tool, and prints one JSON line:
-//   node hub/bridge/ensure.mjs [--logins] [--no-open] [--open <url>] [--session]
+// Gets the bridge (server.mjs) and the Product Review extension ready for a tool, and prints one JSON line:
+//   node core/bridge/ensure.mjs [--logins] [--no-open] [--open <url>] [--session]
 //   { ok, extension, version[, logins: { google, accounts, chatgpt }][, opened][, closed] } or { error }
-// --session: a run starts; the tabs of the Tools Hub group are closed first (not while another tool's job runs).
-// --open: that page in Chrome, in the Tools Hub tab group (by the extension); without the extension, a plain new tab.
+// --session: a run starts; the tabs of the Product Review group are closed first (not while another tool's job runs).
+// --open: that page in Chrome, in the Product Review tab group (by the extension); without the extension, a plain new tab.
 // The bridge is installed (npm, its one package ws) and started when missing, started again after Cập nhật changed
 // server.mjs, and runs detached with no output of its own (a pipe of whoever started it would close: EPIPE). Without
 // the extension connected, the user's Chrome is started (--no-open: not; Cấu hình only checks) and waited for; an
-// extension of another version than hub/extension/manifest.json is reloaded, so the new files load.
+// extension of another version than core/extension/manifest.json is reloaded, so the new files load.
 import { execFile, spawn } from "node:child_process";
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
@@ -15,8 +15,8 @@ import { findTool, onWindows, openChrome, runTool, toolEnv } from "../platform.m
 
 const here = dirname(fileURLToPath(import.meta.url));
 const server = join(here, "server.mjs");
-const BRIDGE = `http://127.0.0.1:${Number(process.env.BRIDGE_PORT || 8765)}`;
-const NO_EXTENSION = `Chưa thấy extension Tools Hub trong Chrome. Cài một lần: mở chrome://extensions, bật Chế độ nhà phát triển, bấm Tải tiện ích đã giải nén, chọn thư mục ${join(here, "..", "extension")}.`;
+const BRIDGE = `http://127.0.0.1:${Number(process.env.BRIDGE_PORT || 8775)}`;
+const NO_EXTENSION = `Chưa thấy extension Product Review trong Chrome. Cài một lần: mở chrome://extensions, bật Chế độ nhà phát triển, bấm Tải tiện ích đã giải nén, chọn thư mục ${join(here, "..", "extension")}.`;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const get = (path, method = "GET", body) => fetch(BRIDGE + path, { method, body: body && JSON.stringify(body), signal: AbortSignal.timeout(["/logins", "/open", "/session"].includes(path) ? 25000 : 3000) }).then((r) => r.json()).catch(() => null);
 const until = async (test, ms) => { for (const end = Date.now() + ms; Date.now() < end; await sleep(500)) { const s = await get("/status"); if (test(s)) return s; } return get("/status"); };
@@ -28,25 +28,25 @@ async function main(args) {
     const npm = findTool("npm");
     if (!npm) return { error: "Chưa cài Node.js (npm). Mở Cấu hình, bấm Cài." };
     await new Promise((done) => runTool(npm, ["install", "--silent", "--no-audit", "--no-fund"], { cwd: here, env: toolEnv, timeout: 5 * 60000, windowsHide: true }, done));
-    if (!existsSync(join(here, "node_modules", "ws"))) return { error: "Chưa cài được bridge (npm install trong hub/bridge). Kiểm tra mạng rồi chạy lại." };
+    if (!existsSync(join(here, "node_modules", "ws"))) return { error: "Chưa cài được bridge (npm install trong core/bridge). Kiểm tra mạng rồi chạy lại." };
   }
   let status = await get("/status");
-  // A bridge of another copy of the hub (a git checkout and its tests, beside the install) is left alone, and so is
+  // A bridge of another copy of the app (a git checkout and its tests, beside the install) is left alone, and so is
   // its extension: replacing it would cut the jobs of a run there.
   const foreign = !!status?.server && resolve(status.server) !== resolve(server);
-  // Started on an older server.mjs of this copy (or from a tool's own bridge/ before it moved to hub/bridge, which
+  // Started on an older server.mjs of this copy (or from a tool's own bridge/ before it moved to core/bridge, which
   // does not say its file): stop it first.
   if (status && !foreign && Number(status.code) !== Math.floor(statSync(server).mtimeMs)) {
     await get("/quit", "POST");
     status = await until((s) => !s, 5000);
     if (status && status.pid) { try { process.kill(status.pid); } catch {} status = await until((s) => !s, 5000); }
     if (status && !onWindows) { execFile("pkill", ["-f", "bridge/server.mjs"]); status = await until((s) => !s, 5000); }
-    if (status) return { error: "Bridge cũ vẫn chạy ở cổng 8765. Khởi động lại máy rồi chạy lại." };
+    if (status) return { error: "Bridge cũ vẫn chạy ở cổng 8775. Khởi động lại máy rồi chạy lại." };
   }
   if (!status) {
     spawn(process.execPath, [server], { cwd: here, detached: true, stdio: "ignore", windowsHide: true }).unref();
     status = await until((s) => s, 10000);
-    if (!status) return { error: "Không bật được bridge (hub/bridge/server.mjs)." };
+    if (!status) return { error: "Không bật được bridge (core/bridge/server.mjs)." };
   }
   if (!status.extension) {
     // A Chrome already open connects within a few seconds (its extension wakes every 30 s at most).

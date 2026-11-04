@@ -1,6 +1,6 @@
 ﻿# Every AI call of the workflow, text or image, Codex or a web AI, goes through Invoke-AI: one place picks the AI
 # (Viết review / Tạo ảnh), its options and its log line, so a fix here holds for every AI. The prompt is the same for
-# all of them; the hub's AI core (hub/ai/ai.ps1, loaded first by bootstrap.ps1) adds what one AI alone needs.
+# all of them; the AI core (core/ai/ai.ps1, loaded first by bootstrap.ps1) adds what one AI alone needs.
 # Reads: $script:Config (TextBackend, ImageBackend, Model, ReasoningEffort, timeouts), $script:Batch.Dir.
 
 # Text: the reply (also written to $ResultFile). Image: saved at $Output; $ResultFile holds the AI's reply or log.

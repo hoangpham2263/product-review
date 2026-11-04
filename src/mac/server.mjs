@@ -9,22 +9,20 @@ import { join, dirname, extname, resolve, sep, basename } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { randomUUID, createHash } from "node:crypto";
-import { createConfigApi } from "../../../../hub/setup/config-api.mjs";
-import { PWSH, toolEnv, psFile, psCommand, killMatching, killTree, appWindow, chooseFiles } from "../../../../hub/platform.mjs";
+import { createConfigApi } from "../../core/setup/config-api.mjs";
+import { PWSH, toolEnv, psFile, psCommand, killTree, appWindow, chooseFiles } from "../../core/platform.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, "..", "..");
-// Tools Hub root: this tool is apps/<id>/ inside it (hub/update.ps1 updates the whole hub).
-const hubRoot = resolve(root, "..", "..");
 // Each install gets its own port (from its folder), so two copies on one Mac never share data.
 const BASE_PORT = Number(process.env.PR_PORT || 47000 + (parseInt(createHash("sha1").update(resolve(here, "..", "..")).digest("hex").slice(0, 6), 16) % 1000));
 let PORT = BASE_PORT;
 const workspace = join(root, "workspace");
 const logs = join(workspace, "logs");
 const uploads = join(workspace, "temp", "mac-uploads");
-const configApi = createConfigApi({ hubRoot, pwsh: PWSH, env: toolEnv });
+const configApi = createConfigApi({ hubRoot: root, pwsh: PWSH, env: toolEnv });
 // Errors from the window, this server and PowerShell go to workspace/logs (app-errors.log as Write-AppError
-// writes it, mac-rpc.err.log), past 1 MB rolled over to *.old.log; Gửi lỗi sends them.
+// writes it, mac-rpc.err.log), past 1 MB rolled over to *.old.log; Báo lỗi reads them.
 mkdirSync(logs, { recursive: true });
 function logFile(name) {
   const file = join(logs, name);
@@ -84,7 +82,7 @@ async function startRun({ threads = 1, backend = "codex", text = "codex" }) {
   Object.assign(run, { events: [], index: 0, stopped: false, exitCode: null, resultFolder: "", done: false,
     logFile: join(logs, `image-batch-mac-${stamp}.log`), errFile: join(logs, `image-batch-mac-${stamp}.err.log`) });
   const args = ["-ThrottleLimit", String(threads)];
-  // Tạo ảnh: Codex, or Google Flow in the tools' own Chrome (bridge/ + hub/extension/).
+  // Tạo ảnh: Codex, or Google Flow in the tools' own Chrome (bridge/ + core/extension/).
   if (backend === "flow") args.push("-ImageBackend", backend);
   // Viết review: Codex, Gemini web in the same Chrome, or the Antigravity CLI, for every text step.
   if (["gemini", "antigravity"].includes(text)) args.push("-TextBackend", text);
@@ -149,7 +147,7 @@ async function startImport(text, folder) {
   return true;
 }
 
-// ----- Gửi lỗi: src/support-report.mjs in its own process (Codex may take 2 minutes); its output lines are the progress -----
+// ----- Báo lỗi: src/support-report.mjs in its own process (Codex may take 2 minutes); its output lines are the progress -----
 const errorsSend = { proc: null, outFile: join(logs, "send-errors-mac.out") };
 async function startSendErrors() {
   if (errorsSend.proc) return false;
@@ -222,7 +220,7 @@ async function handle(req, res) {
     const status = await readFile(imports.statusFile, "utf8").then(JSON.parse).catch(() => null);
     return send(res, 200, { running: !!imports.proc, status });
   }
-  if (path === "/api/send-errors" && req.method === "POST") return (await startSendErrors()) ? send(res, 200, { ok: true }) : send(res, 409, { error: "Đang gửi lỗi." });
+  if (path === "/api/send-errors" && req.method === "POST") return (await startSendErrors()) ? send(res, 200, { ok: true }) : send(res, 409, { error: "Đang tạo báo cáo lỗi." });
   if (path === "/api/send-errors" && req.method === "GET") {
     const lines = (await readFile(errorsSend.outFile, "utf8").catch(() => "")).split("\n").map((l) => l.trim()).filter((l) => /^(step|sent|saved|error)\|/.test(l));
     return send(res, 200, { running: !!errorsSend.proc, last: lines.at(-1) || "" });
@@ -237,7 +235,7 @@ async function handle(req, res) {
     return send(res, 200, { running: !!run.proc, done: run.done, exitCode: run.exitCode, stopped: run.stopped, resultFolder: run.resultFolder, events: run.events.slice(since), next: run.events.length });
   }
   if (path === "/api/stop" && req.method === "POST") { stopRun(); return send(res, 200, { ok: true }); }
-  // Cấu hình is the hub's, shared by every tool (hub/setup/config-api.mjs).
+  // Cấu hình (core/setup/config-api.mjs).
   if (await configApi(req, res, path)) return;
   if (path === "/api/choose-images" && req.method === "POST") {
     // The system file dialog: opens the app's own folder and returns real paths (no copy through the browser).
@@ -261,18 +259,13 @@ async function handle(req, res) {
   }
   if (path === "/api/update" && req.method === "POST") {
     // Update the files, then start a fresh server on the new code; the page reloads itself.
-    execFile(PWSH, psCommand(`. '${join(hubRoot, "hub", "update.ps1").replace(/'/g, "''")}' -NoRun; Update-App '${hubRoot.replace(/'/g, "''")}'`), { cwd: hubRoot, env: toolEnv, timeout: 300000, windowsHide: true }, (err) => {
+    execFile(PWSH, psCommand(`. '${join(root, "core", "update.ps1").replace(/'/g, "''")}' -NoRun; Update-App '${root.replace(/'/g, "''")}'`), { cwd: root, env: toolEnv, timeout: 300000, windowsHide: true }, (err) => {
       if (err) return send(res, 500, { error: err.message });
       send(res, 200, { ok: true });
       setTimeout(() => {
         const out = openSync(logFile("mac-server.log"), "a");
         spawn(process.execPath, [join(here, "server.mjs"), "--no-open"], { cwd: root, detached: true, windowsHide: true, stdio: ["ignore", out, out], env: { ...process.env, PR_WAIT_PORT: "1" } }).unref();
         rpcProc?.kill();
-        // The Tools Hub menu runs on the old files too: restart it, without a window of its own.
-        const picker = join(hubRoot, "hub", "picker.mjs");
-        if (existsSync(picker)) {
-          killMatching(picker, () => spawn(process.execPath, [picker], { cwd: hubRoot, detached: true, windowsHide: true, stdio: "ignore", env: { ...process.env, HUB_NO_WINDOW: "1", HUB_WAIT_PORT: "1" } }).unref());
-        }
         setTimeout(() => process.exit(0), 300);
       }, 300);
     });
@@ -300,7 +293,7 @@ function startMenuBar() {
 }
 process.on("exit", () => { try { menuBar?.kill(); } catch {} });
 
-// Its own window on macOS (hub/platform.mjs); on Windows the launcher's app window shows it.
+// Its own window on macOS (core/platform.mjs); on Windows the launcher's app window shows it.
 const openWindow = () => appWindow(`http://127.0.0.1:${PORT}/`);
 
 const server = createServer((req, res) => handle(req, res).catch((e) => send(res, 500, { error: e.message })));

@@ -30,8 +30,8 @@ step "Đăng nhập ChatGPT"
 if codex login status 2>&1 | grep -qi "logged in"; then echo "Đã đăng nhập."; else codex login; fi
 
 step "Cầu nối trình duyệt"
-[ -f bridge/package.json ] && (cd bridge && npm install --silent) && echo "Đã cài."
+[ -f core/bridge/package.json ] && (cd core/bridge && npm install --silent) && echo "Đã cài."
 
 step "Kiểm tra"
-pwsh -NoProfile -File ../../hub/setup/setup-check.ps1
+pwsh -NoProfile -File core/setup/setup-check.ps1
 echo

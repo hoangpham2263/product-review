@@ -1,5 +1,5 @@
-// apps/product-review/src/image/unsparkle.mjs: Google's sparkle is undone (not painted over), a picture without it is left alone, and the
-// command line writes a copy.   node --test apps/product-review/tests/unsparkle.test.mjs
+// src/image/unsparkle.mjs: Google's sparkle is undone (not painted over), a picture without it is left alone, and the
+// command line writes a copy.   node --test tests/unsparkle.test.mjs
 import test from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, writeFileSync, readFileSync, rmSync } from "node:fs";

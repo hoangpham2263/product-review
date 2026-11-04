@@ -1,16 +1,15 @@
-// Cấu hình, shared by the Tools Hub menu (hub/picker.mjs) and Product Review's server: the same steps and
-// settings as hub/setup/*.ps1, kept once per install in <hub>/workspace/config.
-//   GET /setup[?back=<path>]        the Cấu hình page (page.html, page.js; tool.css from hub/assets)
+// Cấu hình, served by Product Review's server: the same steps and settings as core/setup/*.ps1, kept in
+// workspace/config.
+//   GET /setup[?back=<path>]        the Cấu hình page (page.html, page.js; tool.css from core/assets)
 //   POST /api/setup                 the steps (setup-check.ps1 -AsJson)
-//   POST /api/setup-step {step}     install: Codex and the bridge (hub/bridge); login: codex login with a
+//   POST /api/setup-step {step}     install: Codex and the bridge (core/bridge); login: codex login with a
 //                                   one-time code, typed on the sign-in page opened in the user's Chrome;
-//                                   browser: Chrome's extensions page and hub/extension, to install the Tools Hub
+//                                   browser: Chrome's extensions page and core/extension, to install the Product Review
 //                                   extension; google: Google's account chooser in Chrome (sign in, add or switch);
 //                                   site {site}: gemini, flow or chatgpt opened there; antigravity: a terminal
 //                                   with agy, where /login (/logout first to switch) signs it in
 //   GET /api/setup-login            { code } while a sign-in waits for it
 //   GET|POST /api/config/ai         Model AI: { settings, models } / save { model, effort }
-//   GET|POST|DELETE /api/config/drive   the app password: { drive } / log in { password } / log out
 //   GET /api/usage                  Lượt dùng AI: { rows } per AI and account (usage.mjs)
 //   GET|POST /api/config/google     the Google account Flow and Gemini run with: { email } / choose { email } ("" is
 //                                   Google's default, the first one signed in)
@@ -31,7 +30,7 @@ export function createConfigApi({ hubRoot, pwsh, env = process.env }) {
   const findTool = (name) => findIn(name, env);
   const json = (res, status, data) => { res.writeHead(status, { "content-type": "application/json", "cache-control": "no-store" }); res.end(JSON.stringify(data)); };
   const body = (req) => new Promise((done) => { const chunks = []; req.on("data", (c) => chunks.push(c)); req.on("end", () => { try { done(JSON.parse(Buffer.concat(chunks).toString("utf8") || "{}")); } catch { done({}); } }); });
-  // A PowerShell command over the hub's setup scripts; it prints one JSON line, errors included ({ error }).
+  // A PowerShell command over the setup scripts; it prints one JSON line, errors included ({ error }).
   const ps = (script, extraEnv = {}) => new Promise((done) => {
     const command = `$ErrorActionPreference='Stop'; try { ${script} } catch { @{ error = $_.Exception.Message } | ConvertTo-Json -Compress }`;
     execFile(pwsh, psCommand(command), { cwd: hubRoot, env: { ...env, ...extraEnv }, timeout: 120000, windowsHide: true }, (err, stdout) => {
@@ -45,9 +44,9 @@ export function createConfigApi({ hubRoot, pwsh, env = process.env }) {
   const googleAccount = () => { try { return String(JSON.parse(readFileSync(googleFile, "utf8")).email || ""); } catch { return ""; } };
   const withAccount = (url) => (googleAccount() ? `${url}?authuser=${encodeURIComponent(googleAccount())}` : url);
   const workspace = q(join(hubRoot, "workspace"));
-  // A page in the user's own Chrome, where the AIs are signed in: in the Tools Hub tab group, opened by the extension
-  // (hub/bridge/ensure.mjs --open; without the extension, a plain new tab).
-  const openInChrome = (url, done) => execFile(process.execPath, [join(hubRoot, "hub", "bridge", "ensure.mjs"), "--open", url], { cwd: hubRoot, env, timeout: 120000, windowsHide: true }, (err, stdout) => {
+  // A page in the user's own Chrome, where the AIs are signed in: in the Product Review tab group, opened by the extension
+  // (core/bridge/ensure.mjs --open; without the extension, a plain new tab).
+  const openInChrome = (url, done) => execFile(process.execPath, [join(hubRoot, "core", "bridge", "ensure.mjs"), "--open", url], { cwd: hubRoot, env, timeout: 120000, windowsHide: true }, (err, stdout) => {
     let r = {}; try { r = JSON.parse(String(stdout).trim().split(/\r?\n/).pop()); } catch { r = { error: err?.message || "Không mở được Chrome." }; }
     done(r.opened ? { ok: true } : { error: r.error || "Không mở được Chrome." });
   });
@@ -119,7 +118,7 @@ export function createConfigApi({ hubRoot, pwsh, env = process.env }) {
       }
       if (step === "browser") {
         // Installing the extension: Chrome's extensions page, and the folder to choose there (Tải tiện ích đã giải nén).
-        const folder = join(hubRoot, "hub", "extension");
+        const folder = join(hubRoot, "core", "extension");
         if (onWindows) execFile("explorer.exe", [folder], () => {}); else execFile("open", [folder], () => {});
         // Not through the extension: this is where it gets installed.
         openChrome("chrome://extensions").then((error) => json(res, error ? 500 : 200, error ? { error } : { ok: true }));
@@ -138,8 +137,8 @@ export function createConfigApi({ hubRoot, pwsh, env = process.env }) {
       const [cmd, args] = [npm, ["install", "-g", "@openai/codex"]];
       runTool(cmd, args, { cwd: hubRoot, timeout: 15 * 60000, env, windowsHide: true }, (err, stdout, stderr) => {
         if (err) return json(res, 500, { error: (String(stderr || stdout).trim().split(/\r?\n/).pop() || err.message).slice(0, 300) });
-        // The shared bridge between the tools and the Tools Hub extension (hub/bridge).
-        runTool(npm, ["install", "--silent"], { cwd: join(hubRoot, "hub", "bridge"), timeout: 10 * 60000, env, windowsHide: true }, () => json(res, 200, { ok: true }));
+        // The shared bridge between the tools and the Product Review extension (core/bridge).
+        runTool(npm, ["install", "--silent"], { cwd: join(hubRoot, "core", "bridge"), timeout: 10 * 60000, env, windowsHide: true }, () => json(res, 200, { ok: true }));
       });
       return true;
     }
@@ -164,14 +163,6 @@ export function createConfigApi({ hubRoot, pwsh, env = process.env }) {
         else rmSync(googleFile, { force: true });
       }
       json(res, 200, { email: googleAccount() });
-      return true;
-    }
-    if (path === "/api/config/drive") {
-      // The password goes to PowerShell in its environment, never on the command line.
-      const { password = "" } = req.method === "POST" ? await body(req) : {};
-      const action = req.method === "POST" ? `Connect-DriveAccount '${workspace}' $env:HUB_DRIVE_PASSWORD; ` : req.method === "DELETE" ? `Disconnect-DriveAccount '${workspace}'; ` : "";
-      const r = await ps(`${load("drive.ps1")}; ${action}@{ drive = (Test-Path -LiteralPath (Get-SharedConfigPath '${workspace}' 'drive.json')) } | ConvertTo-Json -Compress`, { HUB_DRIVE_PASSWORD: String(password) });
-      json(res, r.error ? 400 : 200, r);
       return true;
     }
     return false;

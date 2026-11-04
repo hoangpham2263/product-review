@@ -9,7 +9,7 @@
         SourceCatalog = $catalog
         AgentInstructionsPath = Join-Path $ProjectRoot 'AGENTS.md'
         FeedbackRoot = Join-Path $workspace.Root 'feedback'
-        Drive = Get-DriveConfig $workspace.Root
+        Results = Get-ResultStore
         DeliveryRoot = Join-Path $workspace.Root 'delivery-pending'
         WritingStyle = Get-WritingStyle (Join-Path $ProjectRoot 'data/writing-style.json')
     }

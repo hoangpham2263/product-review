@@ -1,5 +1,5 @@
-// What the Node servers (hub/picker.mjs, each tool's src/mac/server.mjs) do differently on macOS and Windows: the
-// same pages and servers run on both; on Windows the window is hub/launch.ps1's WebView2 app window.
+// What the Node server (src/mac/server.mjs) does differently on macOS and Windows: the
+// same pages and servers run on both; on Windows the window is core/launch.ps1's WebView2 app window.
 import { execFile, spawn } from "node:child_process";
 import { existsSync } from "node:fs";
 import { delimiter, dirname, join } from "node:path";
@@ -47,7 +47,7 @@ export function killTree(proc) {
   try { process.kill(-proc.pid, "SIGKILL"); } catch { try { proc.kill("SIGKILL"); } catch {} }
 }
 
-// The user's own Chrome, where the Tools Hub extension (hub/extension) is installed and the AIs are signed in: started,
+// The user's own Chrome, where the Product Review extension (core/extension) is installed and the AIs are signed in: started,
 // or a page opened in it. background: Chrome is not brought to the front (a run starting it).
 export function openChrome(url = "", { background = false } = {}) {
   return new Promise((resolve) => {
@@ -57,8 +57,8 @@ export function openChrome(url = "", { background = false } = {}) {
   });
 }
 
-// A window of its own on macOS: Chrome for Testing (hub/browser.mjs) in app mode (no tabs or address bar); before
-// it is downloaded, the user's Chrome, else the default browser. On Windows the app window (hub/launch.ps1) shows the
+// A window of its own on macOS: Chrome for Testing (core/browser.mjs) in app mode (no tabs or address bar); before
+// it is downloaded, the user's Chrome, else the default browser. On Windows the app window (core/launch.ps1) shows the
 // pages, so nothing opens here.
 export function appWindow(url, size = "1120,840") {
   if (onWindows) return;

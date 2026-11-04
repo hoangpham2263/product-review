@@ -1,4 +1,4 @@
-// Cấu hình page (hub/setup/page.html): the steps from setup-check.ps1 (POST /api/setup), each AI with the account it is
+// Cấu hình page (core/setup/page.html): the steps from setup-check.ps1 (POST /api/setup), each AI with the account it is
 // signed in to, a button on each that can be fixed or changed, then Model AI. "← Quay lại" goes to ?back= (the page it
 // was opened from), so the menu and every tool share this one page.
 (() => {
@@ -13,7 +13,7 @@
 
   // Which section each step is in, in this order; anything else the check adds goes under Cài đặt.
   const AI = ["login", "google", "antigravity"];
-  const BASE = ["drive", "node", "codex", "browser"];
+  const BASE = ["node", "codex", "browser"];
   const marks = { ok: ["✔", "darkgreen"], fail: ["✖", "firebrick"], warn: ["!", "#b06000"] };
   const items = new Map();
   const item = (id, parent) => {
@@ -29,9 +29,9 @@
   };
   for (const id of AI) item(id, $("#ai"));
   for (const id of BASE) item(id, $("#base"));
-  const NAMES = { login: "Codex (ChatGPT)", google: "Google (Flow, Gemini web)", antigravity: "Antigravity CLI", drive: "Mật khẩu app", node: "Node.js", codex: "Codex", browser: "Extension Tools Hub" };
+  const NAMES = { login: "Codex (ChatGPT)", google: "Google (Flow, Gemini web)", antigravity: "Antigravity CLI", node: "Node.js", codex: "Codex", browser: "Extension Product Review" };
   for (const [id, row] of items) row.name.textContent = NAMES[id];
-  const LABELS = { install: "Cài", browser: "Mở", login: "Đăng nhập", drive: "Đăng nhập", google: "Đăng nhập", antigravity: "Đăng nhập" };
+  const LABELS = { install: "Cài", browser: "Mở", login: "Đăng nhập", google: "Đăng nhập", antigravity: "Đăng nhập" };
   // Beside the sign-in button: the AI's own site in Chrome, to see or switch the account there.
   const SITES = { login: [["Mở ChatGPT", "chatgpt"]], google: [["Mở Gemini", "gemini"], ["Mở Flow", "flow"]] };
   const WAIT = {
@@ -90,7 +90,7 @@
       if (step.Id === "antigravity" && step.State !== "ok") row.uses.textContent = `Dùng cho: ${step.Uses || "Viết review: Antigravity CLI"}. Đăng nhập trong Antigravity, đổi tài khoản cũng ở đó.`;
       if (step.Action) {
         const signedIn = step.State === "ok";
-        row.fix.textContent = signedIn && ["login", "google", "antigravity"].includes(step.Action) ? "Đổi tài khoản" : ["expired", "signedout"].includes(step.SignIn) ? "Đăng nhập lại" : signedIn && step.Action === "drive" ? "Đăng xuất" : LABELS[step.Action] || "Mở";
+        row.fix.textContent = signedIn && ["login", "google", "antigravity"].includes(step.Action) ? "Đổi tài khoản" : ["expired", "signedout"].includes(step.SignIn) ? "Đăng nhập lại" : LABELS[step.Action] || "Mở";
         row.fix.classList.toggle("primary", !signedIn);
         row.fix.hidden = false;
         row.fix.onclick = () => fix(step, row);
@@ -136,34 +136,9 @@
     }, 1000);
   };
 
-  // Mật khẩu app: typed here once for every tool, or logged out.
-  const drive = (step, row) => {
-    if (step.State === "ok") {
-      if (!confirm("Đăng xuất mật khẩu app trên máy này?")) return;
-      return post("/api/config/drive", null, "DELETE").then(check);
-    }
-    if (row.extra.querySelector(".drive-form")) return row.extra.querySelector("input").focus();
-    const form = el("div", "drive-form"), pass = el("input"), go = el("button", "btn primary", "Lưu"), err = el("div", "err");
-    pass.type = "password"; pass.placeholder = "Mật khẩu app"; go.type = "button";
-    form.append(pass, go);
-    row.extra.replaceChildren(form, err);
-    const save = async () => {
-      go.disabled = true;
-      const r = await post("/api/config/drive", { password: pass.value });
-      go.disabled = false;
-      if (r.error) { err.textContent = r.error; return; }
-      row.extra.replaceChildren();
-      check();
-    };
-    go.onclick = save;
-    pass.onkeydown = (e) => { if (e.key === "Enter") save(); };
-    pass.focus();
-  };
-
   // Installing, opening Chrome or signing in runs on this computer; the steps are checked again after.
   const buttons = () => [...document.querySelectorAll(".item .side .btn")];
   const fix = async (step, row, site) => {
-    if (step.Action === "drive") return drive(step, row);
     for (const b of buttons()) b.disabled = true;
     row.detail.textContent = WAIT[step.Action] || "Đang mở…";
     if (step.Action === "login") watchLogin();

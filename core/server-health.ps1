@@ -37,19 +37,5 @@ function Select-HubServerPort([int]$BasePort,[string]$AddressFile) {
         if(Test-HubServer){return $candidate}
     }
     if($firstFree){return $firstFree}
-    throw 'Không tìm được cổng trống cho Tools Hub. Đóng các phiên cũ rồi mở lại.'
-}
-function Stop-LegacyHubServer {
-    try {
-        $answer=Get-HubHttpText "http://127.0.0.1:$port/api/root" | ConvertFrom-Json
-        if(([string]$answer.root).TrimEnd('\').ToLowerInvariant() -ne $serverRoot.TrimEnd('\').ToLowerInvariant()){return}
-        # Only the obsolete PowerShell server of this exact install; never stop an unrelated port owner.
-        $legacyPath=Join-Path $root 'hub\web-server.ps1'
-        $entryPattern='(?i)-File\s+"?'+[regex]::Escape($legacyPath)+'"?(?:\s|$)'
-        foreach($process in @(Get-CimInstance Win32_Process -Filter "Name='powershell.exe'")){
-            if($process.CommandLine -and $process.CommandLine -match $entryPattern){
-                Stop-Process -Id $process.ProcessId -ErrorAction Stop
-            }
-        }
-    } catch {Write-Verbose $_}
+    throw 'Không tìm được cổng trống cho Product Review. Đóng các phiên cũ rồi mở lại.'
 }

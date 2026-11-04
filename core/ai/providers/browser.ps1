@@ -1,7 +1,7 @@
-﻿# The web AIs (Gemini, Google Flow) in the signed-in tabs of the user's own Chrome: hub/bridge (local server)
-# and hub/extension (Tools Hub). The bridge hands the extension one job at a time, since a page only works while its
+﻿# The web AIs (Gemini, Google Flow) in the signed-in tabs of the user's own Chrome: core/bridge (local server)
+# and core/extension (Product Review). The bridge hands the extension one job at a time, since a page only works while its
 # tab is shown, so a call also waits its turn there: up to $script:BridgeQueueSec more than its own time.
-$script:BridgeUrl = 'http://127.0.0.1:8765'
+$script:BridgeUrl = 'http://127.0.0.1:8775'
 $script:BridgeQueueSec = 1800
 $script:BridgeHubRoot = Split-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) -Parent
 
@@ -9,15 +9,15 @@ function Get-ImageBridgeStatus {
     try { return Invoke-RestMethod -Uri "$script:BridgeUrl/status" -TimeoutSec 3 } catch { return $null }
 }
 
-# The bridge and the extension, ready: hub/bridge/ensure.mjs installs and starts the bridge (again after Cập nhật),
+# The bridge and the extension, ready: core/bridge/ensure.mjs installs and starts the bridge (again after Cập nhật),
 # starts Chrome when the extension is not connected and reloads an extension of another version. -NewSession: a run
-# starts here, so the tabs of the Tools Hub group are closed first (none while another tool's job runs).
+# starts here, so the tabs of the Product Review group are closed first (none while another tool's job runs).
 function Start-ImageBridge([string]$ProjectRoot, [switch]$NewSession) {
-    $ensure = Join-Path $script:BridgeHubRoot 'hub/bridge/ensure.mjs'
+    $ensure = Join-Path $script:BridgeHubRoot 'core/bridge/ensure.mjs'
     $flags = @(if ($NewSession) { '--session' })
     $answer = $null
     try { $answer = (& node $ensure @flags | Select-Object -Last 1) | ConvertFrom-Json } catch {}
-    if (-not $answer) { throw '[CAUSE:BRIDGE] Không bật được bridge (hub/bridge). Mở Cấu hình xem Node.js đã cài chưa rồi chạy lại.' }
+    if (-not $answer) { throw '[CAUSE:BRIDGE] Không bật được bridge (core/bridge). Mở Cấu hình xem Node.js đã cài chưa rồi chạy lại.' }
     if (-not $answer.ok) { throw "[CAUSE:BRIDGE] $($answer.error)" }
 }
 

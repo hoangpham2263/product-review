@@ -16,25 +16,25 @@ function Get-DeliveryKey($Item) {
 }
 
 function Read-DeliveryCache($Item) {
-    if(-not $script:Config.DeliveryRoot -or (-not $script:Config.Drive -and -not $script:Config.DriveRequired)){return}
+    if(-not $script:Config.DeliveryRoot -or (-not $script:Config.Results -and -not $script:Config.ResultsRequired)){return}
     $key=Get-DeliveryKey $Item
     $path=Join-Path $script:Config.DeliveryRoot "$key.json"
     if(-not (Test-Path -LiteralPath $path)){return}
     $saved=Get-Content -LiteralPath $path -Raw -Encoding UTF8|ConvertFrom-Json
-    if($saved.schema_version -ne 1 -or $saved.product_url -ne $Item.Url -or $saved.key -ne $key){throw '[CAUSE:DRIVE_UPLOAD] Invalid saved delivery.'}
-    if(-not (Test-Path -LiteralPath $saved.row.photo_path) -or (Get-BytesHash ([IO.File]::ReadAllBytes($saved.row.photo_path))) -ne $saved.image_sha256){throw '[CAUSE:DRIVE_UPLOAD] Saved image changed; delivery stopped.'}
+    if($saved.schema_version -ne 1 -or $saved.product_url -ne $Item.Url -or $saved.key -ne $key){throw '[CAUSE:RESULT_UPLOAD] Invalid saved delivery.'}
+    if(-not (Test-Path -LiteralPath $saved.row.photo_path) -or (Get-BytesHash ([IO.File]::ReadAllBytes($saved.row.photo_path))) -ne $saved.image_sha256){throw '[CAUSE:RESULT_UPLOAD] Saved image changed; delivery stopped.'}
     return $saved
 }
 
 function Restore-DeliveryCache($Saved,[string]$ItemId) {
     $manifestPath=Join-Path $Saved.refs_folder 'manifest.json'
     $manifest=Get-Content -LiteralPath $manifestPath -Raw -Encoding UTF8|ConvertFrom-Json
-    if($manifest.product_url -ne $Saved.product_url){throw '[CAUSE:DRIVE_UPLOAD] Saved input URL mismatch.'}
+    if($manifest.product_url -ne $Saved.product_url){throw '[CAUSE:RESULT_UPLOAD] Saved input URL mismatch.'}
     $folder=Join-Path $script:Batch.Refs $ItemId
     New-Item -ItemType Directory -Path $folder -Force|Out-Null
     foreach($entry in $manifest.images){
         $source=Resolve-FeedbackChild $Saved.refs_folder $entry.file
-        if((Get-BytesHash ([IO.File]::ReadAllBytes($source))) -ne $entry.sha256){throw '[CAUSE:DRIVE_UPLOAD] Saved inputs changed.'}
+        if((Get-BytesHash ([IO.File]::ReadAllBytes($source))) -ne $entry.sha256){throw '[CAUSE:RESULT_UPLOAD] Saved inputs changed.'}
         $destination=Resolve-FeedbackChild $folder $entry.file
         New-Item -ItemType Directory -Path (Split-Path $destination -Parent) -Force|Out-Null
         Copy-Item -LiteralPath $source -Destination $destination
@@ -48,7 +48,7 @@ function Restore-DeliveryCache($Saved,[string]$ItemId) {
 }
 
 function Save-DeliveryCache($Item,[string]$ItemId,$Row) {
-    if(-not $script:Config.DeliveryRoot -or (-not $script:Config.Drive -and -not $script:Config.DriveRequired)){return}
+    if(-not $script:Config.DeliveryRoot -or (-not $script:Config.Results -and -not $script:Config.ResultsRequired)){return}
     $key=Get-DeliveryKey $Item
     $Row|Add-Member NoteProperty delivery_key $key -Force
     New-Item -ItemType Directory -Path $script:Config.DeliveryRoot -Force|Out-Null
@@ -60,22 +60,22 @@ function Save-DeliveryCache($Item,[string]$ItemId,$Row) {
 }
 
 function Assert-PublicPhotoDelivery($Row) {
-    if(-not $script:Config.Drive -and -not $script:Config.DriveRequired){return}
+    if(-not $script:Config.Results -and -not $script:Config.ResultsRequired){return}
     $uri=$null
-    if(-not [Uri]::TryCreate([string]$Row.photo_url,[UriKind]::Absolute,[ref]$uri) -or $uri.Scheme -ne 'https' -or -not $uri.Host){throw '[CAUSE:DRIVE_UPLOAD] Image has no public HTTPS link; CSV not exported.'}
+    if(-not [Uri]::TryCreate([string]$Row.photo_url,[UriKind]::Absolute,[ref]$uri) -or $uri.Scheme -ne 'https' -or -not $uri.Host){throw '[CAUSE:RESULT_UPLOAD] Image has no public HTTPS link; CSV not exported.'}
 }
 
 # Called by each image worker right after generation, and again by the coordinator for retries.
-function Complete-DriveDelivery($Row,[int]$Index=0) {
-    if(-not $script:Config.Drive){
-        if($script:Config.DriveRequired){throw '[CAUSE:DRIVE_CONFIG] Log in to Google Drive before creating images.'}
+function Complete-ResultDelivery($Row,[int]$Index=0) {
+    if(-not $script:Config.Results){
+        if($script:Config.ResultsRequired){throw '[CAUSE:RESULT_CONFIG] No result store; public image links cannot be made.'}
         return $Row
     }
     if($Row.photo_url -notmatch '^https://'){
-        $previousIndex=$script:DriveUploadIndex;$script:DriveUploadIndex=$Index
-        try{$Row.photo_url=Publish-ImageToDrive $Row.photo_path $script:Batch.Id $Row.product_handle}
-        finally{$script:DriveUploadIndex=$previousIndex}
-        Write-Host "  [DRIVE] $($Row.photo_url)" -ForegroundColor Cyan
+        $previousIndex=$script:ResultUploadIndex;$script:ResultUploadIndex=$Index
+        try{$Row.photo_url=Publish-ResultImage $Row.photo_path $script:Batch.Id $Row.product_handle}
+        finally{$script:ResultUploadIndex=$previousIndex}
+        Write-Host "  [RESULT] $($Row.photo_url)" -ForegroundColor Cyan
     }
     Assert-PublicPhotoDelivery $Row
     if($Row.delivery_key -and $script:Config.DeliveryRoot){

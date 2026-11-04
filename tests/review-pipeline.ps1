@@ -2,20 +2,20 @@
 # Offline integration test: real runspaces with mocked external AI/image IO.
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
-# A copy laid out like an install (apps/<tool> beside hub/), so src finds the hub's shared setup scripts.
+# A copy laid out like an install (src/ beside core/), so src finds the shared setup and AI scripts.
 $tempHub = Join-Path $TestWorkspaceRoot ('review-pipeline-test-' + [Guid]::NewGuid().ToString('N'))
-$tempRoot = Join-Path $tempHub 'apps/product-review'
-New-Item -ItemType Directory -Path $tempRoot, (Join-Path $tempHub 'hub') | Out-Null
-foreach ($shared in @('setup', 'ai')) { Copy-Item -LiteralPath (Join-Path $root "../../hub/$shared") -Destination (Join-Path $tempHub 'hub') -Recurse }
+$tempRoot = $tempHub
+New-Item -ItemType Directory -Path (Join-Path $tempRoot 'core'), (Join-Path $tempRoot 'data') | Out-Null
+foreach ($shared in @('setup', 'ai')) { Copy-Item -LiteralPath (Join-Path $root "core/$shared") -Destination (Join-Path $tempRoot 'core') -Recurse }
 function Assert($Condition, [string]$Message) { if (-not $Condition) { throw $Message } }
 try {
     Copy-Item -LiteralPath (Join-Path $root 'src') -Destination $tempRoot -Recurse
     $lib = Join-Path $tempRoot 'src'
     'function Get-Reference($Url, $ItemId) { $path = Join-Path $script:Batch.Refs "$ItemId.png"; "product" | Set-Content $path; return $path }' | Add-Content (Join-Path $lib 'workflow/steps/01-load-inputs.ps1')
-    $sources = Join-Path $tempRoot 'data/source-photos/polo-shirts'
+    $sources = Join-Path $tempRoot 'workspace/source-photos/polo-shirts'
     New-Item -ItemType Directory -Path $sources -Force | Out-Null
-    $stock = Join-Path $tempRoot 'data/source-photos/outdoor-sports'
-    $mixed = Join-Path $tempRoot 'data/source-photos/mixed'
+    $stock = Join-Path $tempRoot 'workspace/source-photos/outdoor-sports'
+    $mixed = Join-Path $tempRoot 'workspace/source-photos/mixed'
     New-Item -ItemType Directory -Path $stock, $mixed -Force | Out-Null
     Copy-Item -LiteralPath (Join-Path $root 'data/product-contexts.json') -Destination (Join-Path $tempRoot 'data/product-contexts.json')
     Copy-Item -LiteralPath (Join-Path $root 'data/writing-style.json') -Destination (Join-Path $tempRoot 'data/writing-style.json')
@@ -36,8 +36,8 @@ try {
         @{ file = 'polo-shirts/one.png'; category = 'polo-shirts'; source_kind = 'original' },
         @{ file = 'outdoor-sports/two.png'; category = 'outdoor-sports'; source_kind = 'stock' },
         @{ file = 'mixed/flat.png'; category = 'mixed'; source_kind = 'review' }
-    ) } | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $tempRoot 'data/source-photos/catalog.json')
-    $sourceHashes = @(Get-ChildItem (Join-Path $tempRoot 'data/source-photos') -Recurse -File | Get-FileHash)
+    ) } | ConvertTo-Json -Depth 5 | Set-Content (Join-Path $tempRoot 'workspace/source-photos/catalog.json')
+    $sourceHashes = @(Get-ChildItem (Join-Path $tempRoot 'workspace/source-photos') -Recurse -File | Get-FileHash)
     @'
 function Invoke-AI($PromptText, $Images, $ResultFile, $Sandbox) {
     $resultsJson = Join-Path $script:Batch.Dir 'results.json'
@@ -120,7 +120,7 @@ function Invoke-AI($PromptText, $Images, $ResultFile, $Sandbox) {
     Assert (@(Get-ChildItem $csv.DirectoryName -Filter '*-quality-1.txt' -Recurse).Count -eq 0) 'Single-pass delivery unexpectedly ran AI visual QA.'
     Assert (@(Get-ChildItem $csv.DirectoryName -Filter '*-review-status.json' -Recurse).Count -eq 3) 'Delivered images must await user review.'
     # Resume the failed queue through the same public entry point.
-    'allow success' | Set-Content (Join-Path $tempRoot 'data/source-photos/allow-review-success.flag')
+    'allow success' | Set-Content (Join-Path $tempRoot 'workspace/source-photos/allow-review-success.flag')
     & (Join-Path $tempRoot 'src/run-images.ps1') -ThrottleLimit 2 -LocalOnly -ReferenceMapFile $map
     Assert (-not ([IO.File]::ReadAllText($queue).Trim())) 'Successful retry must empty the queue.'
     $retryCsv = Get-ChildItem (Join-Path $tempRoot 'workspace/output') -Filter results.json -Recurse | Where-Object FullName -ne $csv.FullName

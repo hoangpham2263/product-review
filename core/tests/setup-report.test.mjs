@@ -5,11 +5,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createSetupReader, parseSetupReport } from '../setup/setup-report.mjs';
 
-const report = { Steps: ['drive','node','codex','login','quota'].map(Id => ({Id,State:'ok'})) };
+const report = { Steps: ['node','codex','login','quota'].map(Id => ({Id,State:'ok'})) };
 const payload = JSON.stringify(report);
 test('UTF-8 BOM accepted; empty, incomplete and invalid state rejected', () => {
   assert.deepEqual(parseSetupReport('\uFEFF'+payload), report);
-  for (const invalid of ['', '{}', '{', JSON.stringify({Steps:report.Steps.slice(0,4)}), JSON.stringify({Steps:report.Steps.map(s=>({...s,State:'unknown'}))})]) assert.throws(()=>parseSetupReport(invalid));
+  for (const invalid of ['', '{}', '{', JSON.stringify({Steps:report.Steps.slice(0,3)}), JSON.stringify({Steps:report.Steps.map(s=>({...s,State:'unknown'}))})]) assert.throws(()=>parseSetupReport(invalid));
 });
 test('concurrent checks share a child; new check reads fresh; valid exit 1 is a readiness result', async () => {
   let calls=0;

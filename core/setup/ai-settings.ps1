@@ -1,6 +1,6 @@
 ﻿# Model AI: the model and reasoning level Codex uses for every call (writing reviews and making images), chosen in
 # Cấu hình and kept once for every tool in workspace/config/ai-model.json. Empty values keep Codex's own default
-# (~/.codex/config.toml). ProjectRoot is the hub or a tool folder; either finds the shared file.
+# (~/.codex/config.toml). ProjectRoot is the install folder.
 # A lighter model or a lower reasoning level uses fewer tokens.
 . (Join-Path $PSScriptRoot 'config.ps1')
 $script:AiEfforts = @('low', 'medium', 'high', 'xhigh', 'max', 'ultra')

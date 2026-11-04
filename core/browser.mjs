@@ -1,9 +1,9 @@
-// The Tools Hub windows on macOS (hub/platform.mjs appWindow): Chrome for Testing in <hub>/workspace/browser with a
+// The app window on macOS (core/platform.mjs appWindow): Chrome for Testing in workspace/browser with a
 // profile of its own (workspace/browser/app), so a tool opens as an app window (no tabs or address bar); not downloaded,
-// the user's Chrome shows them. The AIs (Flow, Gemini, ChatGPT) run in the user's own Chrome through the Tools Hub
-// extension (hub/extension, hub/bridge), not here.
-//   node hub/browser.mjs download   download it (about 150 MB), once
-//   node hub/browser.mjs status     { installed }
+// the user's Chrome shows them. The AIs (Flow, Gemini, ChatGPT) run in the user's own Chrome through the Product Review
+// extension (core/extension, core/bridge), not here.
+//   node core/browser.mjs download   download it (about 150 MB), once
+//   node core/browser.mjs status     { installed }
 // Prints one JSON line.
 import { execFile } from "node:child_process";
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";

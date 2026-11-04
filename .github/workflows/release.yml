@@ -1,4 +1,4 @@
-# Push a tag like v2.0.0 to publish a Release; installed apps offer it in Cập nhật.
+# Push a tag like v1.0.0 to publish a Release; installed apps offer it in Cập nhật.
 name: release
 on:
   push:
@@ -10,11 +10,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      # One fixed asset name, so releases/latest/download/tools-hub.zip always works. product-review-batch.zip is the
-      # same ZIP under the name installs from before Tools Hub look for, so they can still update into it.
+      # One fixed asset name, so releases/latest/download/product-review.zip always works.
       - run: |
-          git archive --format=zip --prefix=tools-hub/ -o tools-hub.zip "$GITHUB_REF_NAME"
-          cp tools-hub.zip product-review-batch.zip
-          gh release create "$GITHUB_REF_NAME" tools-hub.zip product-review-batch.zip --generate-notes --title "$GITHUB_REF_NAME"
+          git archive --format=zip --prefix=product-review/ -o product-review.zip "$GITHUB_REF_NAME"
+          gh release create "$GITHUB_REF_NAME" product-review.zip --generate-notes --title "$GITHUB_REF_NAME"
         env:
           GH_TOKEN: ${{ github.token }}

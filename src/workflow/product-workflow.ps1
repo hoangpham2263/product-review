@@ -4,7 +4,7 @@ function Invoke-ProductItem($Item, [string]$ItemId) {
     $script:Config.ActiveScene = if ($Item.PSObject.Properties['Scene']) { $Item.Scene } else { $null }
     $cached=Read-DeliveryCache $Item
     if($cached){
-        Write-Host '  [DRIVE-RESUME] Reusing saved image and review; no AI generation.' -ForegroundColor Cyan
+        Write-Host '  [RESULT-RESUME] Reusing saved image and review; no AI generation.' -ForegroundColor Cyan
         $row=Restore-DeliveryCache $cached $ItemId
         Save-DeliveryCache $Item $ItemId $row
         return $row
@@ -31,7 +31,7 @@ function Invoke-ProductItem($Item, [string]$ItemId) {
         body = $body
         created_at = ''
         verified_purchase = 'true'
-        photo_url = $(if($script:Config.Drive -or $script:Config.DriveRequired){''}else{$request.Output -replace '\\','/'})
+        photo_url = $(if($script:Config.Results -or $script:Config.ResultsRequired){''}else{$request.Output -replace '\\','/'})
         photo_path = ($request.Output -replace '\\', '/')
     }
     Save-DeliveryCache $Item $ItemId $row
