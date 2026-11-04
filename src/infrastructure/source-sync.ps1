@@ -1,19 +1,35 @@
-﻿# Source library on Google Drive (Worker /api/sources): one Drive folder per group. A run downloads
-# only the chosen group into data/source-photos/<group>/ and fetches only new or changed files (md5).
-function Get-RemoteSourceGroups($Drive) {
-    $result = Invoke-RestMethod -Uri "$($Drive.ApiUrl)/api/sources" -Headers @{ 'x-admin-key' = $Drive.AdminKey } -TimeoutSec 15
-    # The admin password lists every group; the app shows only the switched-on ones either way.
-    return @($result.groups | Where-Object { $_.enabled -ne $false } | ForEach-Object { [string]$_.name })
+﻿# Source library: the public GitHub repo hoangpham2263/product-review-sources, source-photos/<group>/<file>, listed in
+# source-photos/manifest.json (groups, enabled, files with md5) and described in source-photos/catalog.json. A run
+# downloads only the chosen group into workspace/source-photos/<group>/ and fetches only new or changed files (md5).
+# PR_SOURCES_URL points tests at a local copy.
+$script:SourcesUrl = 'https://raw.githubusercontent.com/hoangpham2263/product-review-sources/main/source-photos'
+$script:SourceManifestCache = $null
+
+function Get-SourcesUrl { if ($env:PR_SOURCES_URL) { return $env:PR_SOURCES_URL.TrimEnd('/') } return $script:SourcesUrl }
+
+function Get-SourceFileUrl([string]$Group, [string]$Name) {
+    return '{0}/{1}/{2}' -f (Get-SourcesUrl), [Uri]::EscapeDataString($Group.Normalize([Text.NormalizationForm]::FormC)), [Uri]::EscapeDataString($Name)
 }
 
-# Groups for the picker: only the groups switched on in the management page, read each time the picker
-# opens so a switch applies at once. The last list is kept in workspace/source-groups.json for offline use.
+# The manifest, read again after a minute (the app's PowerShell is long-lived, the picker asks often).
+function Get-SourceManifest {
+    $cache = $script:SourceManifestCache
+    if ($cache -and ((Get-Date) - $cache.At).TotalSeconds -lt 60) { return $cache.Data }
+    $data = Invoke-RestMethod -Uri "$(Get-SourcesUrl)/manifest.json" -Headers @{ 'Cache-Control' = 'no-cache' } -TimeoutSec 60
+    $script:SourceManifestCache = @{ At = Get-Date; Data = $data }
+    return $data
+}
+
+function Get-RemoteSourceGroups {
+    return @(@((Get-SourceManifest).groups) | Where-Object { $_.enabled -ne $false } | ForEach-Object { [string]$_.name })
+}
+
+# Groups for the picker: only the switched-on groups of the manifest, read each time the picker opens. The last list is
+# kept in workspace/source-groups.json for offline use.
 function Get-SourceGroupChoices([string]$ProjectRoot) {
     $cache = Join-Path $ProjectRoot 'workspace/source-groups.json'
     $groups = try {
-        $drive = Get-DriveConfig (Join-Path $ProjectRoot 'workspace')
-        if (-not $drive) { throw 'Chưa có mật khẩu app.' }
-        $fetched = @(Get-RemoteSourceGroups $drive)
+        $fetched = @(Get-RemoteSourceGroups)
         try { Set-Content -LiteralPath $cache -Value (ConvertTo-Json -InputObject $fetched -Compress) -Encoding UTF8 } catch { Write-Verbose $_ }
         ,$fetched
     } catch {
@@ -25,20 +41,34 @@ function Get-SourceGroupChoices([string]$ProjectRoot) {
         Sort-Object @{ Expression = { if ($_ -eq 'Áo') { 0 } elseif ($_ -eq 'Nội thất') { 1 } else { 2 } } }, @{ Expression = { $_ } })
 }
 
+# One group's files in the manifest: { name, md5, url }.
+function Get-SourceGroupListing([string]$Group) {
+    $Group = $Group.Normalize([Text.NormalizationForm]::FormC)
+    $entry = @(@((Get-SourceManifest).groups) | Where-Object { ([string]$_.name).Normalize([Text.NormalizationForm]::FormC) -eq $Group })
+    if (-not $entry.Count) { throw "Không có danh mục $Group trong kho ảnh." }
+    return @(@($entry[0].files) | ForEach-Object { [pscustomobject]@{ name = [string]$_.name; md5 = [string]$_.md5; url = (Get-SourceFileUrl $Group ([string]$_.name)) } })
+}
+
+# catalog.json beside the downloaded groups, so the reference archive knows each photo's source.
+function Update-SourceCatalog([string]$SourceDir) {
+    New-Item -ItemType Directory -Path $SourceDir -Force | Out-Null
+    $path = Join-Path $SourceDir 'catalog.json'
+    try { Invoke-WebRequest -Uri "$(Get-SourcesUrl)/catalog.json" -OutFile "$path.part" -UseBasicParsing -TimeoutSec 120; Move-Item -LiteralPath "$path.part" -Destination $path -Force }
+    catch { Remove-Item -LiteralPath "$path.part" -Force -ErrorAction SilentlyContinue; Write-Verbose $_ }
+}
+
 # $OnProgress (optional) gets (images downloaded so far, images to download) after the listing and each batch.
-function Sync-SourceGroup($Drive, [string]$SourceDir, [string]$Group, [scriptblock]$OnProgress) {
+function Sync-SourceGroup([string]$SourceDir, [string]$Group, [scriptblock]$OnProgress) {
     $Group = $Group.Normalize([Text.NormalizationForm]::FormC)
     $folder = Get-SourcePhotoDirectory $SourceDir $Group
-    $listing = Invoke-RestMethod -Uri "$($Drive.ApiUrl)/api/sources/$([Uri]::EscapeDataString($Group))" -Headers @{ 'x-admin-key' = $Drive.AdminKey } -TimeoutSec 60
+    $listing = @(Get-SourceGroupListing $Group)
+    Update-SourceCatalog $SourceDir
     # name -> md5 of the files earlier syncs wrote; only these are ever removed again.
-    $indexPath = Join-Path $folder '.drive-sync.json'
-    $index = @{}
-    if (Test-Path -LiteralPath $indexPath) {
-        foreach ($p in (Get-Content -LiteralPath $indexPath -Raw -Encoding UTF8 | ConvertFrom-Json).PSObject.Properties) { $index[$p.Name] = [string]$p.Value }
-    }
+    $index = Read-SourceSyncIndex $folder
+    $indexPath = Join-Path $folder '.sync.json'
     $remote = @{}
     $missing = New-Object Collections.Generic.List[object]
-    foreach ($file in @($listing.files)) {
+    foreach ($file in $listing) {
         $name = [string]$file.name
         if (-not $name -or [IO.Path]::GetFileName($name) -ne $name -or $name.EndsWith('.part')) { continue }
         $remote[$name] = $true
@@ -72,40 +102,26 @@ function Sync-SourceGroup($Drive, [string]$SourceDir, [string]$Group, [scriptblo
         }
     } finally { $client.Dispose() }
     $index | ConvertTo-Json | Set-Content -LiteralPath $indexPath -Encoding UTF8
-    # Older installs kept the uncompressed originals under their previous names; drop them so they
-    # are not picked as extra uncatalogued photos.
-    foreach ($entry in @(Get-SampleCatalogEntries $SourceDir)) {
-        foreach ($old in @($entry.previous_files)) {
-            if (-not $old -or $old -eq $entry.file -or $old -notmatch '^[^/\\]+/[^/\\]+$') { continue }
-            Remove-Item -LiteralPath (Join-Path $SourceDir $old) -Force -ErrorAction SilentlyContinue
-        }
-    }
     return [pscustomobject]@{ Group = $Group; Total = $remote.Count; Downloaded = $done; Removed = $removed }
 }
 
-# Images of one group already on this machine (after Tải cả nhóm về máy), for the "Từ kho Drive" picker.
+# Images of one group already on this machine (after Tải về máy), for the "Từ kho ảnh" picker.
 function Get-LocalSourceFiles([string]$SourceDir, [string]$Group) {
     $folder = Join-Path $SourceDir $Group.Normalize([Text.NormalizationForm]::FormC)
     if (-not (Test-Path -LiteralPath $folder)) { return @() }
     return @(Get-ChildItem -LiteralPath $folder -File | Where-Object { $_.Extension -match '^\.(png|jpe?g)$' } | Sort-Object Name | ForEach-Object FullName)
 }
 
-# Files for the "Từ kho Drive" picker, the same on Windows and macOS. The picker first shows the local copies the
-# sync index knows (at once), then the Drive listing (a few seconds for a big danh mục); without the app password
-# or network it keeps to what is on this machine and says why under the grid.
-function Get-SourcePickerFiles($Drive, [string]$SourceDir, [string]$Group) {
+# Files for the "Từ kho ảnh" picker, the same on Windows and macOS. The picker first shows the local copies the sync
+# index knows (at once), then the manifest's listing; without network it keeps to what is on this machine and says
+# why under the grid.
+function Get-SourcePickerFiles([string]$SourceDir, [string]$Group) {
     try {
-        if (-not $Drive) { throw 'offline' }
-        return @{ Files = @(Get-SourceGroupFiles $Drive $SourceDir $Group); Error = '' }
+        return @{ Files = @(Get-SourceGroupFiles $SourceDir $Group); Error = '' }
     } catch {
-        return (Get-SourceOfflinePickerFiles ([bool]$Drive) $SourceDir $Group)
+        $local = @(Get-LocalSourceFiles $SourceDir $Group | ForEach-Object { [pscustomobject]@{ name = [IO.Path]::GetFileName($_); md5 = ''; url = ''; local = $_ } })
+        return @{ Files = $local; Error = 'Không kết nối được kho ảnh (mạng). Đang hiện ảnh có trên máy.' }
     }
-}
-
-function Get-SourceOfflinePickerFiles([bool]$SignedIn, [string]$SourceDir, [string]$Group) {
-    $local = @(Get-LocalSourceFiles $SourceDir $Group | ForEach-Object { [pscustomobject]@{ name = [IO.Path]::GetFileName($_); md5 = ''; url = ''; local = $_ } })
-    $reason = if ($SignedIn) { 'Không kết nối được Drive (mạng hoặc mật khẩu app). Đang hiện ảnh có trên máy.' } else { 'Chưa đăng nhập mật khẩu app. Mở Cấu hình để đăng nhập.' }
-    return @{ Files = $local; Error = $reason }
 }
 
 # The danh mục the picker opens on, chosen with its Mặc định box (workspace/source-default.txt); '' for none.
@@ -121,7 +137,7 @@ function Set-DefaultSourceGroup([string]$ProjectRoot, [string]$Group) {
     else { Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue }
 }
 
-# Local copies an earlier sync or pick recorded, without asking Drive: what the picker shows first.
+# Local copies an earlier sync or pick recorded, without asking GitHub: what the picker shows first.
 function Get-SourceIndexedFiles([string]$SourceDir, [string]$Group) {
     $folder = Join-Path $SourceDir $Group.Normalize([Text.NormalizationForm]::FormC)
     $index = Read-SourceSyncIndex $folder
@@ -131,41 +147,33 @@ function Get-SourceIndexedFiles([string]$SourceDir, [string]$Group) {
     }
 }
 
-function Get-SourceGroupUrl($Drive, [string]$Group) {
-    return "$($Drive.ApiUrl)/api/sources/$([Uri]::EscapeDataString($Group.Normalize([Text.NormalizationForm]::FormC)))"
-}
-
-# A group's images on Drive, each with the local copy when one is already in place (synced or picked).
-function Get-SourceGroupFiles($Drive, [string]$SourceDir, [string]$Group) {
-    $listing = Invoke-RestMethod -Uri (Get-SourceGroupUrl $Drive $Group) -Headers @{ 'x-admin-key' = $Drive.AdminKey } -TimeoutSec 60
-    return @(ConvertTo-SourceGroupFiles $listing $SourceDir $Group)
-}
-
-function ConvertTo-SourceGroupFiles($Listing, [string]$SourceDir, [string]$Group) {
+# A group's images in the library, each with the local copy when one is already in place (synced or picked).
+function Get-SourceGroupFiles([string]$SourceDir, [string]$Group) {
     $folder = Join-Path $SourceDir $Group.Normalize([Text.NormalizationForm]::FormC)
     $index = Read-SourceSyncIndex $folder
-    foreach ($file in @($Listing.files)) {
+    foreach ($file in @(Get-SourceGroupListing $Group)) {
         $name = [string]$file.name
         if (-not $name -or [IO.Path]::GetFileName($name) -ne $name) { continue }
         $path = Join-Path $folder $name
         $local = if ($index[$name] -eq $file.md5 -and (Test-Path -LiteralPath $path)) { $path } else { '' }
-        [pscustomobject]@{ name = $name; md5 = [string]$file.md5; url = [string]$file.url; local = $local }
+        [pscustomobject]@{ name = $name; md5 = $file.md5; url = $file.url; local = $local }
     }
 }
 
-# Uses picked Drive images directly: downloads only the ones not on this machine yet, into the group
-# folder and its sync index, so a later Tải cả nhóm về máy never downloads them twice. Returns local paths.
+# Uses picked library images directly: downloads only the ones not on this machine yet, into the group folder and its
+# sync index, so a later Tải về máy never downloads them twice. Returns local paths.
 function Save-SourceGroupFiles([string]$SourceDir, [string]$Group, [object[]]$Files) {
     $folder = Get-SourcePhotoDirectory $SourceDir $Group.Normalize([Text.NormalizationForm]::FormC)
     $index = Read-SourceSyncIndex $folder
+    if (-not (Test-Path -LiteralPath (Join-Path $SourceDir 'catalog.json'))) { Update-SourceCatalog $SourceDir }
     foreach ($file in @($Files)) {
         $name = [IO.Path]::GetFileName([string]$file.name)
         if (-not $name) { continue }
         $path = Join-Path $folder $name
         if ($index[$name] -ne $file.md5 -or -not (Test-Path -LiteralPath $path)) {
-            Invoke-WebRequest -Uri ([string]$file.url) -OutFile $path -UseBasicParsing -TimeoutSec 120
+            Invoke-WebRequest -Uri (Get-SourceFileUrl $Group $name) -OutFile $path -UseBasicParsing -TimeoutSec 120
             $index[$name] = [string]$file.md5
-            $index | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $folder '.drive-sync.json') -Encoding UTF8
+            $index | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $folder '.sync.json') -Encoding UTF8
         }
         $path
     }
@@ -173,7 +181,7 @@ function Save-SourceGroupFiles([string]$SourceDir, [string]$Group, [object[]]$Fi
 
 function Read-SourceSyncIndex([string]$Folder) {
     $index = @{}
-    $indexPath = Join-Path $Folder '.drive-sync.json'
+    $indexPath = Join-Path $Folder '.sync.json'
     if (Test-Path -LiteralPath $indexPath) {
         foreach ($p in (Get-Content -LiteralPath $indexPath -Raw -Encoding UTF8 | ConvertFrom-Json).PSObject.Properties) { $index[$p.Name] = [string]$p.Value }
     }

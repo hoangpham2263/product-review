@@ -25,7 +25,7 @@ try{
     Assert (@((ConvertFrom-ProductBatch $csv '').Errors|Where-Object{$_ -match 'Chọn file'}).Count) 'A table without its folder must ask for the file.'
     Assert (@((ConvertFrom-ProductBatch "product_url,product_image,review_images`nhttps://shop.test/a,missing.jpg," $img).Errors|Where-Object{$_ -match "^Dòng 2: không có ảnh 'missing.jpg'"}).Count) 'A missing image must be named with its line.'
     # The sample zip unpacks to its product-import folder and reads without errors.
-    $zipFolder=Expand-ProductBatchArchive (Join-Path $root '../../docs/product-import-sample.zip') $temp
+    $zipFolder=Expand-ProductBatchArchive (Join-Path $PSScriptRoot 'fixtures/product-import-sample.zip') $temp
     $sample=ConvertFrom-ProductBatch ([IO.File]::ReadAllText((Join-Path $zipFolder 'products.csv'))) $zipFolder
     Assert ((Split-Path -Leaf $zipFolder) -eq 'product-import-sample' -and -not @($sample.Errors).Count -and @($sample.Rows).Count -eq 3) 'The sample zip must unpack and read as a product-import folder.'
     # .7z too (when this tar can write one to test with).
@@ -55,7 +55,7 @@ try{
     Assert (-not @($map.entries|Where-Object product_url -eq 'https://shop.test/c').Count) 'Reviews of a failed product image must not be attached elsewhere.'
     Assert (@($result.failed).Count -eq 2 -and $result.failed[0].line -eq 2 -and $result.failed[0].reason -match 'ảnh sản phẩm' -and $result.reviews -eq 1) 'Each failure must name its line and reason.'
 
-    # The install folder moved (renamed, Tools Hub layout): saved absolute paths go stale, images are found beside the map.
+    # The install folder moved (renamed or moved): saved absolute paths go stale, images are found beside the map.
     $mapFile="$temp/project/workspace/reference-inputs/references.json"
     $text=Get-Content -LiteralPath $mapFile -Raw -Encoding UTF8
     # In the JSON text a Windows path has doubled backslashes, a macOS path slashes.
@@ -69,9 +69,9 @@ try{
     # The background script writes its result to the status file.
     $file="$temp/batch.csv";$status="$temp/status.json"
     [IO.File]::WriteAllText($file,"product_url,product_image,review_images`nhttps://shop.test/e,p2.jpg,r3.jpg")
-    # Laid out like an install (apps/<tool> beside hub/), so the script finds the hub's shared helpers.
-    $copy="$temp/install/apps/product-review";New-Item -ItemType Directory -Force -Path "$copy/workspace","$temp/install/hub"|Out-Null;Copy-Item -Recurse (Join-Path $root 'src') "$copy/src"
-    Copy-Item -Recurse (Join-Path $root '../../hub/ai') "$temp/install/hub/ai"
+    # Laid out like an install (src/ beside core/), so the script finds the shared helpers.
+    $copy="$temp/install";New-Item -ItemType Directory -Force -Path "$copy/workspace","$copy/core"|Out-Null;Copy-Item -Recurse (Join-Path $root 'src') "$copy/src"
+    Copy-Item -Recurse (Join-Path $root 'core/ai') "$copy/core/ai"
     $shell=(Get-Command powershell.exe,pwsh -ErrorAction SilentlyContinue|Select-Object -First 1).Source
     & $shell -NoProfile -ExecutionPolicy Bypass -File "$copy/src/import-batch.ps1" -File $file -Folder $img -StatusFile $status 2>&1 | Write-Host
     $s=Get-Content $status -Raw -Encoding UTF8|ConvertFrom-Json

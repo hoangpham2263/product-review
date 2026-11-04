@@ -51,9 +51,9 @@ function ConvertTo-UiEvent([string]$Line, [int]$CurrentIndex = 0) {
     } elseif ($line -match '^\[RETRY\]') {
         $event.Kind = 'Retry'; $event.Stage = 'Đang chờ dịch vụ'
         $event.Text = 'Dịch vụ bận, đang tự thử lại.'
-    } elseif ($line -match '^\[DRIVE-(UPLOAD|RETRY)\]') {
-        $event.Kind='Stage';$event.Stage='Đang tải ảnh lên Drive';$event.Text='Đang tải ảnh lên Drive; CSV chỉ nhận ảnh đã tải thành công.'
-    } elseif ($line -match '^\[DRIVE-RESUME\]') {
+    } elseif ($line -match '^\[RESULT-(UPLOAD|RETRY)\]') {
+        $event.Kind='Stage';$event.Stage='Đang tải ảnh lên kho kết quả';$event.Text='Đang tải ảnh lên kho kết quả (GitHub); CSV chỉ nhận ảnh đã tải thành công.'
+    } elseif ($line -match '^\[RESULT-RESUME\]') {
         $event.Kind='Stage';$event.Stage='Tiếp tục bàn giao ảnh đã lưu';$event.Text='Dùng lại ảnh và nội dung đã lưu, không gọi AI tạo lại.'
     } elseif ($line -match '^\[METADATA\]') {
         $event.Kind = 'Saving'; $event.Stage = 'Đang lưu kết quả'
@@ -65,10 +65,10 @@ function ConvertTo-UiEvent([string]$Line, [int]$CurrentIndex = 0) {
         if ($Matches[1]) { $event.Index = [int]$Matches[1] }
         $event.Kind = 'Failed'; $event.Stage = 'Chưa hoàn tất'
         $event.Text = "Sản phẩm $($event.Index): lỗi, link được giữ để chạy lại."
-        if ($line -match '\[CAUSE:DRIVE_(CONFIG|AUTH)\]') {
-            $event.Text='Chưa kết nối được Drive. Đăng nhập lại; chưa bàn giao CSV có đường dẫn local.'
-        } elseif ($line -match '\[CAUSE:DRIVE_UPLOAD\]') {
-            $event.Text='Ảnh đã lưu nhưng chưa tải được lên Drive. Thử bàn giao lại để tiếp tục upload, không tạo ảnh mới.'
+        if ($line -match '\[CAUSE:RESULT_CONFIG\]') {
+            $event.Text='Chưa kết nối được kho kết quả (GitHub). Kiểm tra mạng; chưa bàn giao CSV có đường dẫn local.'
+        } elseif ($line -match '\[CAUSE:RESULT_UPLOAD\]') {
+            $event.Text='Ảnh đã lưu nhưng chưa tải được lên kho kết quả. Thử bàn giao lại để tiếp tục upload, không tạo ảnh mới.'
         } elseif ($line -match '\[CAUSE:PRODUCT_INPUT\]') {
             $event.Text = "Sản phẩm $($event.Index): ảnh đã gắn (ảnh gốc hoặc ảnh review) bị thiếu hoặc thay đổi, hãy gắn lại."
         } elseif ($line -match '\[CAUSE:PRODUCT_TIMEOUT\]') {
@@ -82,7 +82,7 @@ function ConvertTo-UiEvent([string]$Line, [int]$CurrentIndex = 0) {
         } elseif ($line -match '\[CAUSE:PRODUCT_DOWNLOAD\]') {
             $event.Text = "Sản phẩm $($event.Index): chưa tải được trang, thử lại sau."
         } elseif ($line -match '\[CAUSE:BRIDGE\].*(Google Flow của tài khoản đang chọn[^\r\n]*)') {
-            # The Flow account still needs setting up once (hub/extension/sites/flow.js says what to do).
+            # The Flow account still needs setting up once (core/extension/sites/flow.js says what to do).
             $event.Text = "Sản phẩm $($event.Index): $($Matches[1])"
         } elseif ($line -match '\[CAUSE:BRIDGE\]') {
             $event.Text = "Sản phẩm $($event.Index): chưa nối được Gemini/Flow, mở Chrome có extension."

@@ -1,22 +1,22 @@
 ﻿. (Join-Path $PSScriptRoot 'helpers.ps1')
 $ErrorActionPreference='Stop'
 $root=Split-Path $PSScriptRoot -Parent
-. (Join-Path $root '../../hub/update.ps1') -NoRun
+. (Join-Path $root 'core/update.ps1') -NoRun
 $root=Split-Path $PSScriptRoot -Parent  # update.ps1's -Root param shares the name
 . (Join-Path $root 'src/application/agent-lessons.ps1')
 function Assert($Value,[string]$Message){if(-not $Value){throw $Message}}
 $temp=Join-Path $TestWorkspaceRoot ('app-update-'+[Guid]::NewGuid().ToString('N'))
 try{
     $new=Join-Path $temp 'new';$app=Join-Path $temp 'app'
-    # Copy-AppUpdate works on the whole hub: each tool keeps its own AGENTS.md and workspace, the hub its workspace.
-    $hubNew=Join-Path $temp 'hub-new';$hubOld=Join-Path $temp 'hub-old'
-    foreach($p in @("$hubNew/apps/t/src/gui.ps1","$hubNew/apps/t/AGENTS.md","$hubNew/apps/t/workspace/drive.json","$hubNew/workspace/version.txt","$hubNew/hub/update.ps1","$hubOld/apps/t/src/gui.ps1","$hubOld/apps/t/AGENTS.md","$hubOld/apps/t/workspace/drive.json","$hubOld/workspace/version.txt")){New-Item -ItemType File -Force -Path $p|Out-Null}
-    Set-Content "$hubNew/apps/t/src/gui.ps1" 'new';Set-Content "$hubNew/apps/t/src/added.ps1" 'added' -Force;Set-Content "$hubNew/hub/update.ps1" 'hub' -Force
-    Set-Content "$hubNew/apps/t/AGENTS.md" 'upstream';Set-Content "$hubNew/apps/t/workspace/drive.json" 'upstream';Set-Content "$hubNew/workspace/version.txt" 'upstream'
-    Set-Content "$hubOld/apps/t/AGENTS.md" 'my lessons';Set-Content "$hubOld/apps/t/workspace/drive.json" 'my login';Set-Content "$hubOld/workspace/version.txt" 'v1'
-    Copy-AppUpdate $hubNew $hubOld
-    Assert ((Get-Content "$hubOld/apps/t/src/gui.ps1") -eq 'new' -and (Test-Path "$hubOld/apps/t/src/added.ps1") -and (Test-Path "$hubOld/hub/update.ps1")) 'Hub and tool files must be updated and new files added.'
-    Assert ((Get-Content "$hubOld/apps/t/AGENTS.md") -eq 'my lessons' -and (Get-Content "$hubOld/apps/t/workspace/drive.json") -eq 'my login' -and (Get-Content "$hubOld/workspace/version.txt") -eq 'v1') 'Lessons and workspaces must be kept.'
+    # Copy-AppUpdate replaces the app's files and keeps AGENTS.md, workspace/ and the bridge's installed packages.
+    $rel=Join-Path $temp 'release';$inst=Join-Path $temp 'install'
+    foreach($p in @("$rel/src/gui.ps1","$rel/AGENTS.md","$rel/workspace/config/ai-model.json","$rel/workspace/version.txt","$rel/core/update.ps1","$rel/core/bridge/node_modules/ws/index.js","$inst/src/gui.ps1","$inst/AGENTS.md","$inst/workspace/config/ai-model.json","$inst/workspace/version.txt","$inst/core/bridge/node_modules/ws/index.js")){New-Item -ItemType File -Force -Path $p|Out-Null}
+    Set-Content "$rel/src/gui.ps1" 'new';Set-Content "$rel/src/added.ps1" 'added' -Force;Set-Content "$rel/core/update.ps1" 'core' -Force
+    Set-Content "$rel/AGENTS.md" 'upstream';Set-Content "$rel/workspace/config/ai-model.json" 'upstream';Set-Content "$rel/workspace/version.txt" 'upstream';Set-Content "$rel/core/bridge/node_modules/ws/index.js" 'upstream'
+    Set-Content "$inst/AGENTS.md" 'my lessons';Set-Content "$inst/workspace/config/ai-model.json" 'my model';Set-Content "$inst/workspace/version.txt" 'v1';Set-Content "$inst/core/bridge/node_modules/ws/index.js" 'installed'
+    Copy-AppUpdate $rel $inst
+    Assert ((Get-Content "$inst/src/gui.ps1") -eq 'new' -and (Test-Path "$inst/src/added.ps1") -and (Get-Content "$inst/core/update.ps1") -eq 'core') 'App files must be updated and new files added.'
+    Assert ((Get-Content "$inst/AGENTS.md") -eq 'my lessons' -and (Get-Content "$inst/workspace/config/ai-model.json") -eq 'my model' -and (Get-Content "$inst/workspace/version.txt") -eq 'v1' -and (Get-Content "$inst/core/bridge/node_modules/ws/index.js") -eq 'installed') 'Lessons, workspace and installed packages must be kept.'
     foreach($p in @("$new/AGENTS.md","$app/AGENTS.md","$app/workspace/x")){New-Item -ItemType File -Force -Path $p|Out-Null}
     # AGENTS.md: the guide follows the release; this machine's lessons stay and the release's new ones are added once.
     $lesson={param($Id,$Text)"### $Id`n<!-- app-lesson: {`"id`":`"$Id`",`"scope`":`"category`",`"category`":`"x`"} -->`n- $Text`n`n"}
@@ -47,6 +47,7 @@ try{
     Merge-AgentInstructions $new $app
     Assert ((Get-Content "$app/AGENTS.md") -eq 'my lessons') 'An unreadable AGENTS.md must be left untouched.'
     # The check names the new version for ZIP installs and git checkouts alike.
+    Assert ($script:Repo -eq 'hoangpham2263/product-review' -and $script:Asset -eq 'product-review.zip') 'Updates must come from the product-review releases.'
     function Get-LatestRelease { [pscustomobject]@{ tag_name = 'v1.0.15' } }
     Set-Content "$app/workspace/version.txt" 'v1.0.14'
     Assert ((Get-AppUpdate $app) -eq 'v1.0.15') 'A ZIP install must be offered the newer version by name.'
@@ -57,45 +58,12 @@ try{
         git -C $repo init --quiet;git -C $repo -c user.name=t -c user.email=t@t commit --quiet --allow-empty -m init;git -C $repo tag v1.0.14
         Assert ((Get-AppUpdate $repo) -eq 'v1.0.15') 'A git checkout must be offered the newer version by name, not just told there is one.'
     }
-    # Opening the app never updates it: only the Cập nhật dialog's button installs (it posts /api/update, to Product
-    # Review's server or the hub menu's). Launchers and background checks only run -Check.
-    $installers=@(Get-ChildItem -LiteralPath (Join-Path $root 'src'),(Join-Path $root '../../hub') -Recurse -File -Include *.ps1,*.mjs,*.js,*.cmd,*.command|Where-Object{$_.Name -ne 'update.ps1' -and (Get-Content -LiteralPath $_.FullName -Raw) -match "Update-App|'-Apply'|/api/update"}|ForEach-Object Name|Sort-Object -Unique)
-    foreach($launcher in @('start-app.cmd','start-app.command')){Assert ((Get-Content -LiteralPath (Join-Path $root "../../$launcher") -Raw) -notmatch 'update') "$launcher must not update the app."}
-    Assert (($installers -join ',') -eq 'app.js,hub.js,picker.mjs,server.mjs') "Only the Cập nhật dialog may install an update, found in: $($installers -join ', ')"
+    # Opening the app never updates it: only the Cập nhật dialog's button installs (it posts /api/update to the app's
+    # server). Launchers and background checks only run -Check.
+    $installers=@(Get-ChildItem -LiteralPath (Join-Path $root 'src'),(Join-Path $root 'core') -Recurse -File -Include *.ps1,*.mjs,*.js,*.cmd,*.command|Where-Object{$_.Name -ne 'update.ps1' -and (Get-Content -LiteralPath $_.FullName -Raw) -match "Update-App|'-Apply'|/api/update"}|ForEach-Object Name|Sort-Object -Unique)
+    foreach($launcher in @('start-app.cmd','start-app.command')){Assert ((Get-Content -LiteralPath (Join-Path $root $launcher) -Raw) -notmatch 'update') "$launcher must not update the app."}
+    Assert (($installers -join ',') -eq 'app.js,server.mjs') "Only the Cập nhật dialog may install an update, found in: $($installers -join ', ')"
     $js=Get-Content -LiteralPath (Join-Path $root 'src/mac/ui/app.js') -Raw;$button=$js.IndexOf('go.onclick = async');$install=$js.IndexOf('fetch("/api/update"')
     Assert ([regex]::Matches($js,'/api/update').Count -eq 1 -and $button -ge 0 -and $install -gt $button -and $install - $button -lt 400) 'macOS installs only from the dialog button.'
-    # An install updated from before Tools Hub: its data and lessons move into apps/product-review, old files go.
-    $legacy=Join-Path $temp 'legacy';$tool="$legacy/apps/product-review"
-    foreach($p in @("$legacy/src/ui/main-window.ps1","$legacy/src/gui.ps1","$legacy/src/mac/server.mjs","$legacy/data/names.txt","$legacy/data/source-photos/Áo/a.jpg","$legacy/bridge/node_modules/ws/index.js","$legacy/workspace/drive.json","$legacy/workspace/version.txt","$legacy/workspace/output/run1/results.json","$tool/tool.json","$tool/data/names.txt")){New-Item -ItemType File -Force -Path $p|Out-Null}
-    Set-Content "$legacy/workspace/drive.json" 'my login';Set-Content "$legacy/workspace/version.txt" 'v2'
-    Set-Content "$legacy/AGENTS.md" ("# Hướng dẫn cũ`n`n"+(& $block @((& $lesson 'mine' 'riêng máy')))) -Encoding UTF8 -NoNewline
-    Set-Content "$tool/AGENTS.md" ("# Hướng dẫn tool`n`n"+(& $block @((& $lesson 'shared-a' 'chung a')))) -Encoding UTF8 -NoNewline
-    Move-LegacyLayout $legacy
-    Assert ((Get-Content "$tool/workspace/drive.json") -eq 'my login' -and (Test-Path "$tool/workspace/output/run1/results.json")) 'The login and runs must move into the tool.'
-    Assert ((Get-Content "$legacy/workspace/version.txt") -eq 'v2') 'The installed version stays with the hub.'
-    Assert ((Test-Path "$tool/data/source-photos/Áo/a.jpg") -and (Test-Path "$legacy/hub/bridge/node_modules/ws/index.js")) 'Downloaded photos and the bridge must move, not be fetched again.'
-    $agents=Get-Content "$tool/AGENTS.md" -Raw
-    Assert ($agents.Contains('# Hướng dẫn tool') -and $agents.Contains('riêng máy') -and $agents.Contains('chung a') -and -not (Test-Path "$legacy/AGENTS.md")) "This machine's lessons must join the tool's AGENTS.md."
-    Assert (-not (Test-Path "$legacy/data") -and -not (Test-Path "$legacy/src/ui") -and -not (Test-Path "$legacy/bridge") -and (Test-Path "$legacy/src/gui.ps1") -and (Test-Path "$legacy/src/mac/server.mjs")) 'Old files go; the two entry points old installs open stay.'
-    # The bridge and the extension moved from the tool to hub/: the tool's copies go, the installed package moves.
-    $parts=Join-Path $temp 'parts'
-    foreach($p in @("$parts/hub/bridge/package.json","$parts/hub/extension/manifest.json","$parts/apps/product-review/bridge/node_modules/ws/index.js","$parts/apps/product-review/bridge/server.mjs","$parts/apps/product-review/extension/manifest.json")){New-Item -ItemType File -Force -Path $p|Out-Null}
-    Move-SharedBrowserParts $parts
-    Assert ((Test-Path "$parts/hub/bridge/node_modules/ws/index.js") -and -not (Test-Path "$parts/apps/product-review/bridge") -and -not (Test-Path "$parts/apps/product-review/extension")) 'The bridge package moves to hub/bridge; the tool keeps no bridge or extension of its own.'
-    # Files that moved (AI calls to hub/ai, site scripts to hub/extension/sites) go; the files that replaced them stay.
-    foreach($p in @("$parts/hub/ai/ai.ps1","$parts/apps/product-review/src/infrastructure/codex.ps1","$parts/apps/product-review/src/infrastructure/ai.ps1","$parts/hub/extension/content-flow.js","$parts/hub/extension/sites/flow.js")){New-Item -ItemType File -Force -Path $p|Out-Null}
-    Remove-MovedFiles $parts
-    Assert (-not (Test-Path "$parts/apps/product-review/src/infrastructure/codex.ps1") -and -not (Test-Path "$parts/hub/extension/content-flow.js") -and (Test-Path "$parts/apps/product-review/src/infrastructure/ai.ps1") -and (Test-Path "$parts/hub/extension/sites/flow.js")) 'Moved files must go and their replacements stay.'
-    New-Item -ItemType Directory -Force -Path "$legacy/.git","$legacy/data"|Out-Null
-    Move-LegacyLayout $legacy
-    Assert (Test-Path "$legacy/data") 'A git checkout must never be tidied.'
-    # Every tool in this hub declares a name, its own icon and an entry that exists.
-    $tools=@(Get-HubTools (Join-Path $root '../..'))
-    Assert ($tools.Count -ge 3 -and @($tools|ForEach-Object id) -contains 'product-review') 'The hub must list its tools.'
-    foreach($t in $tools){
-        Assert ($t.name -and (Test-Path (Join-Path $t.Root $t.icon)) -and (Test-Path (Join-Path $t.Root ([IO.Path]::ChangeExtension($t.icon,'.png'))))) "$($t.id) needs a name and its own icon (SVG and PNG)."
-        $entries=@(@($t.windows,$t.mac,$t.web)|Where-Object{$_})
-        Assert ($entries.Count -and -not @($entries|Where-Object{-not (Test-Path (Join-Path $t.Root $_))}).Count) "$($t.id) entries must exist."
-    }
 }finally{Remove-Item -LiteralPath $temp -Recurse -Force -ErrorAction SilentlyContinue}
-Write-Host 'PASS: updates replace app files and keep workspace and local lessons while adding new shared ones; the check names the new version.'
+Write-Host 'PASS: updates come from the product-review releases, replace app files and keep workspace and local lessons while adding new shared ones; the check names the new version.'

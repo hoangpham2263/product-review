@@ -7,7 +7,7 @@
 <link rel="stylesheet" href="/setup/tool.css">
 <script src="/setup/page.js" defer></script>
 <style>
-/* Cấu hình as a page of its own (hub/setup/config-api.mjs serves it to the menu and every tool's server): each AI
+/* Cấu hình as a page of its own (core/setup/config-api.mjs serves it to the menu and every tool's server): each AI
    with the account it is signed in to and what it is used for, then what has to be installed, then Model AI. */
 .setup-page { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
 .items { display: grid; gap: 8px; }
@@ -21,8 +21,6 @@
 .item .detail, .item .uses { color: var(--muted); font-size: 12px; overflow-wrap: anywhere; }
 .item .side { display: flex; flex-direction: column; gap: 6px; align-items: stretch; }
 .item .side .btn { min-width: 110px; }
-.item .drive-form { display: flex; gap: 6px; margin-top: 4px; }
-.item .drive-form input { flex: 1; }
 .item .err { color: #b06000; font-size: 12px; }
 .ai-model { display: grid; grid-template-columns: minmax(0, 1fr) 188px; gap: 6px 10px; }
 .ai-model > span { grid-column: 1 / -1; }

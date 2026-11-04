@@ -1,6 +1,6 @@
 ﻿$ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
-. (Join-Path $root '../../hub/setup/quota.ps1')
+. (Join-Path $root 'core/setup/quota.ps1')
 function Assert($Condition, [string]$Message) { if (-not $Condition) { throw $Message } }
 $data = @'
 {
@@ -46,9 +46,9 @@ function Get-Command($Name, $ErrorAction) {
     Microsoft.PowerShell.Core\Get-Command $Name -ErrorAction SilentlyContinue
 }
 function node { '{"available":true,"data":{"rateLimits":{"primary":{"usedPercent":10,"windowDurationMins":300},"secondary":{"usedPercent":20,"windowDurationMins":10080}}}}' }
-$report = (& (Join-Path $root '../../hub/setup/setup-check.ps1') -AsJson | Out-String) | ConvertFrom-Json
+$report = (& (Join-Path $root 'core/setup/setup-check.ps1') -AsJson | Out-String) | ConvertFrom-Json
 Assert ($report.Ready -and $report.QuotaAvailable -and $report.Checks.Count -eq 5 -and $report.Checks[3].Message -match '90%' -and $report.Checks[4].Message -match '80%') 'Live quota messages were not added to the setup report.'
 function node { '{"available":false,"reason":"timeout"}' }
-$report = (& (Join-Path $root '../../hub/setup/setup-check.ps1') -AsJson | Out-String) | ConvertFrom-Json
+$report = (& (Join-Path $root 'core/setup/setup-check.ps1') -AsJson | Out-String) | ConvertFrom-Json
 Assert ($report.Ready -and -not $report.QuotaAvailable -and $report.Checks[-1].Message -match 'chưa lấy được') 'Unavailable quota changed login readiness or disappeared.'
 Write-Host 'PASS: setup report integrates quota windows and reports unknown quota without rejecting valid sign-in.'

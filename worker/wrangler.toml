@@ -1,0 +1,8 @@
+name = "product-review-api"
+main = "index.js"
+compatibility_date = "2026-10-01"
+compatibility_flags = ["nodejs_compat"]
+workers_dev = true
+
+# Secret (set with `npx wrangler secret put GITHUB_TOKEN`): a fine-grained token with Contents: Read and write on
+# hoangpham2263/product-review-results only.

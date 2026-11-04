@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Tools Hub",
+  "name": "Product Review",
   "version": "1.0.11",
-  "description": "Cầu nối local của Tools Hub: nhận việc từ các tool (tạo ảnh, video, viết chữ), làm trong tab Google Flow, Gemini, ChatGPT, Grok đang đăng nhập và trả kết quả về máy.",
+  "description": "Cầu nối local của Product Review: nhận việc từ các tool (tạo ảnh, video, viết chữ), làm trong tab Google Flow, Gemini, ChatGPT, Grok đang đăng nhập và trả kết quả về máy.",
   "background": {
     "service_worker": "background.js"
   },
@@ -78,7 +78,7 @@
     }
   ],
   "action": {
-    "default_title": "Tools Hub",
+    "default_title": "Product Review",
     "default_popup": "popup.html",
     "default_icon": {
       "16": "icons/icon-16.png",

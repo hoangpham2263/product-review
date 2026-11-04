@@ -16,12 +16,8 @@ function Initialize-ProjectWorkspace([string]$ProjectRoot) {
     return $paths
 }
 
-# Tools Hub root: this tool is apps/<id>/ inside it.
-function Get-HubRoot([string]$ProjectRoot) { return [IO.Path]::GetFullPath((Join-Path $ProjectRoot '../..')) }
-
-# Installed release (the hub's workspace/version.txt, written by the updater); a git checkout shows its latest tag.
+# Installed release (workspace/version.txt, written by the updater); a git checkout shows its latest tag.
 function Get-AppVersion([string]$ProjectRoot) {
-    $ProjectRoot = Get-HubRoot $ProjectRoot
     $file = Join-Path $ProjectRoot 'workspace/version.txt'
     if (Test-Path -LiteralPath $file) { return (Get-Content -LiteralPath $file -Raw).Trim() }
     if ((Test-Path -LiteralPath (Join-Path $ProjectRoot '.git')) -and (Get-Command git -ErrorAction SilentlyContinue)) {

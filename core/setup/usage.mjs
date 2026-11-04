@@ -1,11 +1,11 @@
-// Lượt dùng AI on Cấu hình: every AI call, from <hub>/workspace/logs/ai-usage.jsonl (hub/ai/ai.ps1 writes the CLIs,
-// hub/bridge/server.mjs the web AIs), added up per AI and account for today, 7 and 30 days. A line:
+// Lượt dùng AI on Cấu hình: every AI call, from workspace/logs/ai-usage.jsonl (core/ai/ai.ps1 writes the CLIs,
+// core/bridge/server.mjs the web AIs), added up per AI and account for today, 7 and 30 days. A line:
 //   { t, ai, kind, account, ok, cause?, ms, in?, cached?, out? }   (in/cached/out: Codex tokens)
 // The web AIs say nothing of their quota, so the last failure is shown, and whether a call has worked since: a
 // QUOTA with nothing working after it is most likely that account's limit for now.
 import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs";
 
-// The AIs of hub/ai/ai.ps1 ($script:HubAIProviders), in its order.
+// The AIs of core/ai/ai.ps1 ($script:HubAIProviders), in its order.
 export const AI_NAMES = { codex: "Codex CLI", gemini: "Gemini web", flow: "Google Flow", chatgpt: "ChatGPT web", antigravity: "Antigravity CLI" };
 const DAY = 86400000;
 

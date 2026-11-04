@@ -15,7 +15,7 @@ http.createServer((req, res) => {
   if (req.url === '/api/root') return res.end(JSON.stringify({root:'C:\\test\\Tools Hub', ...(identity ? {service:'tools-hub-picker',protocol:1} : {})}));
   if (req.url === '/enable') { ready = true; return res.end('ok'); }
   if (req.url === '/identify') { identity = true; return res.end('ok'); }
-  if (ready && req.url === '/') return res.end('<!doctype html><title>Tools Hub</title>');
+  if (ready && req.url === '/') return res.end('<!doctype html><title>Product Review</title>');
   res.writeHead(404); res.end();
 }).listen(Number(process.argv[2]), '127.0.0.1');
 '@ | Set-Content -LiteralPath $fixture -Encoding UTF8

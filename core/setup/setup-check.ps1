@@ -65,28 +65,14 @@ if ($loggedIn) {
     }
 }
 $ready = @($checks | Where-Object { -not $_.Ok }).Count -eq 0
-# The Cấu hình window shows these in order (app password first); each step only matters once the one before it is done.
+# The Cấu hình window shows these in order (Node.js first); each step only matters once the one before it is done.
 # State: ok, fail, warn (works but unconfirmed) or wait (blocked by an earlier step). Action names the fix button.
 $node = Get-Command node -ErrorAction SilentlyContinue
-# The saved app password is tried against the server, so a changed password shows up here.
 . (Join-Path $PSScriptRoot 'config.ps1')
-$driveFile = Get-SharedConfigPath (Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'workspace') 'drive.json'
-$driveState = 'fail'; $driveDetail = 'Chưa nhập; cần để tải ảnh lên Drive và dùng kho Drive.'
-if (Test-Path -LiteralPath $driveFile) {
-    try {
-        $saved = Get-Content -LiteralPath $driveFile -Raw -Encoding UTF8 | ConvertFrom-Json
-        Invoke-WebRequest -Uri ((([string]$saved.apiUrl) -replace '//(product-images-api|product-review-batch-api)\.', '//tools-hub-api.').TrimEnd('/') + '/api/app-check') -Headers @{ 'x-admin-key' = [string]$saved.adminKey } -UseBasicParsing -TimeoutSec 10 | Out-Null
-        $driveState = 'ok'; $driveDetail = 'Đã đăng nhập; ảnh tạo xong tự tải lên Drive.'
-    } catch {
-        $code = 0; if ($_.Exception.Response) { try { $code = [int]$_.Exception.Response.StatusCode } catch {} }
-        if ($code -in @(401, 403)) { $driveDetail = 'Mật khẩu đã đổi; bấm Đăng nhập để nhập lại.' }
-        else { $driveState = 'warn'; $driveDetail = 'Chưa kiểm tra được (mất mạng); dùng mật khẩu đã lưu.' }
-    }
-}
 # The main window shows what is left; here only when it resets, to keep the step short.
 $quotaText = if ($quotaAvailable -and $quota.Resets) { "Đặt lại: $($quota.Resets)" } else { (@($quotaMessages) -join ' ').Trim() }
-# The Tools Hub extension (hub/extension) in the user's own Chrome, for runs on Google Flow, Gemini or ChatGPT in the
-# browser, and who is signed in there (hub/bridge/ensure.mjs --logins, read by the extension). Only checks: Chrome is
+# The Product Review extension (core/extension) in the user's own Chrome, for runs on Google Flow, Gemini or ChatGPT in the
+# browser, and who is signed in there (core/bridge/ensure.mjs --logins, read by the extension). Only checks: Chrome is
 # not started for it. Google covers Flow and Gemini web.
 $extensionDir = Join-Path (Split-Path $PSScriptRoot -Parent) 'extension'
 $web = $null; $extensionState = 'warn'
@@ -111,7 +97,7 @@ function Get-WebStep([string]$Id, [string]$Title, [string]$Site, [string]$Uses) 
     }
     $account = if ($state -ne 'ok' -or -not $accounts.Count) { '' } elseif ($script:googleChoice) { $script:googleChoice } else { [string]$accounts[0] }
     $detail = switch ($state) {
-        'wait' { 'Mở Chrome có extension Tools Hub trước.' }
+        'wait' { 'Mở Chrome có extension Product Review trước.' }
         'warn' { 'Chưa kiểm tra được. Bấm Đăng nhập để xem trong Chrome.' }
         'ok' { if ($accounts.Count -gt 1) { "Flow và Gemini chạy bằng tài khoản đang chọn ($($accounts.Count) tài khoản đã đăng nhập)." } else { 'Đã đăng nhập trong Chrome.' } }
         default { 'Chưa đăng nhập. Bấm Đăng nhập rồi đăng nhập Google trong Chrome.' }
@@ -140,7 +126,6 @@ if ($agy) {
     else { $agyState = 'fail'; $agyDetail = 'Chưa đăng nhập. Mở Antigravity (hoặc chạy agy trong Terminal) rồi đăng nhập Google.' }
 }
 $steps = @(
-    [pscustomobject]@{ Id = 'drive'; Title = 'Mật khẩu app'; State = $driveState; Detail = $driveDetail; Action = 'drive' }
     [pscustomobject]@{ Id = 'node'; Title = 'Node.js'; State = $(if ($node) { 'ok' } else { 'fail' }); Detail = $(if ($node) { 'Đã cài.' } else { 'Chưa cài. Cần để cài Codex.' }); Action = $(if ($node) { '' } else { 'install' }) }
     [pscustomobject]@{ Id = 'codex'; Title = 'Codex'; State = $(if ($engine) { 'ok' } else { 'fail' }); Detail = $(if ($engine) { 'Đã cài.' } else { 'Chưa cài công cụ tạo ảnh.' }); Action = $(if ($engine) { '' } else { 'install' }) }
     [pscustomobject]@{ Id = 'login'; Title = 'Codex (ChatGPT)'; State = $(if (-not $engine) { 'wait' } elseif ($loggedIn) { 'ok' } else { 'fail' }); Account = $codexAccount; Uses = 'Viết review: Codex · Tạo ảnh: Codex' 
@@ -149,8 +134,8 @@ $steps = @(
         Action = $(if ($engine) { 'login' } else { '' }) }
     [pscustomobject]@{ Id = 'quota'; Title = 'Hạn mức sử dụng'; State = $(if (-not $loggedIn) { 'wait' } elseif ($apiKey -or $quotaAvailable) { 'ok' } else { 'warn' })
         Detail = $(if (-not $loggedIn) { 'Đăng nhập trước.' } else { $quotaText }); Action = '' }
-    [pscustomobject]@{ Id = 'browser'; Title = 'Extension Tools Hub'; State = $extensionState
-        Detail = $(switch ($extensionState) { 'ok' { 'Đã kết nối trong Chrome. Các tool mở tab riêng trong nhóm Tools Hub.' } 'fail' { "Chưa cài trong Chrome. Bấm Mở: chrome://extensions, bật Chế độ nhà phát triển, Tải tiện ích đã giải nén, chọn thư mục $extensionDir." } default { 'Chrome chưa mở (hoặc chưa cài Node.js). Bấm Mở để mở Chrome.' } })
+    [pscustomobject]@{ Id = 'browser'; Title = 'Extension Product Review'; State = $extensionState
+        Detail = $(switch ($extensionState) { 'ok' { 'Đã kết nối trong Chrome. Các tool mở tab riêng trong nhóm Product Review.' } 'fail' { "Chưa cài trong Chrome. Bấm Mở: chrome://extensions, bật Chế độ nhà phát triển, Tải tiện ích đã giải nén, chọn thư mục $extensionDir." } default { 'Chrome chưa mở (hoặc chưa cài Node.js). Bấm Mở để mở Chrome.' } })
         Action = 'browser' }
     Get-WebStep 'google' 'Google (Flow, Gemini web)' 'google' 'Tạo ảnh: Google Flow · Viết review: Gemini web'
     [pscustomobject]@{ Id = 'antigravity'; Title = 'Antigravity CLI'; State = $agyState; Detail = $agyDetail; Account = $agyAccount; Uses = 'Viết review: Antigravity CLI'; Action = $(if ($agy) { 'antigravity' } else { '' }) }

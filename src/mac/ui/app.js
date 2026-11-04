@@ -91,7 +91,7 @@ async function upload(file) {
 }
 const imageFiles = (items) => [...items].filter((f) => /^image\/(png|jpeg)$/.test(f.type));
 
-// Errors in this window are logged on the Mac side (workspace/logs/app-errors.log) and go out with Gửi lỗi.
+// Errors in this window are logged on the Mac side (workspace/logs/app-errors.log) and go into Báo lỗi.
 const reportError = (message, stack) => fetch("/api/client-error", { method: "POST", body: JSON.stringify({ message: String(message || ""), stack: String(stack || "") }) }).catch(() => {});
 addEventListener("error", (e) => reportError(e.message, e.error?.stack || `${e.filename}:${e.lineno}:${e.colno}`));
 addEventListener("unhandledrejection", (e) => reportError(e.reason?.message || e.reason, e.reason?.stack));
@@ -224,25 +224,17 @@ function askReason(title) {
 
 // ---------- main window ----------
 const ui = { client: document.getElementById("client") };
-const state = { rows: [], fallback: false, library: "drive", group: "Áo", drive: false, version: "", output: "", codex: false };
+const state = { rows: [], fallback: false, library: "remote", group: "Áo", version: "", output: "", codex: false };
 const run = { active: false, since: 0, total: 0, done: 0, index: 0, stages: new Map(), jobRows: [], stage: "", stopped: false, failure: false, started: 0, resultFolder: "", anim: 0 };
 
 function buildMain() {
   const c = ui.client;
   // Header (Dock Top, 64).
   const header = at(el("div", "panel"), 0, 0, null, 64, { right: 0 });
-  // Opened from the Tools Hub menu (?hub=<its port>, kept for reloads): "← Menu" goes back to it.
-  const hub = new URLSearchParams(location.search).get("hub") || sessionStorage.getItem("hub");
-  if (hub) sessionStorage.setItem("hub", hub);
-  header.append(at(label("Product Review", ""), hub ? 122 : 20, 19, null, 26));
+  header.append(at(label("Product Review", ""), 20, 19, null, 26));
   header.firstChild.style.fontSize = "17.33px";
-  if (hub) {
-    ui.btnMenu = at(button("← Menu"), 20, 16, 90, 32);
-    ui.btnMenu.onclick = () => { location.href = `http://127.0.0.1:${hub}/`; };
-    header.append(ui.btnMenu);
-  }
   ui.btnUpdate = at(button("Cập nhật"), null, 16, 100, 32, { right: 24, left: false });
-  // Cấu hình: shared by every tool (hub/setup), left of Cập nhật as on the Tools Hub menu.
+  // Cấu hình (core/setup), left of Cập nhật.
   ui.btnSetup = at(button("Cấu hình"), null, 16, 100, 32, { right: 132, left: false });
   // Tải về máy runs in the background (src/sync-source.ps1); its progress shows here, in the header, so work goes on.
   ui.syncLabel = at(label("", "muted"), 260, 14, null, 22, { right: 342 });
@@ -270,7 +262,7 @@ function buildMain() {
   const cardActions = at(el("div", "card"), null, 78, 224, 344, { right: 24, left: false });
   cardActions.append(at(label("Thao tác"), 14, 10, null, 20));
   // In the order they are used: review the results, open them, then support. Cấu hình is in the header.
-  const names = [["btnReview", "Duyệt & xuất file"], ["btnOut", "Mở kết quả"], ["btnLogs", "Gửi lỗi"], ["btnClearLog", "Xóa thông báo"]];
+  const names = [["btnReview", "Duyệt & xuất file"], ["btnOut", "Mở kết quả"], ["btnLogs", "Báo lỗi"], ["btnClearLog", "Xóa thông báo"]];
   names.forEach(([key, text], i) => { ui[key] = at(button(text), 14, 36 + i * 37, 196, 32); cardActions.append(ui[key]); });
 
   // Run row (20,434 1060x62).
@@ -421,13 +413,12 @@ async function chooseImages(folder, table = false) {
   return list(r.paths);
 }
 
-// "Từ kho Drive": nothing loads until a danh mục is chosen, so the window opens at once. Thêm uses the picked
+// "Từ kho ảnh": nothing loads until a danh mục is chosen, so the window opens at once. Thêm uses the picked
 // images directly (downloading only those not on this machine yet); Tải về máy brings the chosen danh mục, or
 // every danh mục, over in one go. Either way nothing is fetched twice.
-function showDrivePicker() {
+function showLibraryPicker() {
   return new Promise((resolve) => {
-    const noLogin = "Chưa đăng nhập mật khẩu app. Mở Cấu hình để đăng nhập.";
-    const view = openWindow("Chọn ảnh review từ kho Drive", 760, 540);
+    const view = openWindow("Chọn ảnh review từ kho ảnh", 760, 540);
     // One toolbar row, 28px tall: danh mục, Mặc định and Tải về máy share its height and centre line.
     const groups = at(combo(), 20, 14, 220, 28);
     // Mặc định: the picker opens on this danh mục next time (and loads it at once).
@@ -437,9 +428,9 @@ function showDrivePicker() {
     sync.classList.add("has-chevron");
     const count = at(label("", "muted"), 474, 14, 266, 28);
     count.style.lineHeight = "28px";
-    const note = at(label(state.drive ? "" : noLogin), 20, 494, 500, 24);
+    const note = at(label(""), 20, 494, 500, 24);
     note.style.color = "var(--error)";
-    // Background loading shows on a thin bar along the top of the grid: running while the Drive listing loads,
+    // Background loading shows on a thin bar along the top of the grid: running while the library listing loads,
     // then filling as the thumbnails arrive.
     const loadBar = at(el("div", "progress"), 20, 46, 720, 4);
     loadBar.append(el("span"));
@@ -448,14 +439,13 @@ function showDrivePicker() {
     Object.assign(grid.style, { background: "#fff", border: "1px solid #000", display: "flex", flexWrap: "wrap", alignContent: "flex-start", gap: "6px", padding: "6px" });
     const add = at(button("Thêm", true), 536, 490, 110, 32), cancel = at(button("Hủy"), 656, 490, 84, 32);
     add.disabled = true;
-    sync.disabled = !state.drive;
     view.body.append(groups, isDefault, sync, count, loadBar, grid, note, add, cancel);
     let files = [], shown = 0, result = [], all = [], syncing = false, loads = 0, listing = false, summary = "";
     const picked = new Map();
     view.onClose = () => resolve(result);
     view.cancel = () => { if (!syncing) view.close(); };
     cancel.onclick = view.cancel;
-    const busy = (on) => { syncing = on; sync.disabled = on || !state.drive || !all.length; groups.disabled = on; cancel.disabled = on; add.disabled = on || !picked.size; };
+    const busy = (on) => { syncing = on; sync.disabled = on || !all.length; groups.disabled = on; cancel.disabled = on; add.disabled = on || !picked.size; };
     // Thumbnails load top to bottom, six at a time, so a big danh mục never loads all at once.
     const thumbs = { queue: [], active: 0, round: 0, total: 0, done: 0 };
     const refreshCount = () => {
@@ -467,7 +457,7 @@ function showDrivePicker() {
       if (!groups.value) { count.textContent = "Chọn danh mục để xem ảnh."; add.disabled = true; return; }
       add.disabled = !picked.size;
       if (loading) { count.textContent = `${picked.size ? `Đã chọn ${picked.size} · ` : ""}Đang tải ảnh ${thumbs.done}/${thumbs.total} (${percent}%)`; return; }
-      if (listing) { count.textContent = files.length ? `${files.length} ảnh có trên máy · đang tải danh sách Drive…` : "Đang tải danh sách…"; return; }
+      if (listing) { count.textContent = files.length ? `${files.length} ảnh có trên máy · đang tải danh sách kho ảnh…` : "Đang tải danh sách…"; return; }
       if (summary) { count.textContent = summary; return; }
       const local = files.filter((f) => f.local).length;
       count.textContent = files.length ? `Đã chọn ${picked.size} / ${files.length} ảnh · ${local} ảnh có trên máy` : "Danh mục này chưa có ảnh.";
@@ -506,28 +496,26 @@ function showDrivePicker() {
       }
       pump(); refreshCount();
     };
-    // A danh mục shows its local copies at once; the Drive listing loads in the background and, when it brings
+    // A danh mục shows its local copies at once; the library listing loads in the background and, when it brings
     // more (or the local copies are out of date), the grid is redrawn from it, keeping what was picked.
     const load = async () => {
       const token = ++loads;
       clearGrid(); picked.clear(); files = []; listing = false; summary = "";
       note.style.color = "var(--error)";
-      note.textContent = state.drive ? "" : noLogin;
+      note.textContent = "";
       if (!groups.value) return refreshCount();
       const group = groups.value;
-      if (state.drive) {
-        listing = true; refreshCount();
-        files = list(await api("sourceIndexedFiles", { group }).catch(() => []));
-        if (token !== loads) return;
-        showMore(); refreshCount();
-      }
-      const next = await api("sourceFiles", { group }).catch(() => ({ Files: files, Error: "Không kết nối được Drive (mạng hoặc mật khẩu app). Đang hiện ảnh có trên máy." }));
+      listing = true; refreshCount();
+      files = list(await api("sourceIndexedFiles", { group }).catch(() => []));
+      if (token !== loads) return;
+      showMore(); refreshCount();
+      const next = await api("sourceFiles", { group }).catch(() => ({ Files: files, Error: "Không kết nối được kho ảnh (mạng). Đang hiện ảnh có trên máy." }));
       if (token !== loads) return;
       listing = false;
       note.style.color = "var(--error)";
       note.textContent = next.Error || "";
       const nextFiles = list(next.Files);
-      if (nextFiles.length !== files.length || nextFiles.some((f) => !f.local) || !state.drive) {
+      if (nextFiles.length !== files.length || nextFiles.some((f) => !f.local)) {
         const keep = new Set(picked.keys());
         picked.clear();
         for (const f of nextFiles) if (keep.has(f.name)) picked.set(f.name, f);
@@ -653,7 +641,7 @@ async function showProductDialog(target = null) {
       reviews.append(...p.scenes.map((s, k) => thumb(s.file, s.ok, async () => {
         await api("draftRemoveScene", { root, url, productIndex: i, index: k }).catch(fail); refresh();
       }, `Ảnh review ${k + 1} · ảnh gốc #${i + 1}`)), addTile("+ Máy", async () => { active = i; attachPaths(await chooseImages(await api("reviewFolder", { group: state.group }).catch(() => "")), i); }),
-        addTile("+ Drive", async () => { active = i; attachPaths(await showDrivePicker(), i); }),
+        addTile("+ Kho ảnh", async () => { active = i; attachPaths(await showLibraryPicker(), i); }),
         addTile("Dán", () => { active = i; pasteButton(i); }));
       // The row under the pointer receives pasted images.
       const select = () => { if (active !== i) { active = i; for (const [n, r] of [...rowsBox.children].entries()) r.style.background = n === i ? "var(--hover)" : ""; } };
@@ -720,9 +708,8 @@ async function showProductDialog(target = null) {
   urlBox.focus();
 }
 
-// ----- Nhập hàng loạt (Show-ProductQueueBulkDialog): plain links join the list at once; a table (docs/import.md)
+// ----- Nhập hàng loạt (Show-ProductQueueBulkDialog): plain links join the list at once; a table (products.csv with images/)
 // runs src/import-batch.ps1 in the background, which downloads and attaches the images -----
-const IMPORT_GUIDE = "https://hoangpham.is-a.dev/tools-hub/#nhap";
 async function addLinks(urls) {
   const added = [];
   for (const url of urls) {
@@ -741,8 +728,6 @@ function showBulkDialog() {
   const view = openWindow("Nhập hàng loạt", 760, 480);
   const hint = at(label("Dán link (mỗi dòng một link), hoặc kéo thả thư mục product-import hay file nén của nó (hoặc bấm Chọn file… và chọn products.csv) để app gắn ảnh."), 16, 14, 728, 40);
   hint.style.whiteSpace = "normal";
-  const guide = at(el("a", "label link", { text: "Xem chuẩn file nhập", href: IMPORT_GUIDE, target: "_blank" }), 16, 58, 200, 30);
-  Object.assign(guide.style, { display: "flex", alignItems: "center" });
   const pick = at(button("Chọn file…"), 634, 58, 110, 30);
   const text = at(el("textarea", "text mono"), 16, 96, 728, 262);
   text.wrap = "off";
@@ -753,7 +738,7 @@ function showBulkDialog() {
   status.style.whiteSpace = "pre-line";
   const save = at(button("Nhập", true), 520, 436, 110, 32);
   const cancel = at(button("Hủy"), 640, 436, 104, 32);
-  view.body.append(hint, guide, pick, text, bar, status, save, cancel);
+  view.body.append(hint, pick, text, bar, status, save, cancel);
   let timer = null, folder = "";
   const fail = (message) => { status.style.color = "var(--error)"; status.textContent = message; };
   const busy = (on) => { text.readOnly = on; save.disabled = on; pick.disabled = on; bar.hidden = !on; };
@@ -815,7 +800,7 @@ function showBulkDialog() {
   });
   const finish = async (s) => {
     clearInterval(timer); timer = null; busy(false); cancel.textContent = "Đóng";
-    if (!s) return fail("Chưa nhập được. Thử lại hoặc bấm Gửi lỗi.");
+    if (!s) return fail("Chưa nhập được. Thử lại hoặc bấm Báo lỗi.");
     if (s.errors?.length) return fail(s.errors.slice(0, 3).join("\n"));
     await addLinks(list(s.links));
     const summary = `Đã nhập ${list(s.links).length} link, ${s.products} ảnh gốc, ${s.reviews} ảnh review.`;
@@ -952,7 +937,7 @@ function showReviewPreview(item, decide) {
   b.append(original, at(label("Ảnh kết quả"), 548, 12, 500, 24), product, sceneLabel, scene, result, body, state_, keep, skip);
 }
 
-// ----- Cấu hình: the hub's page (hub/setup/page.html), shared with the menu; "← Quay lại" comes back here -----
+// ----- Cấu hình: core/setup/page.html; "← Quay lại" comes back here -----
 function showSetupDialog() { location.href = `/setup?back=${encodeURIComponent(location.pathname + location.search)}`; }
 
 // ----- Cập nhật (Show-UpdateDialog): check, then download and install with a running bar -----
@@ -1091,7 +1076,6 @@ function receive(event) {
 }
 async function startBatch() {
   if (run.active) return;
-  if (!state.drive) return appendLog("Nhập mật khẩu app trước khi chạy (Cấu hình).");
   try { await saveQueue(true); } catch (e) { return appendLog(e.message); }
   if (!countUrls()) return messageBox("Vui lòng thêm ít nhất một link sản phẩm.");
   if (!state.codex) return messageBox('Chưa có công cụ xử lý. Bấm "Cấu hình" để xem hướng dẫn.');
@@ -1144,7 +1128,7 @@ async function finish(r) {
   } else {
     setStatus("! Cần thử lại", "var(--warn)");
     appendLog("Một số sản phẩm chưa hoàn tất. Bạn có thể bấm Bắt đầu để thử lại các link còn lại, hoặc Duyệt & xuất file với các ảnh đã xong.");
-    appendLog("Nếu lỗi lặp lại, bấm Gửi lỗi để admin kiểm tra.");
+    appendLog("Nếu lỗi lặp lại, bấm Báo lỗi để tạo báo cáo cho admin.");
   }
   await updateReviewButton();
   // Another AI was chosen and some links failed: Codex is the steady one, but only on the user's yes, and only for
@@ -1167,14 +1151,15 @@ function wire() {
   ui.btnAdd.onclick = () => showProductDialog();
   ui.btnBulk.onclick = showBulkDialog;
   ui.btnClear.onclick = () => { if (run.active) return; state.rows = []; renderRows(); updateStatus(); persist(); };
-  // Gửi lỗi: src/support-report.mjs runs in the background; each step shows on the button and in the log.
+  // Báo lỗi: src/support-report.mjs runs in the background and keeps the report in workspace/reports; each step
+  // shows on the button and in the log.
   ui.btnLogs.onclick = async () => {
     const rejected = await api("rejectedCount").catch(() => 0);
-    const question = "Gửi lỗi cho admin?\n\n" + (rejected ? `Gồm các lỗi từ lần gửi trước và ${rejected} đánh giá đã Bỏ (kèm lý do).` : "Gồm các lỗi từ lần gửi trước.") + " Không gửi ảnh hay mật khẩu.";
-    if ((await messageBox(question, "Gửi lỗi", ["Yes", "No"])) !== "Yes") return;
-    setActionBusy("report", true); ui.btnLogs.textContent = "Đang gửi lỗi…";
-    const reset = () => setTimeout(() => { ui.btnLogs.textContent = "Gửi lỗi"; setActionBusy("report", false); }, 2500);
-    if (!(await fetch("/api/send-errors", { method: "POST" }).then((r) => r.ok).catch(() => false))) { appendLog("Chưa gửi lỗi được, thử lại sau."); return reset(); }
+    const question = "Tạo báo cáo lỗi?\n\n" + (rejected ? `Gồm các lỗi từ lần báo trước và ${rejected} đánh giá đã Bỏ (kèm lý do).` : "Gồm các lỗi từ lần báo trước.") + " Báo cáo lưu trên máy (workspace/reports), không kèm ảnh.";
+    if ((await messageBox(question, "Báo lỗi", ["Yes", "No"])) !== "Yes") return;
+    setActionBusy("report", true); ui.btnLogs.textContent = "Đang tạo…";
+    const reset = () => setTimeout(() => { ui.btnLogs.textContent = "Báo lỗi"; setActionBusy("report", false); }, 2500);
+    if (!(await fetch("/api/send-errors", { method: "POST" }).then((r) => r.ok).catch(() => false))) { appendLog("Chưa tạo được báo cáo lỗi, thử lại sau."); return reset(); }
     let shown = "";
     const timer = setInterval(async () => {
       const { running, last } = await fetch("/api/send-errors").then((r) => r.json()).catch(() => ({ running: true, last: "" }));
@@ -1182,9 +1167,8 @@ function wire() {
       if (kind === "step" && a !== shown) { shown = a; appendLog(a); }
       if (running) return;
       clearInterval(timer);
-      if (kind === "sent") { ui.btnLogs.textContent = "✓ Đã gửi"; appendLog(`Đã gửi lỗi: ${a}${Number(b) ? ` (kèm ${b} đánh giá đã Bỏ)` : ""}`); }
-      else if (kind === "saved") { ui.btnLogs.textContent = "Gửi lỗi"; appendLog(`Chưa gửi được (${b || "không rõ lý do"}); file lỗi ở: ${a}`); api("revealPath", { path: a }); }
-      else { ui.btnLogs.textContent = "Gửi lỗi"; appendLog(kind === "error" ? `Chưa tạo được báo cáo AI: ${a}` : "Tiến trình dừng không trả kết quả; xem log gửi lỗi."); }
+      if (kind === "saved") { ui.btnLogs.textContent = "✓ Đã lưu"; appendLog(`Đã lưu báo cáo lỗi: ${a}${Number(b) ? ` (kèm ${b} đánh giá đã Bỏ)` : ""}`); api("revealPath", { path: a }); }
+      else { ui.btnLogs.textContent = "Báo lỗi"; appendLog(kind === "error" ? `Chưa tạo được báo cáo AI: ${a}` : "Tiến trình dừng không trả kết quả; xem log báo lỗi."); }
       reset();
     }, 700);
   };

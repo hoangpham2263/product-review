@@ -30,9 +30,9 @@ function Invoke-BatchWorkflow([string]$ProjectRoot, [string]$List, [string]$OutD
         # Upload right after this image is done, in parallel with other threads.
         # A failed upload leaves photo_url empty; the coordinator then retries it.
         $row = @($rows | Where-Object { $_ -and $_.PSObject.Properties['photo_path'] })[-1]
-        if ($row -and $script:Config.Drive -and $row.photo_url -notmatch '^https://') {
-            try { $row = Complete-DriveDelivery $row }
-            catch { Write-Warning "Upload Drive sẽ thử lại sau: $($_.Exception.Message)" }
+        if ($row -and $script:Config.Results -and $row.photo_url -notmatch '^https://') {
+            try { $row = Complete-ResultDelivery $row }
+            catch { Write-Warning "Upload kho kết quả sẽ thử lại sau: $($_.Exception.Message)" }
         }
         $rows
     }
@@ -101,14 +101,14 @@ function Invoke-BatchWorkflow([string]$ProjectRoot, [string]$List, [string]$OutD
                 try {
                     $result = @($job.PS.EndInvoke($job.Async) | Where-Object { $_ -and $_.PSObject.Properties['photo_path'] })[-1]
                     if (-not $result) { throw 'Worker returned no result.' }
-                    $result=Complete-DriveDelivery $result $job.Index
+                    $result=Complete-ResultDelivery $result $job.Index
                 } catch {
                     $inner = if ($_.Exception.InnerException) { $_.Exception.InnerException.Message } else { $_.Exception.Message }
                 $errorLog = Join-Path $script:Batch.Logs ('{0:D3}-{1}-error.txt' -f $job.Index, $job.Item.Handle)
                 # The unwrapped message first: PowerShell 7 wraps Out-String error text mid-sentence.
                 @($inner; $_ | Out-String; $_.ScriptStackTrace; $job.PS.Streams.Error | Format-List * -Force | Out-String) |
                     Set-Content -LiteralPath $errorLog -Encoding UTF8
-                $causeTag = if ($inner -match '\[CAUSE:(DRIVE_CONFIG|DRIVE_AUTH|DRIVE_UPLOAD|BRIDGE|AUTH|QUOTA|NETWORK|AI_TIMEOUT|BUSY|PROCESS_ACTIVE|STORE_LOCKED|PRODUCT_TIMEOUT|PRODUCT_NETWORK|PRODUCT_ACCESS|PRODUCT_NOT_FOUND|PRODUCT_DOWNLOAD|OUTPUT_MISSING|OUTPUT_INVALID|TOOL_ERROR)\]') { $Matches[0] + ' ' } else { '' }
+                $causeTag = if ($inner -match '\[CAUSE:(RESULT_CONFIG|RESULT_UPLOAD|BRIDGE|AUTH|QUOTA|NETWORK|AI_TIMEOUT|BUSY|PROCESS_ACTIVE|STORE_LOCKED|PRODUCT_TIMEOUT|PRODUCT_NETWORK|PRODUCT_ACCESS|PRODUCT_NOT_FOUND|PRODUCT_DOWNLOAD|OUTPUT_MISSING|OUTPUT_INVALID|TOOL_ERROR)\]') { $Matches[0] + ' ' } else { '' }
                 # Warning formatting wraps long records, losing reset details in the UI's
                 # line reader. Emit the same WARNING prefix as one unwrapped log line.
                 Write-Host "WARNING: [ITEM $($job.Index)] Failed; ${causeTag}URL and source kept for retry. $inner" -ForegroundColor Yellow

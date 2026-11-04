@@ -1,11 +1,11 @@
 ﻿function Read-ManualReferenceMap([string]$Path) {
-    if(-not (Test-Path -LiteralPath $Path)){return [pscustomobject]@{schema_version=1;allow_library_fallback=$false;preferred_source_group='Áo';source_library='drive';entries=@()}}
+    if(-not (Test-Path -LiteralPath $Path)){return [pscustomobject]@{schema_version=1;allow_library_fallback=$false;preferred_source_group='Áo';source_library='remote';entries=@()}}
     $map=Get-Content -LiteralPath $Path -Raw -Encoding UTF8|ConvertFrom-Json
     if($map.schema_version -ne 1){throw 'Invalid manual reference map.'}
     if(-not $map.PSObject.Properties['preferred_source_group']){$map|Add-Member NoteProperty preferred_source_group 'Áo'}
     $map.preferred_source_group=Resolve-SourcePhotoGroup $map.preferred_source_group
-    # drive: download the chosen group before a run; local: use only data/source-photos as it is.
-    if(-not $map.PSObject.Properties['source_library'] -or $map.source_library -notin @('drive','local')){$map|Add-Member NoteProperty source_library 'drive' -Force}
+    # remote: download the chosen group before a run; local: use only workspace/source-photos as it is.
+    if(-not $map.PSObject.Properties['source_library'] -or $map.source_library -notin @('remote','local')){$map|Add-Member NoteProperty source_library 'remote' -Force}
     $seen=@{}
     foreach($entry in @($map.entries)){
         # A link holds one or more product images, each with its own review images; every
@@ -27,7 +27,7 @@
 }
 
 # Images are saved next to the map with absolute paths; after the install folder moves (rename, the
-# Tools Hub layout) those paths are stale, so an image missing at its path is looked up beside the map.
+# new install folder) those paths are stale, so an image missing at its path is looked up beside the map.
 function Repair-ManualImagePath([string]$File,[string]$Folder) {
     if(-not $File -or (Test-Path -LiteralPath $File)){return $File}
     $local=Join-Path $Folder (Split-Path $File -Leaf)

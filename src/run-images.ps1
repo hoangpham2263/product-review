@@ -3,7 +3,7 @@
 # URLs are processed in parallel (-ThrottleLimit); results are committed one by one in the main thread.
 param(
     [Alias('UrlList')][string]$List = (Join-Path (Split-Path $PSScriptRoot -Parent) 'workspace/urls.txt'),
-    [Alias('InputDir')][string]$SourceDir = (Join-Path (Split-Path $PSScriptRoot -Parent) 'data/source-photos'),
+    [Alias('InputDir')][string]$SourceDir = (Join-Path (Split-Path $PSScriptRoot -Parent) 'workspace/source-photos'),
     [string]$OutDir = (Join-Path (Split-Path $PSScriptRoot -Parent) 'workspace/output'),
     # Ignored: one attached review photo per image. Kept so older callers still start.
     [Alias('ReferencePhotosPerImage')][int]$PhotosPerImage = 1,
@@ -11,7 +11,7 @@ param(
     [string]$Model = '',
     [string]$ReferenceMapFile = '',
     [switch]$LocalOnly,
-    # codex: Codex CLI; flow: Google Flow in the signed-in Chrome, through hub/bridge + hub/extension/.
+    # codex: Codex CLI; flow: Google Flow in the signed-in Chrome, through core/bridge + core/extension/.
     [ValidateSet('codex', 'flow')][string]$ImageBackend = $(if ($env:PIB_IMAGE_BACKEND) { $env:PIB_IMAGE_BACKEND } else { 'codex' }),
     # Every text step (product, checks, review): codex: Codex CLI; gemini: Gemini web in the tools' own Chrome;
     # antigravity: the Antigravity CLI (agy), signed in with Google.
@@ -34,10 +34,10 @@ $ai = Get-AiSettings $ProjectRoot
 if (-not $Model) { $Model = $ai.model }
 $script:Config = New-WorkflowConfiguration $ProjectRoot $SourceDir $Model
 $script:Config.ReasoningEffort = $ai.effort
-$script:Config.DriveRequired = -not $LocalOnly
-if($LocalOnly){$script:Config.Drive=$null}
-if($script:Config.DriveRequired){
-    try{Assert-DriveReady}
+$script:Config.ResultsRequired = -not $LocalOnly
+if($LocalOnly){$script:Config.Results=$null}
+if($script:Config.ResultsRequired){
+    try{Assert-ResultStoreReady}
     catch{Write-Warning ("Failed; "+$_.Exception.Message);throw}
 }
 $script:Config.ImageBackend = $ImageBackend

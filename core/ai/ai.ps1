@@ -1,16 +1,16 @@
 ﻿# The AIs every tool can use, behind one call: Invoke-HubAI -Kind text|image|video -Ai <id> -Prompt ... -Output <file>.
-# A tool dot-sources this file (from apps/<tool>/src: ../../../hub/ai/ai.ps1) and keeps only its own prompts and
+# The app dot-sources this file (from src: ../core/ai/ai.ps1) and keeps only its own prompts and
 # choices. A new AI is one entry in $script:HubAIProviders plus its provider file in providers/:
 #   cli      a command on this machine (codex, agy)
-#   browser  a site in the user's own Chrome, through hub/bridge and the Tools Hub extension (hub/extension/sites/)
+#   browser  a site in the user's own Chrome, through core/bridge and the Product Review extension (core/extension/sites/)
 # Errors end in [CAUSE:<kind>] (AUTH, QUOTA, BUSY, NETWORK, AI_TIMEOUT, BRIDGE, ...), which tools show and retry by.
 . (Join-Path $PSScriptRoot 'common.ps1')
 . (Join-Path $PSScriptRoot 'providers/codex.ps1')
 . (Join-Path $PSScriptRoot 'providers/antigravity.ps1')
 . (Join-Path $PSScriptRoot 'providers/browser.ps1')
 
-# Every call, one JSON line in <hub>/workspace/logs/ai-usage.jsonl (Cấu hình → Lượt dùng AI): the CLIs here, the web
-# AIs in hub/bridge/server.mjs (which knows the Google account a job ran with). Tests point HUB_AI_USAGE_FILE elsewhere.
+# Every call, one JSON line in workspace/logs/ai-usage.jsonl (Cấu hình → Lượt dùng AI): the CLIs here, the web
+# AIs in core/bridge/server.mjs (which knows the Google account a job ran with). Tests point HUB_AI_USAGE_FILE elsewhere.
 $script:HubAIUsageFile = if ($env:HUB_AI_USAGE_FILE) { $env:HUB_AI_USAGE_FILE } else { Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'workspace/logs/ai-usage.jsonl' }
 function Add-HubAIUsage([string]$Ai, [string]$Kind, [string]$Account, [bool]$Ok, [string]$Cause = '', [int]$Ms = 0, $Tokens = $null) {
     $entry = [ordered]@{ t = [DateTime]::UtcNow.ToString('o'); ai = $Ai; kind = $Kind; account = $Account; ok = $Ok; ms = $Ms }

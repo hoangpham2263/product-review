@@ -6,13 +6,13 @@ function Assert($Condition,[string]$Message){if(-not $Condition){throw $Message}
 $temp=Join-Path $TestWorkspaceRoot ('browser-backend-'+[Guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $temp|Out-Null
 try{
-    # The shared bridge is found from the hub's AI core.
-    Assert (Test-Path (Join-Path $script:BridgeHubRoot 'hub/bridge/ensure.mjs')) 'The AI core does not find hub/bridge.'
+    # The bridge is found from the AI core.
+    Assert (Test-Path (Join-Path $script:BridgeHubRoot 'core/bridge/ensure.mjs')) 'The AI core does not find core/bridge.'
     $imageAis = @(Get-HubAIChoices image | ForEach-Object id | Sort-Object)
     Assert (($imageAis -contains 'codex') -and ($imageAis -contains 'flow') -and ($imageAis -notcontains 'gemini')) 'Image AIs are listed from the registry.'
     $unsupported = try { Invoke-HubAI -Kind image -Ai gemini -Prompt 'x' -Output (Join-Path $temp 'x.png'); '' } catch { $_.Exception.Message }
     Assert ($unsupported -match '\[CAUSE:UNSUPPORTED\]') 'An AI is only asked for work it can do.'
-    # Every image AI gets the same request: Codex alone is also told where to save the file (hub/ai).
+    # Every image AI gets the same request: Codex alone is also told where to save the file (core/ai).
     $request=[pscustomobject]@{Images=@('ref.png','product.png');Prompt='Create one photo.';Output=(Join-Path $temp 'shared.png')}
     function Invoke-CodexExec($PromptText){ $script:CodexPrompt=$PromptText; 'done' }
     Invoke-HubAI -Kind image -Ai codex -Prompt $request.Prompt -Images $request.Images -Output $request.Output -Options @{WorkDir=$temp}|Out-Null
