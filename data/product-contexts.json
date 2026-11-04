@@ -1,0 +1,71 @@
+﻿{
+  "schema_version": 1,
+  "profiles": [
+    {
+      "id": "apron",
+      "product": "bib apron",
+      "details": "The apron itself: bib shape, neck strap, waist ties, front pockets, fabric color and embroidery. The white shirt underneath is not the product.",
+      "source_categories": [
+        "aprons",
+        "polo-shirts",
+        "tees-hoodies"
+      ]
+    },
+    {
+      "id": "hat",
+      "product": "headwear",
+      "details": "The actual hat crown, brim, panels, color and embroidery. The shirt is not the product.",
+      "source_categories": [
+        "hats"
+      ]
+    },
+    {
+      "id": "hoodie",
+      "product": "casual top",
+      "details": "The actual top neckline, hood if present, sleeves, color, print and embroidery.",
+      "source_categories": [
+        "tees-hoodies"
+      ]
+    },
+    {
+      "id": "golf",
+      "product": "golf apparel",
+      "details": "The target golf garment's actual colors, panels, collar, trim and visible pattern.",
+      "source_categories": [
+        "outdoor-sports",
+        "polo-shirts"
+      ]
+    },
+    {
+      "id": "polo",
+      "product": "polo shirt",
+      "details": "The polo's color blocks, collar, placket, sleeve trim, piping and embroidery.",
+      "source_categories": [
+        "polo-shirts"
+      ]
+    },
+    {
+      "id": "scrubs",
+      "product": "medical workwear",
+      "details": "The workwear's visible neckline, pockets, color and embroidery.",
+      "source_categories": [
+        "medical-scrubs"
+      ]
+    },
+    {
+      "id": "sport",
+      "product": "sports jersey",
+      "details": "The jersey's actual colors, panels, numbering, neckline and trim.",
+      "source_categories": [
+        "team-jerseys",
+        "outdoor-sports"
+      ]
+    },
+    {
+      "id": "generic",
+      "product": "unclassified product",
+      "details": "Only the target product's visible design details, not an unrelated underlayer or accessory.",
+      "source_categories": []
+    }
+  ]
+}

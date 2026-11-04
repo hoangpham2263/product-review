@@ -1,0 +1,39 @@
+﻿# One product: steps 1-5. BatchWorkflow runs steps 6-7 after workers finish.
+function Invoke-ProductItem($Item, [string]$ItemId) {
+    $script:Config.ActiveProductUrl = $Item.Url
+    $script:Config.ActiveScene = if ($Item.PSObject.Properties['Scene']) { $Item.Scene } else { $null }
+    $cached=Read-DeliveryCache $Item
+    if($cached){
+        Write-Host '  [DRIVE-RESUME] Reusing saved image and review; no AI generation.' -ForegroundColor Cyan
+        $row=Restore-DeliveryCache $cached $ItemId
+        Save-DeliveryCache $Item $ItemId $row
+        return $row
+    }
+    $product = Read-ProductInput $Item $ItemId
+    $download = $product.Reference
+    try {
+        $reviewPhoto = Get-ReviewPhoto $ItemId $product.Context
+        $request = New-ProductImageRequest $product.Reference $ItemId $product.Context $reviewPhoto
+        $bundle = Save-ProductReferenceBundle $Item $ItemId $product.Context $request
+        $product.Reference = $bundle.ProductPath
+        Complete-ProductImage $request $product.Context $ItemId | Out-Null
+    } finally {
+        # The downloaded original is archived as refs/<item>/NN-product; drop the loose copy.
+        if ((Split-Path $download -Parent) -eq $script:Batch.Refs -and (Test-Path -LiteralPath $download)) { Remove-Item -LiteralPath $download -Force }
+    }
+    $body = New-Review $request.Output $ItemId $product.Context
+    # Local paths never stand in for failed uploads.
+    $row=[pscustomobject][ordered]@{
+        product_handle = $Item.Handle
+        rating = ''
+        author = ''
+        email = ''
+        body = $body
+        created_at = ''
+        verified_purchase = 'true'
+        photo_url = $(if($script:Config.Drive -or $script:Config.DriveRequired){''}else{$request.Output -replace '\\','/'})
+        photo_path = ($request.Output -replace '\\', '/')
+    }
+    Save-DeliveryCache $Item $ItemId $row
+    return $row
+}

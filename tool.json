@@ -1,0 +1,20 @@
+{
+  "id": "product-review",
+  "name": "Product Review",
+  "order": 1,
+  "description": "Tạo ảnh review sản phẩm, viết review mẫu và xuất CSV cho Loox.",
+  "icon": "icon.svg",
+  "mac": "src/mac/server.mjs",
+  "platforms": [
+    {
+      "name": "Shopify (Loox)",
+      "color": "#5E8E3E"
+    }
+  ],
+  "features": [
+    "Ảnh review từ ảnh sản phẩm",
+    "Viết review mẫu bằng AI",
+    "Xuất CSV nhập vào Loox",
+    "Nhập hàng loạt từ file CSV"
+  ]
+}

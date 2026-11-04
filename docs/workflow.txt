@@ -1,0 +1,89 @@
+﻿WORKFLOW AND PROJECT STRUCTURE
+
+Entry points
+  start-app.cmd / start-app.command -> hub/launch.ps1 -> src/mac/server.mjs (the app's page, src/mac/ui)
+  src/mac/server.mjs -> src/run-images.ps1 -> bootstrap.ps1 -> Invoke-BatchWorkflow
+  Existing command-line parameters and shortcuts remain compatible.
+
+Batch preparation
+  The entry point validates arguments and resolves paths.
+  application/configuration.ps1 loads product contexts, review samples and writing rules.
+  bootstrap.ps1 defines the same ordered module list for main process and workers.
+  BatchWorkflow locks urls.txt, reads valid URLs, creates batch folders and starts
+  a bounded runspace pool. Each URL has its own item ID and files.
+  Each worker receives an independent configuration snapshot. A per-item error log
+  preserves the full diagnostic stack while the GUI shows only the main failure.
+
+Per-product steps, in execution order (src/workflow/steps/)
+  01 LoadInputs                                            text AI: 1 call
+     Product image: the one attached to the link (file/hash checked, no web request),
+     else the product page's og:image. The text AI classifies it from the image:
+     product, presentation (worn/held/placed/vehicle), visible details, category key.
+     Known apparel profiles (data/product-contexts.json) set product and details.
+     Review photo: the one the user attached (computer, Drive library or clipboard),
+     used as it is after file/hash checks; none stops the link with PRODUCT_INPUT.
+
+  02 CreateImage                                           image AI: 1 call (+ retries)
+     Image 1 = review photo, image 2 = product. Worn products replace the garment on
+     the people in image 1; other products are placed into image 1, which stays the base.
+     Lessons from AGENTS.md matching the URL or category are appended.
+     ReferenceArchive copies both inputs into refs/<item>/ (manifest.json: roles,
+     sources, SHA256) and the generator uses those copies.
+     The first readable PNG is delivered byte-for-byte; the user reviews it.
+     Up to 3 submissions, only on a lost connection, a timeout or a busy service.
+     Every AI gets the same request through Invoke-AI; hub/ai adds what one AI alone
+     needs (Codex: where to save the PNG). Image 2 outranks the text details.
+
+  03 WriteReview                                           text AI: 1 call (+1 repair)
+     Input: the finished image, the product and details, one random review sample
+     (data/review-samples.jsonl, picked locally) and data/writing-style.json rules.
+     A local check rejects empty drafts, exclamation marks and copied samples; the
+     one repair request carries the failed draft and what was wrong.
+
+After each successful item
+  Step 05 checkpoints its image/review row, then updates URL history and removes
+  that URL from the pending queue. Failed URLs remain queued. Drive uploads run
+  in parallel. Storage failures stop the batch instead of consuming more input.
+
+After ALL workers finish
+  Step 04 fills author, rating, @int email and current-year UTC date locally.
+  Step 05 writes results.json; the Loox file follows the user's review.
+  The batch returns an error status if any URL remains failed.
+
+Boundaries
+  workflow/       Defines execution order and failure boundaries.
+  workflow/steps/ Implements each numbered operation.
+  application/    Resolves application configuration and creates batch folders.
+  domain/         Loads product and editorial rules without running AI work.
+  infrastructure/ Owns IO: Codex, sample catalog, URL queue, CSV, atomic file writes.
+  ui/             Displays progress and launches the public CLI entry point.
+                  Detailed logs stay in batch logs; users see main milestones.
+
+Data ownership
+  data/source-photos/ catalog.json and categorized reusable photos (read-only).
+  data/names.txt      Reusable author sample pool.
+  data/*.json         Product contexts and editorial rules.
+  data/review-samples.jsonl Review texts; one is picked at random per review as a style sample.
+  workspace/output/<batch>/     Everything from one run: images/, refs/, logs/, loox_import.csv.
+  workspace/output/<batch>/urls.input.txt Input URLs for this run.
+  workspace/output/<batch>/urls.completed.txt Successful URL checkpoints for this run.
+  The GUI copies its run log into <batch>/logs/run.log when the run ends.
+  workspace.ps1 centralizes runtime paths.
+  CLI -List/-OutDir overrides remain supported for explicit custom destinations.
+
+Failure handling
+  Product page/image downloads allow 30 seconds per request and retry transient
+  network/server errors up to 3 attempts. Password gates and permanent errors stop
+  immediately. The GUI distinguishes timeouts, inaccessible links and missing pages.
+  Codex text calls retry transient capacity errors up to 3 attempts without
+  changing models. Authentication, quota and policy refusals stop immediately.
+  Queue locking prevents two processes from consuming the same queue at once.
+
+Maintenance
+  Edit product categories/settings in data/product-contexts.json.
+  Edit review writing rules in data/writing-style.json. Keep source provenance with derived data.
+  Add new executable modules to src/bootstrap.ps1 so workers load them too.
+  Keep orchestration in ProductWorkflow/BatchWorkflow, IO in infrastructure.
+  Run test.cmd before distributing changes. The tests call no paid AI services.
+  Review-pipeline checks parallel work, partial failures, successful retries,
+  empty queues, CSV fields, source preservation and metadata timing.
