@@ -23,4 +23,14 @@ foreach ($scenario in @('chatgpt', 'api', 'missing')) {
     if ($expected -and $states[2] -ne 'ok') { throw 'Signed-in step must pass.' }
     if (-not $expected -and ($states[2] -ne 'fail' -or $states[3] -ne 'wait' -or $report.Steps[2].Action -ne 'login')) { throw 'Missing sign-in must block the quota step and offer sign-in.' }
 }
+# Cài / cập nhật tất cả AI: the button, the server step and every place that looks for agy (Google's Windows installer puts it in %LOCALAPPDATA%\agy\bin).
+$core = Join-Path (Split-Path $PSScriptRoot -Parent) 'core'
+$page = Get-Content -LiteralPath (Join-Path $core 'setup/page.html') -Raw -Encoding UTF8
+$api = Get-Content -LiteralPath (Join-Path $core 'setup/config-api.mjs') -Raw -Encoding UTF8
+if ($page -notmatch 'class="btn primary all"' -or $page -notmatch 'id="all-result"') { throw 'Cấu hình needs the Cài / cập nhật tất cả AI button and its result line.' }
+if ($api -notmatch 'step === "update-all"' -or $api -notmatch '@openai/codex@latest' -or $api -notmatch 'antigravity\.google/cli/install\.ps1') { throw 'The update-all step must update Codex and install Antigravity CLI from its official installer.' }
+if ($api -match 'iex' -or $api -match '\|\s*iex') { throw 'The installer must be saved to a file and run from there, never piped into PowerShell.' }
+foreach ($file in 'setup/setup-check.ps1', 'ai/providers/antigravity.ps1') {
+    if ((Get-Content -LiteralPath (Join-Path $core $file) -Raw -Encoding UTF8) -notmatch 'LOCALAPPDATA') { throw "$file must also look for agy in %LOCALAPPDATA%\agy\bin." }
+}
 Write-Host 'PASS: ChatGPT/API sign-in, missing login and clean setup messages, including successful stderr output.'

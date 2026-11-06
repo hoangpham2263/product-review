@@ -43,6 +43,18 @@
     site: "Đã mở trang trong Chrome. Đăng nhập hoặc đổi tài khoản ở đó, xong bấm Kiểm tra lại.",
   };
 
+  // Cài / cập nhật tất cả AI: Codex, Antigravity CLI and the bridge (server: step update-all), then the check again.
+  $(".all").onclick = async () => {
+    const button = $(".all"), note = $("#all-result");
+    button.disabled = true; note.hidden = false;
+    note.textContent = "Đang cài và cập nhật Codex, Antigravity CLI, cầu nối… có thể mất vài phút, đừng đóng cửa sổ.";
+    const r = await post("/api/setup-step", { step: "update-all" });
+    const results = r.results || [{ name: "Lỗi", ok: false, message: r.error || "Không chạy được." }];
+    note.replaceChildren(...results.map((x) => el("div", "", `${x.ok ? "✔" : "✖"} ${x.name}${x.message ? ": " + x.message : ""}`)));
+    button.disabled = false;
+    check();
+  };
+
   let checking = false;
   const check = async () => {
     if (checking) return;

@@ -16,6 +16,8 @@ $workspace = Initialize-ProjectWorkspace $root
 . (Join-Path $srcDir 'application/batch-import.ps1')
 . (Join-Path $srcDir 'infrastructure/csv.ps1')
 . (Join-Path $srcDir 'application/batch-review.ps1')
+. (Join-Path $srcDir 'application/loox-export.ps1')
+. (Join-Path $srcDir 'workflow/steps/04-complete-metadata.ps1')
 . (Join-Path $srcDir 'application/progress.ps1')
 $mapPath = Join-Path $workspace.Root 'reference-inputs/references.json'
 $libraryRoot = Join-Path $root 'workspace/source-photos'
@@ -40,7 +42,7 @@ function Invoke-Rpc([string]$Cmd, $A) {
             $version = try { Get-AppVersion $root } catch { '' }
             return [pscustomobject]@{
                 rows = @($urls | ForEach-Object { Get-EntryInfo $mapPath $_ }); group = $map.preferred_source_group
-                version = $version; output = $workspace.Output; codex = [bool](Get-Command codex -ErrorAction SilentlyContinue)
+                version = $version; output = $workspace.Output; exports = $workspace.Exports; codex = [bool](Get-Command codex -ErrorAction SilentlyContinue)
             }
         }
         'rows' { return @(@($A.urls) | ForEach-Object { Get-EntryInfo $mapPath ([string]$_) }) }
@@ -136,8 +138,12 @@ function Invoke-Rpc([string]$Cmd, $A) {
         'pending' { return (Get-PendingReviewCount ([string]$A.batch)) }
         'reviewBatches' {
             if (-not (Test-Path -LiteralPath $workspace.Output)) { return @() }
-            return @(Get-ChildItem -LiteralPath $workspace.Output -Directory | Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'results.json') } | Sort-Object Name -Descending | Select-Object -First 30 | ForEach-Object {
-                    [pscustomobject]@{ label = $_.Name + $(if (Test-Path -LiteralPath (Join-Path $_.FullName 'loox_import.csv')) { '  • đã xuất' } else { '' }); path = $_.FullName }
+            return @(Get-ChildItem -LiteralPath $workspace.Output -Directory | Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'results.json') } | Sort-Object Name -Descending | Select-Object -First 60 | ForEach-Object {
+                    $rows = @(); $decided = 0
+                    try { $rows = Get-Content -LiteralPath (Join-Path $_.FullName 'results.json') -Raw -Encoding UTF8 | ConvertFrom-Json } catch { Write-Verbose $_ }
+                    $reviewPath = Join-Path $_.FullName 'review.json'
+                    if (Test-Path -LiteralPath $reviewPath) { try { $decided = @((Get-Content -LiteralPath $reviewPath -Raw -Encoding UTF8 | ConvertFrom-Json).PSObject.Properties).Count } catch { Write-Verbose $_ } }
+                    [pscustomobject]@{ name = $_.Name; path = $_.FullName; images = @($rows).Count; pending = [Math]::Max(0, @($rows).Count - $decided); exported = (Test-BatchExported $_.FullName) }
                 })
         }
         'reviewItems' {
@@ -145,8 +151,13 @@ function Invoke-Rpc([string]$Cmd, $A) {
                     [pscustomobject]@{ id = $_.Id; handle = [string]$_.Row.product_handle; body = [string]$_.Row.body; image = $_.ImagePath; product = $_.ProductPath; scene = $_.ScenePath; decision = $_.Decision }
                 })
         }
+        'reviewItemsMany' {
+            return @(foreach ($dir in @(@($A.batches) | ForEach-Object { [string]$_ })) {
+                    foreach ($i in @(Get-BatchReview $dir)) { [pscustomobject]@{ batch = $dir; run = (Split-Path $dir -Leaf); id = $i.Id; handle = [string]$i.Row.product_handle; body = [string]$i.Row.body; image = $i.ImagePath; product = $i.ProductPath; scene = $i.ScenePath; decision = $i.Decision } }
+                })
+        }
+        'reviewExportAll' { return (Export-ReviewedCsvMany @(@($A.batches) | ForEach-Object { [string]$_ }) $workspace.Exports) }
         'reviewDecide' { Set-BatchReviewDecision ([string]$A.batch) ([string]$A.id) ([string]$A.decision) -Reason ([string]$A.reason); return $true }
-        'reviewExport' { return (Export-ReviewedCsv ([string]$A.batch)) }
         'event' { return (ConvertTo-UiEvent ([string]$A.line) ([int]$A.index)) }
         'updateCheck' { return (& (Join-Path $root 'core/update.ps1') -Root $root -Check) }
         'openPath' { $p = [string]$A.path; New-Item -ItemType Directory -Force $p -ErrorAction SilentlyContinue | Out-Null; Open-SystemPath $p; return $true }

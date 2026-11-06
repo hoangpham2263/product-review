@@ -5,7 +5,7 @@
 function Get-AntigravityCommand {
     $command = Get-Command agy -ErrorAction SilentlyContinue | Select-Object -First 1
     if ($command) { return $command.Source }
-    foreach ($path in @((Join-Path $HOME '.local/bin/agy'), (Join-Path $HOME '.local/bin/agy.exe'))) { if (Test-Path -LiteralPath $path) { return $path } }
+    foreach ($path in @((Join-Path $HOME '.local/bin/agy'), (Join-Path $HOME '.local/bin/agy.exe')) + @(if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA 'agy/bin/agy.exe' })) { if (Test-Path -LiteralPath $path) { return $path } }
     throw 'AI failed. Chưa có Antigravity CLI (agy). Cài Antigravity rồi đăng nhập Google, hoặc chọn AI khác. [CAUSE:AUTH]'
 }
 

@@ -4,6 +4,7 @@ function Initialize-ProjectWorkspace([string]$ProjectRoot) {
     $paths = @{
         Root = $root
         Output = Join-Path $root 'output'
+        Exports = Join-Path $root 'exports'
         Logs = Join-Path $root 'logs'
         Temp = Join-Path $root 'temp'
         Tests = Join-Path $root 'tests'

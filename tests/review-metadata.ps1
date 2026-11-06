@@ -4,8 +4,8 @@ $root = Split-Path $PSScriptRoot -Parent
 . (Join-Path $root 'src/workflow/steps/04-complete-metadata.ps1')
 function Assert($Condition, [string]$Message) { if (-not $Condition) { throw $Message } }
 $ratings = @(0..99 | ForEach-Object { Get-SampleReviewRating -Draw $_ })
-Assert (@($ratings | Where-Object { $_ -eq 5 }).Count -eq 55) 'Expected 55 draws out of 100 to yield five stars.'
-Assert (@($ratings | Where-Object { $_ -eq 4 }).Count -eq 45) 'Expected 45 draws out of 100 to yield four stars.'
+Assert (@($ratings | Where-Object { $_ -eq 5 }).Count -eq 60) 'Expected 60 draws out of 100 to yield five stars.'
+Assert (@($ratings | Where-Object { $_ -eq 4 }).Count -eq 40) 'Expected 40 draws out of 100 to yield four stars.'
 $namesPath = Join-Path $root 'data/names.txt'
 $names = @(Get-Content -LiteralPath $namesPath -Encoding UTF8)
 Assert (@($names | Select-Object -Unique).Count -eq $names.Count) 'Duplicate display names.'

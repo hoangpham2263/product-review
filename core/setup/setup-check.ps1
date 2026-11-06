@@ -108,7 +108,7 @@ function Get-WebStep([string]$Id, [string]$Title, [string]$Site, [string]$Uses) 
 }
 # Antigravity CLI (agy, Google sign-in): Viết review: Antigravity CLI. agy models answers only when signed in.
 $agy = Get-Command agy -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Source
-if (-not $agy) { $agy = @((Join-Path $HOME '.local/bin/agy'), (Join-Path $HOME '.local/bin/agy.exe')) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1 }
+if (-not $agy) { $agy = @((Join-Path $HOME '.local/bin/agy'), (Join-Path $HOME '.local/bin/agy.exe')) + @(if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA 'agy/bin/agy.exe' }) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1 }
 $agyState = 'warn'; $agyDetail = 'Chưa cài (không bắt buộc). Cài Antigravity để chọn Viết review: Antigravity CLI.'; $agyAccount = ''
 if ($agy) {
     $agyOk = $false

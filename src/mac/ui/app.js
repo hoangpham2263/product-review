@@ -64,8 +64,9 @@ function numeric(min, max, value) {
   Object.assign(box, { min, max });
   Object.defineProperty(box, "value", { get: () => clamp(Number(input.value)), set: (v) => { input.value = String(clamp(v)); } });
   Object.defineProperty(box, "enabled", { set: (on) => { input.disabled = !on; up.disabled = !on; down.disabled = !on; box.classList.toggle("disabled", !on); } });
-  up.onclick = () => { box.value = box.value + 1; };
-  down.onclick = () => { box.value = box.value - 1; };
+  up.onclick = () => { box.value = box.value + 1; box.onchange?.(); };
+  down.onclick = () => { box.value = box.value - 1; box.onchange?.(); };
+  input.onchange = () => { box.value = box.value; box.onchange?.(); };
   input.onblur = () => { box.value = Number(input.value); };
   return box;
 }
@@ -262,11 +263,20 @@ function buildMain() {
     box.setItems(values, labels);
     try { box.value = localStorage.getItem(key) || values[0]; } catch {}
     if (!box.value) box.value = values[0];
-    box.onchange = () => { try { localStorage.setItem(key, box.value); } catch {} updateUsage(); };
+    box.onchange = () => { try { localStorage.setItem(key, box.value); } catch {} saveRunSettings({ [key]: box.value }); updateUsage(); };
     return [name, box];
   };
   [ui.lblText, ui.cmbText] = picker("Viết review:", 6, "textBackend", ["codex", "gemini", "antigravity"], ["Codex", "Gemini web", "Antigravity CLI"]);
   [ui.lblBackend, ui.cmbBackend] = picker("Tạo ảnh:", 33, "imageBackend", ["codex", "flow"], ["Codex", "Google Flow"]);
+  // Luồng, Viết review and Tạo ảnh are kept in workspace/config/run-settings.json (the server), so they are the same next time.
+  const saveRunSettings = (part) => fetch("/api/run-settings", { method: "POST", body: JSON.stringify(part) }).catch(() => {});
+  ui.numThr.onchange = () => saveRunSettings({ threads: ui.numThr.value });
+  fetch("/api/run-settings").then((r) => r.json()).then((saved) => {
+    if (saved.threads) ui.numThr.value = saved.threads;
+    if (saved.textBackend) ui.cmbText.value = saved.textBackend;
+    if (saved.imageBackend) ui.cmbBackend.value = saved.imageBackend;
+    updateUsage();
+  }).catch(() => {});
   // Tokens this run has used (added up from each Codex call) and the quota left, refreshed in the background.
   // They shrink with the window (cut with …) so they never run under the pickers on the right.
   ui.lblTokens = at(label("", "muted"), 460, 11, null, 20, { right: 400 });
@@ -818,30 +828,38 @@ function showBulkDialog() {
 async function showReviewDialog() {
   const view = openWindow("Duyệt kết quả", 924, 721);
   const b = view.body;
-  const batches = at(combo(), 12, 12, 600, 24);
-  const hint = at(label("Mỗi dòng một đánh giá. Bấm ảnh để xem lớn; Giữ/Bỏ chỉ áp dụng cho dòng đó.", "muted"), 12, 46, 900, 22);
-  const flow = at(el("div", "flow"), 12, 72, null, null, { right: 12, bottom: 69 });
-  const status = at(label(""), 12, null, 560, 36, { bottom: 17, top: false });
+  const heading = at(label("Chọn các lần chạy cần duyệt. Tích nhiều ô để duyệt chung một danh sách và xuất một file Loox.", "muted"), 12, 10, 640, 22);
+  const pickAll = at(button("Chọn hết"), null, 8, 76, 26, { right: 96, left: false });
+  const pickNone = at(button("Bỏ chọn"), null, 8, 76, 26, { right: 12, left: false });
+  const runsBox = at(el("div", "runs"), 12, 40, null, 116, { right: 12 });
+  const hint = at(label("Mỗi dòng một đánh giá. Bấm ảnh để xem lớn; Giữ/Bỏ chỉ áp dụng cho dòng đó.", "muted"), 12, 162, 900, 22);
+  const flow = at(el("div", "flow"), 12, 188, null, null, { right: 12, bottom: 69 });
+  const status = at(label(""), 12, null, 520, 36, { bottom: 17, top: false });
   status.style.lineHeight = "36px";
   const exportBtn = at(button("Xuất file Loox", true), null, null, 180, 40, { right: 12, left: false, bottom: 17, top: false });
   exportBtn.disabled = true;
-  b.append(batches, hint, flow, status, exportBtn);
-  let items = [], batch = "";
+  // Export never opens anything by itself; this opens the folder of the Loox files (the same as Mở kết quả on the main screen).
+  const openBtn = at(button("Mở thư mục xuất"), null, null, 150, 40, { right: 204, left: false, bottom: 17, top: false });
+  openBtn.onclick = () => api("openPath", { path: state.exports });
+  b.append(heading, pickAll, pickNone, runsBox, hint, flow, status, openBtn, exportBtn);
+  let items = [], runs = [];
+  const chosen = () => runs.filter((r) => r.input.checked).map((r) => r.path);
   const refresh = () => {
     const done = items.filter((i) => i.decision).length, good = items.filter((i) => i.decision === "ok").length;
-    status.textContent = `Đã duyệt ${done}/${items.length} đánh giá • Giữ ${good} • Bỏ ${done - good}`;
+    if (!chosen().length) { status.textContent = "Tích chọn ít nhất một lần chạy ở trên để duyệt."; exportBtn.disabled = true; return; }
+    status.textContent = `Đã chọn ${chosen().length} lần chạy • Đã duyệt ${done}/${items.length} đánh giá • Giữ ${good} • Bỏ ${done - good}`;
     exportBtn.disabled = !(items.length > 0 && done === items.length && good > 0);
   };
   const decideFor = (item, paint) => async (value) => {
     const next = item.decision === value ? "" : value;
-    await api("reviewDecide", { batch, id: item.id, decision: next, reason: "" });
+    await api("reviewDecide", { batch: item.batch, id: item.id, decision: next, reason: "" });
     item.decision = next;
     paint();
     refresh();
   };
   const load = async () => {
-    batch = batches.value;
-    items = batch ? list(await api("reviewItems", { batch })) : [];
+    const picked = chosen();
+    items = picked.length ? list(await api("reviewItemsMany", { batches: picked })) : [];
     const width = Math.max(840, flow.clientWidth - 28);
     flow.replaceChildren(...items.map((item, n) => {
       const row = el("div", "rrow", { style: { width: width + "px" } });
@@ -849,7 +867,7 @@ async function showReviewDialog() {
       thumb.style.background = "var(--smoke)";
       thumb.style.cursor = "pointer";
       thumb.set(item.image);
-      const title = at(label(`#${n + 1} · ${item.handle}`), 68, 5, width - 240, 20);
+      const title = at(label(`#${n + 1} · ${item.run.slice(11)} · ${item.handle}`), 68, 5, width - 240, 20);
       const bodyText = at(label(item.body, "muted"), 68, 28, width - 240, 24);
       const ok = at(button("Giữ"), width - 152, 17, 64, 28), bad = at(button("Bỏ"), width - 80, 17, 64, 28);
       const paint = () => {
@@ -868,21 +886,34 @@ async function showReviewDialog() {
     }));
     refresh();
   };
-  batches.onchange = load;
-  // Export shows its progress on the button itself; no extra message windows.
+  // One checkbox per run (newest first); none is chosen when Duyệt opens; the ones already chosen stay chosen when the list is drawn again.
+  const drawRuns = (all, keep) => {
+    runs = all.map((x) => {
+      const row = el("label", "check runrow");
+      const input = el("input", "", { type: "checkbox" });
+      input.checked = !!keep && keep.has(x.path);
+      input.onchange = load;
+      row.append(input, document.createTextNode(`${x.name} · ${x.images} ảnh · ${x.pending ? `chưa duyệt ${x.pending}` : "đã duyệt hết"}${x.exported ? " · đã xuất" : ""}`));
+      return { path: x.path, input, row };
+    });
+    runsBox.replaceChildren(...runs.map((r) => r.row));
+  };
+  pickAll.onclick = () => { runs.forEach((r) => { r.input.checked = true; }); load(); };
+  pickNone.onclick = () => { runs.forEach((r) => { r.input.checked = false; }); load(); };
+  // Export shows its progress on the button itself; no extra message windows. One file for every chosen run.
   exportBtn.onclick = async () => {
     exportBtn.disabled = true; exportBtn.textContent = "Đang xuất…";
     try {
-      await api("reviewExport", { batch });
+      const picked = chosen();
+      const file = await api("reviewExportAll", { batches: picked });
       exportBtn.textContent = "✓ Đã xuất";
-      const option = batches.selectedOptions[0];
-      if (option && !option.textContent.endsWith("đã xuất")) option.textContent += "  • đã xuất";
+      hint.textContent = "Đã xuất 1 file: " + file;
+      drawRuns(list(await api("reviewBatches")), new Set(picked));
       setTimeout(() => { exportBtn.textContent = "Xuất file Loox"; refresh(); }, 2000);
     } catch (e) { status.textContent = e.message; exportBtn.textContent = "Xuất file Loox"; refresh(); }
   };
   const all = list(await api("reviewBatches"));
-  batches.setItems(all.map((x) => x.path), all.map((x) => x.label));
-  if (all.some((x) => x.path === run.resultFolder)) batches.value = run.resultFolder;
+  drawRuns(all);
   if (!all.length) status.textContent = "Chưa có lần chạy nào để duyệt. Lần chạy tạo ra ảnh sẽ hiện ở đây.";
   else await load();
   return new Promise((resolve) => { view.onClose = resolve; });
@@ -1149,7 +1180,8 @@ function wire() {
     }, 700);
   };
   ui.btnClearLog.onclick = () => { ui.txtLog.value = ""; };
-  ui.btnOut.onclick = () => api("openPath", { path: run.resultFolder || state.output });
+  // Kết quả = the Loox files Duyệt & xuất file made, one per export, named by time (workspace/exports). Each run keeps its own images in workspace/output/<run>.
+  ui.btnOut.onclick = () => api("openPath", { path: state.exports });
   ui.btnReview.onclick = async () => { if (!run.active) { await showReviewDialog(); updateReviewButton(); } };
   ui.btnSetup.onclick = showSetupDialog;
   ui.btnUpdate.onclick = () => (run.active ? messageBox("Đang xử lý sản phẩm. Chờ chạy xong rồi cập nhật.", "Cập nhật") : showUpdateDialog());

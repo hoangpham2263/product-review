@@ -64,7 +64,8 @@ Data ownership
   data/names.txt      Reusable author sample pool.
   data/*.json         Product contexts and editorial rules.
   data/review-samples.jsonl Review texts; one is picked at random per review as a style sample.
-  workspace/output/<batch>/     Everything from one run: images/, refs/, logs/, loox_import.csv.
+  workspace/output/<batch>/     Everything from one run: images/, refs/, logs/, review decisions; exported.txt once it is in an export.
+  workspace/exports/loox_<time>.csv  A Loox import file made by Duyệt & xuất file (one or several runs); Mở kết quả opens this folder.
   workspace/output/<batch>/urls.input.txt Input URLs for this run.
   workspace/output/<batch>/urls.completed.txt Successful URL checkpoints for this run.
   The GUI copies its run log into <batch>/logs/run.log when the run ends.

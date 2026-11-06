@@ -1,4 +1,4 @@
-﻿# Hướng dẫn và bài học của dự án
+# Hướng dẫn và bài học của dự án
 
 Áp dụng cho Product Review (repo `hoangpham2263/product-review`, tách từ Tools Hub). Đọc trước khi sửa workflow, prompt, giao diện hoặc dữ liệu mẫu.
 
@@ -68,7 +68,7 @@ CLI exit 0 không xác nhận công cụ tạo ảnh thành công. Giữ console
 
 ## 6. Review mẫu và báo cáo
 
-- Rating mẫu random độc lập từng review: 55% cho 5 sao, 45% cho 4 sao; batch nhỏ không bắt buộc đúng tỉ lệ tuyệt đối.
+- Rating mẫu random độc lập từng review: 60% cho 5 sao, 40% cho 4 sao; batch nhỏ không bắt buộc đúng tỉ lệ tuyệt đối.
 - Kho tên nam/nữ dùng dạng tên riêng + chữ cái đầu của họ, ví dụ `Josh K.`; mỗi tên riêng một dòng, không nhân từng tên với họ A–Z. Xáo trộn, dùng hết kho trước khi lặp; đây là tên cho dữ liệu mẫu.
 - Dùng toàn bộ `review-samples.jsonl` làm một kho cách viết chung, không lọc theo danh mục hoặc phụ thuộc kho ảnh. Mỗi dòng chỉ giữ `body`, bỏ ID, URL nguồn và metadata sản phẩm; chuẩn hóa khoảng trắng, bỏ dòng rỗng và nội dung trùng trên toàn kho. Mỗi review chọn ngẫu nhiên một mẫu để học cách diễn đạt, nhịp và độ dài, lưu lại đúng đoạn mẫu đã dùng.
 - Nội dung review phải theo ảnh sản phẩm hiện tại; không lấy đặc điểm sản phẩm, tuyên bố hoặc trải nghiệm từ mẫu. Không áp bộ kiểu viết định sẵn hoặc gợi ý một cụm mở đầu cố định cho mọi review.
@@ -99,6 +99,10 @@ CLI exit 0 không xác nhận công cụ tạo ảnh thành công. Giữ console
 - `src/workflow/steps/02-create-image.ps1`, `src/infrastructure/image-output.ps1`: prompt và vai trò ảnh (ảnh 1 review, ảnh 2 sản phẩm), gọi AI ảnh, thử lại khi mất kết nối.
 - `src/workflow/steps/03-write-review.ps1`, `data/writing-style.json`: bộ quy tắc review duy nhất, đánh số theo nhãn (CONTENT, OPINION, VOICE, WORDS, STRUCTURE, FACTS, OUTPUT); sửa quy tắc viết review ở đây, không thêm câu rời vào prompt. `src/domain/writing-style.ps1`: kiểm tra bản nháp (dấu chấm than, thán từ, chép mẫu; lần đầu còn kiểm gạch dài, từ bóng bẩy, "not just…but", câu "overall", liệt kê ba ý, các câu cùng độ dài, và độ dài theo mẫu); câu mẫu ngẫu nhiên đưa vào prompt đã bỏ dấu chấm than. Một lần sửa nếu bản đầu vi phạm.
 - `src/workflow/steps/04-complete-metadata.ps1`, `05-export-results.ps1`: sao, tên, email, ngày; lưu kết quả và hàng đợi URL.
+- `src/application/batch-review.ps1`: kết quả từng lần chạy (`results.json`) và quyết định Giữ/Bỏ (`review.json`).
+- `src/application/loox-export.ps1`: nơi duy nhất ghi file Loox. Mỗi lần xuất (một hay nhiều lần chạy, chọn trong Duyệt) ra **một file CSV** `workspace/exports/loox_<giờ>.csv`, đặt tên theo giờ, nằm thẳng trong `exports`, không thư mục con và không file tổng hợp; đó là file nạp vào Loox. Mỗi lần chạy đã xuất có `<lần chạy>/exported.txt` ghi đường dẫn file đó để Duyệt hiện "đã xuất". Chỉ xuất khi mọi ảnh đều đã có quyết định. Lần chạy bị dừng giữa chừng chưa có sao, tên và ngày (bước 4 chỉ chạy lúc cuối): khi xuất, các dòng đã Giữ được điền bằng đúng quy tắc bước 4 và lưu lại vào `results.json`.
+- `workspace/output/<lần chạy>/` (ảnh, `results.json`, `review.json`, log của riêng lần chạy đó) và `workspace/exports/` (các file Loox đã xuất) là hai nơi tách nhau. Nút "Mở kết quả" mở thẳng `exports`.
+- `workspace/config/run-settings.json`: số Luồng, Viết review, Tạo ảnh của lần chạy kế tiếp, lưu ở server để không mất khi mở lại app.
 - `src/application/reference-archive.ps1`: snapshot, nguồn và hash đầu vào.
 - `workspace/source-photos/catalog.json`: inventory và thông tin nguồn ảnh, tải từ repo product-review-sources cùng các nhóm ảnh; không commit ảnh kho vào Git.
 - `src/infrastructure/ai.ps1` (`Invoke-AI`, nối cấu hình của tool với lõi chung `core/ai`), `core/ai/providers/browser.ps1`, `core/extension/`, `core/bridge/`: tạo ảnh qua tab Google Flow / ChatGPT, viết chữ qua Gemini web (ô Viết review / Tạo ảnh cạnh Bắt đầu → `-TextBackend` / `-ImageBackend`; Gemini thay Codex ở mọi bước chữ trong `Invoke-AI`). Không dùng API key; Gemini CLI không còn đăng nhập Google được. CLI dùng Antigravity (`agy`, `core/ai/providers/antigravity.ps1`): prompt và ảnh vào một thư mục riêng vì agy chỉ nhận prompt qua `-p`. Không tự đổi AI: chạy lỗi với AI khác thì hỏi người dùng có chạy lại bằng Codex không. Chạy trong Chrome chính của máy (tab riêng, nhóm Tools Hub). Tab nền hay cửa sổ bị che thì trang không chạy: mỗi việc đưa tab của nó lên trước. Flow tạo ảnh theo tỷ lệ đặt trong ô nhập (mặc định 16:9, ảnh ra 1376×768) nên ảnh nền vuông/dọc bị dựng lại cả khung và góc máy: `core/extension/sites/flow.js` chọn tỷ lệ gần nhất với ảnh review (16:9, 4:3, 1:1, 3:4, 9:16) trước khi dán ảnh; không chọn được thì chạy tiếp với tỷ lệ đang có. Flow chỉ nhận cú bấm thật (`chrome.debugger`); sau khi tải ảnh tham khảo Flow vẽ lại ô nhập, phải tìm lại.
@@ -184,6 +188,41 @@ Bài học được đúc kết thành nguyên tắc ngắn để áp dụng l�
 
 - Giữ dáng và tỉ lệ dài, rộng, cao của bàn theo ảnh sản phẩm; đặt bàn đúng phối cảnh, cân đối với ghế và khoảng trống hiện có trong ảnh review.
 - Không phóng bàn quá lớn để lấp chỗ hoặc làm bàn ngắn, bè hơn mẫu; không suy ra kích thước thực khi nguồn không cho biết.
+
+### Thay biển neon trong bối cảnh có sẵn - 001-christmas-neon-sign
+<!-- app-lesson: {"id":"neon-existing-sign-placement-001-christmas-neon-sign","scope":"product","product_url":"https://dreamyvows.com/products/christmas-neon-sign","category":"","created_at":"2026-11-06T03:00:00Z"} -->
+Áp dụng: https://dreamyvows.com/products/christmas-neon-sign.
+
+- Dùng đúng ảnh nền người dùng chọn; thay biển neon cũ và quầng sáng cũ ngay vùng tường của nó, giữ đồ đạc và texture. Toàn bộ chữ, icon và đế phải nằm trong vùng trống, có khoảng hở với tranh, màn hình, kệ, sofa hoặc đầu giường.
+- Giữ kiểu chữ, màu và hình gốc; chỉ đổi dòng cá nhân hóa theo yêu cầu hiện tại, không giữ placeholder khi đã được yêu cầu điền tên. Đế trong suốt ôm thiết kế, không thêm bảng chữ nhật đặc hoặc chuyển đạo cụ từ ảnh sản phẩm sang nền.
+
+### Thay biển neon trong bối cảnh có sẵn - 002-neon-light-christmas-decorations
+<!-- app-lesson: {"id":"neon-existing-sign-placement-002-neon-light-christmas-decorations","scope":"product","product_url":"https://dreamyvows.com/products/neon-light-christmas-decorations","category":"","created_at":"2026-11-06T03:00:00Z"} -->
+Áp dụng: https://dreamyvows.com/products/neon-light-christmas-decorations.
+
+- Dùng đúng ảnh nền người dùng chọn; thay biển neon cũ và quầng sáng cũ ngay vùng tường của nó, giữ đồ đạc và texture. Toàn bộ chữ, icon và đế phải nằm trong vùng trống, có khoảng hở với tranh, màn hình, kệ, sofa hoặc đầu giường.
+- Giữ kiểu chữ, màu và hình gốc; chỉ đổi dòng cá nhân hóa theo yêu cầu hiện tại, không giữ placeholder khi đã được yêu cầu điền tên. Đế trong suốt ôm thiết kế, không thêm bảng chữ nhật đặc hoặc chuyển đạo cụ từ ảnh sản phẩm sang nền.
+
+### Thay biển neon trong bối cảnh có sẵn - 003-ho-ho-ho-light-up-sign
+<!-- app-lesson: {"id":"neon-existing-sign-placement-003-ho-ho-ho-light-up-sign","scope":"product","product_url":"https://dreamyvows.com/products/ho-ho-ho-light-up-sign","category":"","created_at":"2026-11-06T03:00:00Z"} -->
+Áp dụng: https://dreamyvows.com/products/ho-ho-ho-light-up-sign.
+
+- Dùng đúng ảnh nền người dùng chọn; thay biển neon cũ và quầng sáng cũ ngay vùng tường của nó, giữ đồ đạc và texture. Toàn bộ chữ, icon và đế phải nằm trong vùng trống, có khoảng hở với tranh, màn hình, kệ, sofa hoặc đầu giường.
+- Giữ kiểu chữ, màu và hình gốc; chỉ đổi dòng cá nhân hóa theo yêu cầu hiện tại, không giữ placeholder khi đã được yêu cầu điền tên. Đế trong suốt ôm thiết kế, không thêm bảng chữ nhật đặc hoặc chuyển đạo cụ từ ảnh sản phẩm sang nền.
+
+### Thay biển neon trong bối cảnh có sẵn - 004-merry-christmas-neon-light
+<!-- app-lesson: {"id":"neon-existing-sign-placement-004-merry-christmas-neon-light","scope":"product","product_url":"https://dreamyvows.com/products/merry-christmas-neon-light","category":"","created_at":"2026-11-06T03:00:00Z"} -->
+Áp dụng: https://dreamyvows.com/products/merry-christmas-neon-light.
+
+- Dùng đúng ảnh nền người dùng chọn; thay biển neon cũ và quầng sáng cũ ngay vùng tường của nó, giữ đồ đạc và texture. Toàn bộ chữ, icon và đế phải nằm trong vùng trống, có khoảng hở với tranh, màn hình, kệ, sofa hoặc đầu giường.
+- Giữ kiểu chữ, màu và hình gốc; chỉ đổi dòng cá nhân hóa theo yêu cầu hiện tại, không giữ placeholder khi đã được yêu cầu điền tên. Đế trong suốt ôm thiết kế, không thêm bảng chữ nhật đặc hoặc chuyển đạo cụ từ ảnh sản phẩm sang nền.
+
+### Thay biển neon trong bối cảnh có sẵn - 005-wedding-neon-sign-neon-sign
+<!-- app-lesson: {"id":"neon-existing-sign-placement-005-wedding-neon-sign-neon-sign","scope":"product","product_url":"https://dreamyvows.com/products/wedding-neon-sign-neon-sign","category":"","created_at":"2026-11-06T03:00:00Z"} -->
+Áp dụng: https://dreamyvows.com/products/wedding-neon-sign-neon-sign.
+
+- Dùng đúng ảnh nền người dùng chọn; thay biển neon cũ và quầng sáng cũ ngay vùng tường của nó, giữ đồ đạc và texture. Toàn bộ chữ, icon và đế phải nằm trong vùng trống, có khoảng hở với tranh, màn hình, kệ, sofa hoặc đầu giường.
+- Giữ kiểu chữ, màu và hình gốc; chỉ đổi dòng cá nhân hóa theo yêu cầu hiện tại, không giữ placeholder khi đã được yêu cầu điền tên. Đế trong suốt ôm thiết kế, không thêm bảng chữ nhật đặc hoặc chuyển đạo cụ từ ảnh sản phẩm sang nền.
 
 <!-- app-lessons:end -->
 - Bridge từng do lần chạy bật (`Start-Process node`) với stdout là ống của lần chạy đó (giờ `core/bridge/ensure.mjs` bật tách riêng); lần chạy xong ống đóng, dòng in tiếp theo làm bridge chết (EPIPE) và lần chạy sau bị "Response ended" rồi "Connection refused". Bridge bỏ qua lỗi ghi stdout/stderr, ghi lý do dừng vào `workspace/logs/bridge-exit.log`; gọi bridge lỗi mà bridge không trả lời thì `Restore-ImageBridge` bật lại trước lần thử sau.

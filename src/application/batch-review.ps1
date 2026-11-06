@@ -1,5 +1,5 @@
 ﻿# Runs keep their rows in <batch>/results.json; the Loox CSV is written only after every image
-# is reviewed (decisions in <batch>/review.json).
+# is reviewed (decisions in <batch>/review.json). The export itself is in loox-export.ps1.
 function Save-BatchResults($Rows, [string]$BatchDir) {
     if (-not $BatchDir) { return }
     $json = ConvertTo-Json -InputObject @($Rows) -Depth 5
@@ -58,19 +58,6 @@ function Get-UnsentRejectedSamples([string]$ProjectRoot) {
     $root = Join-Path $ProjectRoot 'workspace/rejected'
     if (-not (Test-Path -LiteralPath $root)) { return @() }
     return @(Get-ChildItem -LiteralPath $root -Directory | Where-Object { -not (Test-Path -LiteralPath (Join-Path $_.FullName '.sent')) } | Sort-Object LastWriteTime)
-}
-
-# Only after every image has a decision; only images marked ok go into the file.
-function Export-ReviewedCsv([string]$BatchDir) {
-    $items = @(Get-BatchReview $BatchDir)
-    if (-not $items.Count) { throw 'Lần chạy này chưa có ảnh nào.' }
-    $left = @($items | Where-Object { -not $_.Decision })
-    if ($left.Count) { throw "Còn $($left.Count) ảnh chưa duyệt." }
-    $ok = @($items | Where-Object Decision -eq 'ok')
-    if (-not $ok.Count) { throw 'Chưa có ảnh nào Đạt.' }
-    $path = Join-Path $BatchDir 'loox_import.csv'
-    Save-Csv @($ok.Row) $path
-    return $path
 }
 
 # Images still waiting for a decision in one run folder (0 when nothing to review).

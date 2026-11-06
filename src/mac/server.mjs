@@ -234,6 +234,22 @@ async function handle(req, res) {
     const since = Number(url.searchParams.get("since") || 0);
     return send(res, 200, { running: !!run.proc, done: run.done, exitCode: run.exitCode, stopped: run.stopped, resultFolder: run.resultFolder, events: run.events.slice(since), next: run.events.length });
   }
+  // What the run pickers hold (Luồng, Viết review, Tạo ảnh), kept in workspace/config/run-settings.json so it survives a restart,
+  // another window or port and a cleared browser.
+  if (path === "/api/run-settings") {
+    const file = join(workspace, "config", "run-settings.json");
+    if (req.method === "GET") { try { return send(res, 200, JSON.parse((await readFile(file, "utf8")).replace(/^﻿/, ""))); } catch { return send(res, 200, {}); } }
+    if (req.method === "POST") {
+      const given = JSON.parse((await body(req)).toString("utf8") || "{}"), saved = {};
+      try { Object.assign(saved, JSON.parse((await readFile(file, "utf8")).replace(/^﻿/, ""))); } catch {}
+      if (Number.isInteger(given.threads) && given.threads >= 1 && given.threads <= 4) saved.threads = given.threads;
+      if (["codex", "gemini", "antigravity"].includes(given.textBackend)) saved.textBackend = given.textBackend;
+      if (["codex", "flow"].includes(given.imageBackend)) saved.imageBackend = given.imageBackend;
+      await mkdir(dirname(file), { recursive: true }); await writeFile(file, JSON.stringify(saved, null, 2));
+      return send(res, 200, saved);
+    }
+  }
+
   if (path === "/api/stop" && req.method === "POST") { stopRun(); return send(res, 200, { ok: true }); }
   // Cấu hình (core/setup/config-api.mjs).
   if (await configApi(req, res, path)) return;

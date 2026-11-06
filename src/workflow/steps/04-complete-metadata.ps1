@@ -1,6 +1,7 @@
 ﻿# Step 4: rating, author, email and date. Local only; runs after every image/review worker has finished.
 function Get-SampleReviewRating([ValidateRange(0, 99)][int]$Draw = (Get-Random -Maximum 100)) {
-    if ($Draw -lt 55) { return 5 }
+    # 60% of the reviews get five stars, 40% four.
+    if ($Draw -lt 60) { return 5 }
     return 4
 }
 

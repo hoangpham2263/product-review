@@ -2,7 +2,8 @@
 // workspace/config.
 //   GET /setup[?back=<path>]        the Cấu hình page (page.html, page.js; tool.css from core/assets)
 //   POST /api/setup                 the steps (setup-check.ps1 -AsJson)
-//   POST /api/setup-step {step}     install: Codex and the bridge (core/bridge); login: codex login with a
+//   POST /api/setup-step {step}     update-all: Cài / cập nhật tất cả AI (Codex, Antigravity CLI, the bridge), one result each;
+//                                   install: Codex and the bridge (core/bridge); login: codex login with a
 //                                   one-time code, typed on the sign-in page opened in the user's Chrome;
 //                                   browser: Chrome's extensions page and core/extension, to install the Product Review
 //                                   extension; google: Google's account chooser in Chrome (sign in, add or switch);
@@ -14,10 +15,10 @@
 //   GET|POST /api/config/google     the Google account Flow and Gemini run with: { email } / choose { email } ("" is
 //                                   Google's default, the first one signed in)
 import { execFile, spawn } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { homedir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { findTool as findIn, runTool, psCommand, psFile, onWindows, killTree, openTerminal, openChrome } from "../platform.mjs";
 import { createSetupReader } from "./setup-report.mjs";
 import { readUsage, summarizeUsage } from "./usage.mjs";
@@ -44,6 +45,32 @@ export function createConfigApi({ hubRoot, pwsh, env = process.env }) {
   const googleAccount = () => { try { return String(JSON.parse(readFileSync(googleFile, "utf8")).email || ""); } catch { return ""; } };
   const withAccount = (url) => (googleAccount() ? `${url}?authuser=${encodeURIComponent(googleAccount())}` : url);
   const workspace = q(join(hubRoot, "workspace"));
+  // Where agy is: on PATH, in ~/.local/bin, or where Google's Windows installer puts it (%LOCALAPPDATA%\agy\bin).
+  const AGY_INSTALLER = "https://antigravity.google/cli/install.ps1";
+  const agyFile = () => findTool("agy") || [join(homedir(), ".local", "bin", onWindows ? "agy.exe" : "agy"), ...(onWindows && process.env.LOCALAPPDATA ? [join(process.env.LOCALAPPDATA, "agy", "bin", "agy.exe")] : [])].find((p) => existsSync(p));
+  const lastLine = (text) => String(text || "").trim().split(/\r?\n/).pop() || "";
+  const runAsync = (cmd, args, opts) => new Promise((done) => runTool(cmd, args, { cwd: hubRoot, timeout: 15 * 60000, env, windowsHide: true, ...opts }, (err, stdout, stderr) => done(err ? { ok: false, message: (lastLine(stderr) || lastLine(stdout) || err.message).slice(0, 300) } : { ok: true, message: lastLine(stdout).slice(0, 200) })));
+  // Google's own installer for agy (checks the SHA-512 of what it downloads, puts agy.exe in %LOCALAPPDATA%\agy\bin and
+  // sets it up). It is saved to a file and run from there, never piped into PowerShell. agy updates itself afterwards.
+  const installAntigravity = async () => {
+    if (!onWindows) return { ok: false, message: "Chưa cài tự động được trên máy này. Cài Antigravity thủ công." };
+    const had = agyFile();
+    let dir = "";
+    try {
+      const r = await fetch(AGY_INSTALLER, { signal: AbortSignal.timeout(60000) });
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const script = await r.text();
+      if (script.length > 200000 || !script.includes("agy.exe")) throw new Error("Bộ cài trả về nội dung lạ, không chạy.");
+      dir = mkdtempSync(join(tmpdir(), "agy-install-"));
+      const file = join(dir, "install.ps1");
+      writeFileSync(file, script);
+      const ran = await new Promise((done) => execFile(pwsh, psFile(file, []), { cwd: dir, env, timeout: 10 * 60000, windowsHide: true }, (err, stdout, stderr) => done({ err, stdout, stderr })));
+      if (ran.err && !agyFile()) throw new Error(lastLine(ran.stderr) || lastLine(ran.stdout) || ran.err.message);
+      if (!agyFile()) return { ok: false, message: "Đã chạy bộ cài nhưng chưa thấy agy. Mở lại app rồi bấm Kiểm tra lại." };
+      return { ok: true, message: had ? "Đã có sẵn, agy tự cập nhật ở nền." : "Đã cài. Bấm Đăng nhập ở Antigravity CLI để đăng nhập Google." };
+    } catch (e) { return { ok: false, message: String(e.message || e).slice(0, 300) }; }
+    finally { if (dir) rmSync(dir, { recursive: true, force: true }); }
+  };
   // A page in the user's own Chrome, where the AIs are signed in: in the Product Review tab group, opened by the extension
   // (core/bridge/ensure.mjs --open; without the extension, a plain new tab).
   const openInChrome = (url, done) => execFile(process.execPath, [join(hubRoot, "core", "bridge", "ensure.mjs"), "--open", url], { cwd: hubRoot, env, timeout: 120000, windowsHide: true }, (err, stdout) => {
@@ -110,10 +137,22 @@ export function createConfigApi({ hubRoot, pwsh, env = process.env }) {
       }
       if (step === "antigravity") {
         // Antigravity signs in on its own (not through Chrome), from inside agy.
-        const agy = findTool("agy") || [join(homedir(), ".local", "bin", onWindows ? "agy.exe" : "agy")].find((p) => existsSync(p));
+        const agy = agyFile();
         if (!agy) { json(res, 400, { error: "Chưa cài Antigravity CLI (agy)." }); return true; }
         openTerminal(agy);
         json(res, 200, { ok: true });
+        return true;
+      }
+      if (step === "update-all") {
+        // Cài / cập nhật tất cả AI: Codex (npm @latest installs it or brings it up to date), Antigravity CLI (Google's
+        // installer; it updates itself after that) and the browser bridge. Gemini, Flow and ChatGPT are websites in
+        // Chrome and need nothing installed.
+        const npmCmd = findTool("npm");
+        const results = [];
+        results.push({ name: "Codex", ...(npmCmd ? await runAsync(npmCmd, ["install", "-g", "@openai/codex@latest"]) : { ok: false, message: "Chưa có Node.js (npm). Mở lại start-app để cài." }) });
+        results.push({ name: "Antigravity CLI", ...(await installAntigravity()) });
+        if (npmCmd) results.push({ name: "Cầu nối trình duyệt", ...(await runAsync(npmCmd, ["install", "--silent"], { cwd: join(hubRoot, "core", "bridge"), timeout: 10 * 60000 })) });
+        json(res, 200, { results });
         return true;
       }
       if (step === "browser") {
