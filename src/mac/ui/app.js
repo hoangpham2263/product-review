@@ -263,11 +263,11 @@ function buildMain() {
     box.setItems(values, labels);
     try { box.value = localStorage.getItem(key) || values[0]; } catch {}
     if (!box.value) box.value = values[0];
-    box.onchange = () => { try { localStorage.setItem(key, box.value); } catch {} saveRunSettings({ [key]: box.value }); updateUsage(); };
+    box.onchange = () => { try { localStorage.setItem(key, box.value); } catch {} saveRunSettings({ [key]: box.value }); updateUsage(); updateAgentControls(); };
     return [name, box];
   };
   [ui.lblText, ui.cmbText] = picker("Viết review:", 6, "textBackend", ["codex", "gemini", "antigravity"], ["Codex", "Gemini web", "Antigravity CLI"]);
-  [ui.lblBackend, ui.cmbBackend] = picker("Tạo ảnh:", 33, "imageBackend", ["codex", "flow"], ["Codex", "Google Flow"]);
+  [ui.lblBackend, ui.cmbBackend] = picker("Tạo ảnh:", 33, "imageBackend", ["codex", "flow", "agent"], ["Codex", "Google Flow", "Claude (Flow)"]);
   // Luồng, Viết review and Tạo ảnh are kept in workspace/config/run-settings.json (the server), so they are the same next time.
   const saveRunSettings = (part) => fetch("/api/run-settings", { method: "POST", body: JSON.stringify(part) }).catch(() => {});
   ui.numThr.onchange = () => saveRunSettings({ threads: ui.numThr.value });
@@ -276,13 +276,19 @@ function buildMain() {
     if (saved.textBackend) ui.cmbText.value = saved.textBackend;
     if (saved.imageBackend) ui.cmbBackend.value = saved.imageBackend;
     updateUsage();
+    updateAgentControls();
+    resumeAgent();
   }).catch(() => {});
   // Tokens this run has used (added up from each Codex call) and the quota left, refreshed in the background.
   // They shrink with the window (cut with …) so they never run under the pickers on the right.
   ui.lblTokens = at(label("", "muted"), 460, 11, null, 20, { right: 400 });
   ui.lblQuota = at(label("", "muted"), 460, 31, null, 20, { right: 400 });
   for (const l of [ui.lblTokens, ui.lblQuota]) Object.assign(l.style, { fontSize: "12px", lineHeight: "20px" });
-  cardRun.append(ui.btnRun, ui.btnStop, ui.lblStatus, ui.lblTokens, ui.lblQuota, ui.lblText, ui.cmbText, ui.lblBackend, ui.cmbBackend, ui.lblThr, ui.numThr);
+  // Copy prompt (Claude (Google Flow) only): the fixed prompt of docs/agent-prompt.md, to paste by hand into Claude Code.
+  ui.btnCopyPrompt = at(button("Copy prompt"), 460, 15, 120, 32);
+  ui.btnCopyPrompt.style.display = "none";
+  ui.btnCopyPrompt.onclick = copyAgentPrompt;
+  cardRun.append(ui.btnCopyPrompt, ui.btnRun, ui.btnStop, ui.lblStatus, ui.lblTokens, ui.lblQuota, ui.lblText, ui.cmbText, ui.lblBackend, ui.cmbBackend, ui.lblThr, ui.numThr);
 
   // Tiến trình & thông báo (20,508 1060x282, all anchors).
   const cardLog = at(el("div", "card"), 20, 508, null, null, { right: 24, bottom: 10 });
@@ -1083,6 +1089,7 @@ function receive(event) {
 }
 async function startBatch() {
   if (run.active) return;
+  if (ui.cmbBackend.value === "agent") return startAgent();
   try { await saveQueue(true); } catch (e) { return appendLog(e.message); }
   if (!countUrls()) return messageBox("Vui lòng thêm ít nhất một link sản phẩm.");
   if (!state.codex) return messageBox('Chưa có công cụ xử lý. Bấm "Cấu hình" để xem hướng dẫn.');
@@ -1105,6 +1112,65 @@ async function startBatch() {
   setBar(0, 1, true);
   updateRunDisplay();
   poll();
+}
+// ----- Claude (Google Flow): Claude Code drives Flow and writes the reviews (/api/agent/*); the images then wait in Duyệt -----
+function updateAgentControls() {
+  const on = ui.cmbBackend?.value === "agent";
+  if (!ui.btnCopyPrompt) return;
+  ui.btnCopyPrompt.style.display = on ? "" : "none";
+  ui.lblTokens.style.display = ui.lblQuota.style.display = on ? "none" : "";
+}
+async function copyAgentPrompt() {
+  const r = await fetch("/api/agent/prompt").then((x) => x.json()).catch(() => null);
+  if (!r?.prompt) return appendLog("Chưa lấy được prompt: " + (r?.error || "máy chủ không trả lời."));
+  try { await navigator.clipboard.writeText(r.prompt); } catch { const t = el("textarea"); t.value = r.prompt; document.body.append(t); t.select(); document.execCommand("copy"); t.remove(); }
+  ui.btnCopyPrompt.textContent = "Đã copy";
+  setTimeout(() => { ui.btnCopyPrompt.textContent = "Copy prompt"; }, 2000);
+  appendLog("Đã copy prompt (run " + r.run + "). Dán vào Claude Code mở trong thư mục Product Review.");
+}
+async function startAgent() {
+  try { await saveQueue(true); } catch (e) { return appendLog(e.message); }
+  if (!countUrls()) return messageBox("Vui lòng thêm ít nhất một link sản phẩm.");
+  ui.txtLog.value = "";
+  const r = await fetch("/api/agent/run", { method: "POST", body: "{}" });
+  if (!r.ok) { const body = await r.json().catch(() => ({})); return appendLog("Chưa khởi động được Claude: " + (body.error || r.status)); }
+  attachAgent(Date.now());
+}
+function attachAgent(started) {
+  Object.assign(run, { agent: true, since: 0, total: countUrls(), done: 0, stopped: false, failure: false, started, resultFolder: "", ai: "Claude (Google Flow)" });
+  setRunning(true);
+  setStatus("Đang chạy", "var(--accent)");
+  setBar(0, 1, true);
+  pollAgent();
+}
+async function resumeAgent() {
+  const st = await fetch("/api/agent/status").then((x) => x.json()).catch(() => null);
+  if (st?.active) attachAgent(Date.now() - st.elapsed_s * 1000);
+}
+async function pollAgent() {
+  if (!run.active || !run.agent) return;
+  try {
+    const st = await (await fetch("/api/agent/status")).json();
+    if (st.result_folder) run.resultFolder = st.result_folder;
+    const elapsed = Math.floor((Date.now() - run.started) / 1000);
+    const time = String(Math.floor(elapsed / 60)).padStart(2, "0") + ":" + String(elapsed % 60).padStart(2, "0");
+    ui.lblProgress.textContent = `${st.last_text || "Claude đang chuẩn bị…"}  •  ${time}  •  ${run.ai}`;
+    ui.txtLog.value = (st.tail || []).join("\n"); ui.txtLog.scrollTop = ui.txtLog.scrollHeight;
+    if (!st.active) return finishAgent(st);
+  } catch {}
+  setTimeout(pollAgent, 1500);
+}
+async function finishAgent(st) {
+  setRunning(false);
+  run.agent = false;
+  await loadState();
+  await updateReviewButton();
+  const pending = run.resultFolder ? await api("pending", { batch: run.resultFolder }).catch(() => 0) : 0;
+  ui.lblProgress.textContent = st.last_text || "Claude đã dừng.";
+  if (st.status === "stopped") { setStatus("Đã dừng", "var(--muted)"); appendLog("Đã dừng. Các link chưa hoàn tất được giữ lại."); }
+  else if (st.status === "done" && pending > 0) { setStatus("Chờ bạn duyệt", "var(--ok)"); appendLog(`Claude đã xong. ${pending} ảnh chờ bạn duyệt: bấm Duyệt & xuất file (Giữ/Bỏ từng ảnh). Claude không tự Giữ/Bỏ.`); }
+  else if (st.status === "done") { setStatus("! Cần kiểm tra", "var(--warn)"); appendLog("Claude đã dừng nhưng chưa có ảnh nào chờ duyệt. Xem tiến trình ở trên."); }
+  else { setStatus("! Cần thử lại", "var(--warn)"); appendLog("Lượt Claude chưa hoàn tất" + (st.error ? ": " + st.error : ".")); }
 }
 async function poll() {
   if (!run.active) return;
@@ -1151,7 +1217,7 @@ async function finish(r) {
   }
 }
 // Running animation only in the status label.
-setInterval(() => { if (run.active && !run.stopped) { run.anim = (run.anim + 1) % 3; setStatus("Đang chạy " + [".", "..", "..."][run.anim], "var(--accent)"); } }, 350);
+setInterval(() => { if (run.active && !run.stopped && !run.agent) { run.anim = (run.anim + 1) % 3; setStatus("Đang chạy " + [".", "..", "..."][run.anim], "var(--accent)"); } }, 350);
 
 // ---------- wiring ----------
 function wire() {
@@ -1197,7 +1263,7 @@ function wire() {
       .then((x) => (x.ok ? location.reload() : setTimeout(wait, 400))).catch(() => setTimeout(wait, 400));
     setTimeout(wait, 900);
   };
-  ui.btnStop.onclick = async () => { if (run.active) { run.stopped = true; await fetch("/api/stop", { method: "POST" }); setStatus("Đang dừng...", "var(--accent)"); } };
+  ui.btnStop.onclick = async () => { if (run.active && run.agent) { run.stopped = true; await fetch("/api/agent/stop", { method: "POST" }); setStatus("Đang dừng...", "var(--accent)"); } else if (run.active) { run.stopped = true; await fetch("/api/stop", { method: "POST" }); setStatus("Đang dừng...", "var(--accent)"); } };
   addEventListener("beforeunload", (e) => { if (run.active) { e.preventDefault(); e.returnValue = ""; } });
   addEventListener("resize", () => renderRows());
 }

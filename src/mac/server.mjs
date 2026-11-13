@@ -10,6 +10,7 @@ import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { randomUUID, createHash } from "node:crypto";
 import { createConfigApi } from "../../core/setup/config-api.mjs";
+import { createAgentRunner, buildPrompt, newRunId } from "../../core/setup/agent-run.mjs";
 import { PWSH, toolEnv, psFile, psCommand, killTree, appWindow, chooseFiles } from "../../core/platform.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -21,6 +22,8 @@ const workspace = join(root, "workspace");
 const logs = join(workspace, "logs");
 const uploads = join(workspace, "temp", "mac-uploads");
 const configApi = createConfigApi({ hubRoot: root, pwsh: PWSH, env: toolEnv });
+// Agent mode: Claude Code drives Google Flow and writes the reviews (core/setup/agent-run.mjs, docs/agent-prompt.md).
+const agent = createAgentRunner({ toolRoot: root, workspace });
 // Errors from the window, this server and PowerShell go to workspace/logs (app-errors.log as Write-AppError
 // writes it, mac-rpc.err.log), past 1 MB rolled over to *.old.log; Báo lỗi reads them.
 mkdirSync(logs, { recursive: true });
@@ -76,7 +79,7 @@ async function receive(line) {
   run.events.push(event);
 }
 async function startRun({ threads = 1, backend = "codex", text = "codex" }) {
-  if (run.proc) throw new Error("Đang chạy.");
+  if (run.proc || agent.isActive()) throw new Error("Đang chạy.");
   await mkdir(logs, { recursive: true });
   const stamp = Date.now();
   Object.assign(run, { events: [], index: 0, stopped: false, exitCode: null, resultFolder: "", done: false,
@@ -244,13 +247,29 @@ async function handle(req, res) {
       try { Object.assign(saved, JSON.parse((await readFile(file, "utf8")).replace(/^﻿/, ""))); } catch {}
       if (Number.isInteger(given.threads) && given.threads >= 1 && given.threads <= 4) saved.threads = given.threads;
       if (["codex", "gemini", "antigravity"].includes(given.textBackend)) saved.textBackend = given.textBackend;
-      if (["codex", "flow"].includes(given.imageBackend)) saved.imageBackend = given.imageBackend;
+      if (["codex", "flow", "agent"].includes(given.imageBackend)) saved.imageBackend = given.imageBackend;
       await mkdir(dirname(file), { recursive: true }); await writeFile(file, JSON.stringify(saved, null, 2));
       return send(res, 200, saved);
     }
   }
 
   if (path === "/api/stop" && req.method === "POST") { stopRun(); return send(res, 200, { ok: true }); }
+  // Agent mode: prompt (filled), start, status (short sanitized progress), stop.
+  if (path === "/api/agent/prompt" && req.method === "GET") {
+    try { const runId = url.searchParams.get("run") || newRunId(); return send(res, 200, { run: runId, prompt: buildPrompt({ toolRoot: root, run: runId }) }); }
+    catch (e) { return send(res, 500, { error: e.message }); }
+  }
+  if (path === "/api/agent/run" && req.method === "POST") {
+    if (run.proc) return send(res, 409, { error: "Đang chạy." });
+    const given = JSON.parse((await body(req)).toString("utf8") || "{}");
+    const r = agent.start({ run: given.run || undefined });
+    return send(res, r.status, r.ok ? { ok: true, run: r.run_id, started: r.started } : { error: r.error });
+  }
+  if (path === "/api/agent/status" && req.method === "GET") {
+    const st = agent.status(), dir = st.run_id ? join(workspace, "output", st.run_id) : "";
+    return send(res, 200, { ...st, result_folder: dir && existsSync(dir) ? dir : "" });
+  }
+  if (path === "/api/agent/stop" && req.method === "POST") { const r = agent.stop(); return send(res, r.status, r.ok ? { ok: true } : { error: r.error }); }
   // Cấu hình (core/setup/config-api.mjs).
   if (await configApi(req, res, path)) return;
   if (path === "/api/choose-images" && req.method === "POST") {
@@ -262,7 +281,7 @@ async function handle(req, res) {
   }
   if (path === "/api/reload" && req.method === "POST") {
     // Tải lại: a fresh server on the files as they are now; the page reloads once it answers again. Not mid-run.
-    if (run.proc) return send(res, 409, { error: "Đang chạy. Dừng hoặc chờ xong rồi tải lại." });
+    if (run.proc || agent.isActive()) return send(res, 409, { error: "Đang chạy. Dừng hoặc chờ xong rồi tải lại." });
     send(res, 200, { ok: true });
     setTimeout(() => {
       const out = openSync(logFile("mac-server.log"), "a");
@@ -307,7 +326,7 @@ function startMenuBar() {
   menuBar = spawn("osascript", ["-l", "JavaScript", join(here, "menubar.js")], { env: { ...process.env, PR_PORT: String(PORT) }, stdio: "ignore" });
   menuBar.on("error", () => { menuBar = null; });
 }
-process.on("exit", () => { try { menuBar?.kill(); } catch {} });
+process.on("exit", () => { try { menuBar?.kill(); } catch {} try { agent.shutdown(); } catch {} });
 
 // Its own window on macOS (core/platform.mjs); on Windows the launcher's app window shows it.
 const openWindow = () => appWindow(`http://127.0.0.1:${PORT}/`);
