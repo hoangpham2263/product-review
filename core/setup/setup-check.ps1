@@ -71,48 +71,13 @@ $node = Get-Command node -ErrorAction SilentlyContinue
 . (Join-Path $PSScriptRoot 'config.ps1')
 # The main window shows what is left; here only when it resets, to keep the step short.
 $quotaText = if ($quotaAvailable -and $quota.Resets) { "Đặt lại: $($quota.Resets)" } else { (@($quotaMessages) -join ' ').Trim() }
-# The Product Review extension (core/extension) in the user's own Chrome, for runs on Google Flow, Gemini or ChatGPT in the
-# browser, and who is signed in there (core/bridge/ensure.mjs --logins, read by the extension). Only checks: Chrome is
-# not started for it. Google covers Flow and Gemini web.
-$extensionDir = Join-Path (Split-Path $PSScriptRoot -Parent) 'extension'
-$web = $null; $extensionState = 'warn'
-if ($node) {
-    try {
-        $answer = (& node (Join-Path (Split-Path $PSScriptRoot -Parent) 'bridge/ensure.mjs') --logins --no-open | Select-Object -Last 1) | ConvertFrom-Json
-        if ($answer.ok) { $extensionState = 'ok'; $web = $answer.logins } elseif ($answer.extension -eq $false) { $extensionState = 'fail' }
-    } catch {}
-}
-$browserReady = $extensionState -eq 'ok'
-# The Google account Flow and Gemini run with, chosen on Cấu hình (workspace/config/google-account.json { email });
-# none chosen is Google's default, the first one signed in. A choice no longer signed in there is dropped.
-$googleChoiceFile = Get-SharedConfigPath (Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'workspace') 'google-account.json'
-$googleChoice = ''
-try { $googleChoice = [string](Get-Content -LiteralPath $googleChoiceFile -Raw -Encoding UTF8 | ConvertFrom-Json).email } catch {}
-function Get-WebStep([string]$Id, [string]$Title, [string]$Site, [string]$Uses) {
-    $state = if (-not $browserReady) { 'wait' } elseif (-not $web) { 'warn' } elseif ($web.$Site) { 'ok' } else { 'fail' }
-    $accounts = @(if ($web -and $web.accounts) { $web.accounts })
-    if ($googleChoice -and $accounts.Count -and $accounts -notcontains $googleChoice) {
-        Remove-Item -LiteralPath $googleChoiceFile -Force -ErrorAction SilentlyContinue
-        $script:googleChoice = ''
-    }
-    $account = if ($state -ne 'ok' -or -not $accounts.Count) { '' } elseif ($script:googleChoice) { $script:googleChoice } else { [string]$accounts[0] }
-    $detail = switch ($state) {
-        'wait' { 'Mở Chrome có extension Product Review trước.' }
-        'warn' { 'Chưa kiểm tra được. Bấm Đăng nhập để xem trong Chrome.' }
-        'ok' { if ($accounts.Count -gt 1) { "Flow và Gemini chạy bằng tài khoản đang chọn ($($accounts.Count) tài khoản đã đăng nhập)." } else { 'Đã đăng nhập trong Chrome.' } }
-        default { 'Chưa đăng nhập. Bấm Đăng nhập rồi đăng nhập Google trong Chrome.' }
-    }
-    # Google's account chooser in Chrome: sign in, add or switch the account. Accounts: every one signed in
-    # there, for the page to choose from.
-    [pscustomobject]@{ Id = $Id; Title = $Title; State = $state; Detail = $detail; Account = $account; Accounts = $(if ($state -eq 'ok') { @($accounts) } else { @() }); Uses = $Uses; Action = $(if ($browserReady) { 'google' } else { '' }) }
-}
 # Antigravity CLI (agy, Google sign-in): Viết review: Antigravity CLI. agy models answers only when signed in.
 $agy = Get-Command agy -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty Source
 if (-not $agy) { $agy = @((Join-Path $HOME '.local/bin/agy'), (Join-Path $HOME '.local/bin/agy.exe')) + @(if ($env:LOCALAPPDATA) { Join-Path $env:LOCALAPPDATA 'agy/bin/agy.exe' }) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1 }
 $agyState = 'warn'; $agyDetail = 'Chưa cài (không bắt buộc). Cài Antigravity để chọn Viết review: Antigravity CLI.'; $agyAccount = ''
 if ($agy) {
     $agyOk = $false
-    # Its own sign-in, apart from Chrome's: its log names the account ("authenticated successfully as …").
+    # Its own sign-in: its log names the account ("authenticated successfully as …").
     $agyLog = [IO.Path]::GetTempFileName()
     try {
         # -WindowStyle exists only on Windows.
@@ -125,6 +90,14 @@ if ($agy) {
     if ($agyOk) { $agyState = 'ok'; $agyDetail = 'Đã đăng nhập (tài khoản riêng của Antigravity, không theo Chrome).' }
     else { $agyState = 'fail'; $agyDetail = 'Chưa đăng nhập. Mở Antigravity (hoặc chạy agy trong Terminal) rồi đăng nhập Google.' }
 }
+# Claude Code CLI (claude): Viết review: Claude. Optional; only needed when Claude is chosen. Found like agent mode does:
+# PR_CLAUDE_CLI, else the first claude on PATH (or ~/.local/bin). Sign-in is Claude's own (claude, then /login).
+$claudeCli = $null
+if ($env:PR_CLAUDE_CLI -and (Test-Path -LiteralPath $env:PR_CLAUDE_CLI)) { $claudeCli = $env:PR_CLAUDE_CLI }
+if (-not $claudeCli) { $claudeCli = Get-Command claude -ErrorAction SilentlyContinue | Where-Object { $_.CommandType -eq 'Application' } | Select-Object -First 1 -ExpandProperty Source }
+if (-not $claudeCli) { $claudeCli = @((Join-Path $HOME '.local/bin/claude'), (Join-Path $HOME '.local/bin/claude.exe')) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1 }
+$claudeState = if ($claudeCli) { 'ok' } else { 'warn' }
+$claudeDetail = if ($claudeCli) { 'Đã cài. Nếu Viết review báo chưa đăng nhập, chạy claude trong Terminal rồi /login.' } else { 'Chưa cài (không bắt buộc). Cài Claude Code để chọn Viết review: Claude.' }
 $steps = @(
     [pscustomobject]@{ Id = 'node'; Title = 'Node.js'; State = $(if ($node) { 'ok' } else { 'fail' }); Detail = $(if ($node) { 'Đã cài.' } else { 'Chưa cài. Cần để cài Codex.' }); Action = $(if ($node) { '' } else { 'install' }) }
     [pscustomobject]@{ Id = 'codex'; Title = 'Codex'; State = $(if ($engine) { 'ok' } else { 'fail' }); Detail = $(if ($engine) { 'Đã cài.' } else { 'Chưa cài công cụ tạo ảnh.' }); Action = $(if ($engine) { '' } else { 'install' }) }
@@ -134,11 +107,8 @@ $steps = @(
         Action = $(if ($engine) { 'login' } else { '' }) }
     [pscustomobject]@{ Id = 'quota'; Title = 'Hạn mức sử dụng'; State = $(if (-not $loggedIn) { 'wait' } elseif ($apiKey -or $quotaAvailable) { 'ok' } else { 'warn' })
         Detail = $(if (-not $loggedIn) { 'Đăng nhập trước.' } else { $quotaText }); Action = '' }
-    [pscustomobject]@{ Id = 'browser'; Title = 'Extension Product Review'; State = $extensionState
-        Detail = $(switch ($extensionState) { 'ok' { 'Đã kết nối trong Chrome. Các tool mở tab riêng trong nhóm Product Review.' } 'fail' { "Chưa cài trong Chrome. Bấm Mở: chrome://extensions, bật Chế độ nhà phát triển, Tải tiện ích đã giải nén, chọn thư mục $extensionDir." } default { 'Chrome chưa mở (hoặc chưa cài Node.js). Bấm Mở để mở Chrome.' } })
-        Action = 'browser' }
-    Get-WebStep 'google' 'Google (Flow, Gemini web)' 'google' 'Tạo ảnh: Google Flow · Viết review: Gemini web'
     [pscustomobject]@{ Id = 'antigravity'; Title = 'Antigravity CLI'; State = $agyState; Detail = $agyDetail; Account = $agyAccount; Uses = 'Viết review: Antigravity CLI'; Action = $(if ($agy) { 'antigravity' } else { '' }) }
+    [pscustomobject]@{ Id = 'claude'; Title = 'Claude CLI'; State = $claudeState; Detail = $claudeDetail; Uses = 'Viết review: Claude'; Action = '' }
 )
 # Each AI's sign-in: signed in, expired (its sign-in is still on this computer but no longer accepted), signed out
 # (it was signed in here before) or never. The last account seen is kept (workspace/config/ai-accounts.json), so an
@@ -147,7 +117,7 @@ $accountsFile = Get-SharedConfigPath (Join-Path (Split-Path (Split-Path $PSScrip
 $known = @{}
 try { (Get-Content -LiteralPath $accountsFile -Raw -Encoding UTF8 | ConvertFrom-Json).PSObject.Properties | ForEach-Object { $known[$_.Name] = [string]$_.Value } } catch {}
 $stored = $false
-foreach ($step in $steps | Where-Object { $_.Id -in @('login', 'google', 'antigravity') }) {
+foreach ($step in $steps | Where-Object { $_.Id -in @('login', 'antigravity') }) {
     $was = $known[$step.Id]
     $signIn = if ($step.Id -eq 'login' -and $codexExpired) { 'expired' } elseif ($step.State -eq 'ok') { 'ok' } elseif ($step.State -eq 'wait') { 'wait' }
         elseif ($step.Id -eq 'login' -and $codexAuthFile) { 'expired' }

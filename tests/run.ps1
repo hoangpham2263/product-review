@@ -1,5 +1,5 @@
 ﻿# All checks run in fresh PowerShell processes (Windows PowerShell 5.1 on Windows, pwsh on macOS); no paid AI calls.
-param([string[]]$Name = @('csv', 'workspace', 'ui-status', 'setup-check', 'quota', 'ai-retry', 'cli-process', 'source-data', 'reference-archive', 'product-input', 'manual-product', 'product-context', 'reference-fallback', 'image-output', 'image-delivery', 'image-tool-errors', 'manual-references', 'review-writing', 'review-metadata', 'review-pipeline', 'browser-backend', 'result-storage', 'result-delivery', 'multi-scene', 'batch-review', 'app-update', 'support-report', 'batch-import', 'unsparkle'))
+param([string[]]$Name = @('csv', 'workspace', 'ui-status', 'setup-check', 'quota', 'ai-retry', 'cli-process', 'source-data', 'reference-archive', 'product-input', 'manual-product', 'product-context', 'reference-fallback', 'image-output', 'image-delivery', 'image-tool-errors', 'manual-references', 'review-writing', 'review-metadata', 'review-pipeline', 'browser-backend', 'result-storage', 'result-delivery', 'multi-scene', 'batch-review', 'text-only-export', 'app-update', 'support-report', 'batch-import', 'unsparkle', 'sign-text', 'project-store'))
 $ErrorActionPreference = 'Stop'
 $onWindows = ($PSVersionTable.PSEdition -eq 'Desktop') -or $IsWindows
 # Suites that draw test images with System.Drawing, which macOS lacks, are skipped there.
@@ -17,7 +17,7 @@ if ($onWindows) {
 $project = Split-Path $PSScriptRoot -Parent
 # AI calls the suites make (all mocked) are counted in a file of the tests, not in the install's Lượt dùng AI.
 $env:HUB_AI_USAGE_FILE = Join-Path $project 'workspace/tests/ai-usage.jsonl'
-# Nor do they touch the bridge a run on this machine uses (core/bridge/ensure.mjs).
+#
 $env:TOOLS_HUB_TEST = '1'
 $failures = New-Object Collections.Generic.List[string]
 foreach ($file in @(Get-ChildItem (Join-Path $project 'src'), $PSScriptRoot, (Join-Path $project 'core') -Recurse -File -Filter '*.ps1')) {

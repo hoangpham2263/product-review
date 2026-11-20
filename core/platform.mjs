@@ -47,7 +47,7 @@ export function killTree(proc) {
   try { process.kill(-proc.pid, "SIGKILL"); } catch { try { proc.kill("SIGKILL"); } catch {} }
 }
 
-// The user's own Chrome, where the Product Review extension (core/extension) is installed and the AIs are signed in: started,
+// The user's own Chrome: started,
 // or a page opened in it. background: Chrome is not brought to the front (a run starting it).
 export function openChrome(url = "", { background = false } = {}) {
   return new Promise((resolve) => {

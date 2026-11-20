@@ -4,13 +4,15 @@ import { createServer } from "node:http";
 import { spawn, execFile } from "node:child_process";
 import { createInterface } from "node:readline";
 import { writeFile, mkdir, copyFile, rm, stat, appendFile, readFile } from "node:fs/promises";
-import { createReadStream, existsSync, mkdirSync, openSync, renameSync, statSync, appendFileSync } from "node:fs";
+import { createReadStream, existsSync, mkdirSync, openSync, renameSync, statSync, appendFileSync, readdirSync, readFileSync } from "node:fs";
 import { join, dirname, extname, resolve, sep, basename } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { randomUUID, createHash } from "node:crypto";
 import { createConfigApi } from "../../core/setup/config-api.mjs";
 import { createAgentRunner, buildPrompt, newRunId } from "../../core/setup/agent-run.mjs";
+import { readFlowBrowser, saveFlowBrowser, localChromeProfiles } from "../../core/setup/flow-browser.mjs";
+import { createFlowLogin, profileDirOf, profileGoogleAccounts } from "../../core/setup/flow-login.mjs";
 import { PWSH, toolEnv, psFile, psCommand, killTree, appWindow, chooseFiles } from "../../core/platform.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -23,7 +25,37 @@ const logs = join(workspace, "logs");
 const uploads = join(workspace, "temp", "mac-uploads");
 const configApi = createConfigApi({ hubRoot: root, pwsh: PWSH, env: toolEnv });
 // Agent mode: Claude Code drives Google Flow and writes the reviews (core/setup/agent-run.mjs, docs/agent-prompt.md).
-const agent = createAgentRunner({ toolRoot: root, workspace });
+const agent = createAgentRunner({ toolRoot: root, workspace, profileDir: profileDirOf(workspace), getBrowser: () => readFlowBrowser(workspace) });
+// Quét web: the project of a run is the one whose session.json names the run (src/scan.ps1 start -Run); older scans keep a scan.json.
+// Paths use "/" for the window.
+const readJsonFile = (p) => JSON.parse(readFileSync(p, "utf8").replace(/^\uFEFF/, ""));
+const csvRows = (csv) => (existsSync(csv) ? Math.max(0, readFileSync(csv, "utf8").split(/\r?\n/).filter((l) => l.trim()).length - 1) : 0);
+function scanOfRun(runId) {
+  if (!runId) return null;
+  for (const folder of ["projects", "scans"]) {
+    const base = join(workspace, folder);
+    let names = [];
+    try { names = readdirSync(base); } catch { continue; }
+    for (const name of names) {
+      try {
+        const dir = join(base, name), csv = join(dir, "products.csv");
+        if (folder === "projects") {
+          const session = readJsonFile(join(dir, "session.json")), info = readJsonFile(join(dir, "project.json"));
+          if (session.run !== runId) continue;
+          const added = Object.values(session.added || {}).reduce((n, v) => n + Number(v || 0), 0);
+          return { id: info.id || name, project: info.id || name, dir: dir.replace(/\\/g, "/"), csv: csv.replace(/\\/g, "/"), rows: csvRows(csv), site: info.site || "", max: session.max || info.max_per_collection || 0,
+            added, already_known: Number(session.duplicates || 0), finished: !!(info.last_scan && info.last_scan >= (session.started || "")) };
+        }
+        const info = readJsonFile(join(dir, "scan.json"));
+        if (info.run !== runId) continue;
+        return { id: info.id || name, dir: dir.replace(/\\/g, "/"), csv: csv.replace(/\\/g, "/"), rows: csvRows(csv), site: info.site || "", max: info.max_per_collection || 0, finished: !!info.finished };
+      } catch { /* not a scan folder */ }
+    }
+  }
+  return null;
+}
+// The agent's own Chrome profile (workspace/chrome-profile): the person signs in to Google Flow there by hand, never in their real Chrome.
+const flowLogin = createFlowLogin({ workspace, runActive: () => agent.isActive() });
 // Errors from the window, this server and PowerShell go to workspace/logs (app-errors.log as Write-AppError
 // writes it, mac-rpc.err.log), past 1 MB rolled over to *.old.log; Báo lỗi reads them.
 mkdirSync(logs, { recursive: true });
@@ -85,10 +117,9 @@ async function startRun({ threads = 1, backend = "codex", text = "codex" }) {
   Object.assign(run, { events: [], index: 0, stopped: false, exitCode: null, resultFolder: "", done: false,
     logFile: join(logs, `image-batch-mac-${stamp}.log`), errFile: join(logs, `image-batch-mac-${stamp}.err.log`) });
   const args = ["-ThrottleLimit", String(threads)];
-  // Tạo ảnh: Codex, or Google Flow in the tools' own Chrome (bridge/ + core/extension/).
-  if (backend === "flow") args.push("-ImageBackend", backend);
-  // Viết review: Codex, Gemini web in the same Chrome, or the Antigravity CLI, for every text step.
-  if (["gemini", "antigravity"].includes(text)) args.push("-TextBackend", text);
+  // Tạo ảnh: Codex only here (Claude (Flow) runs through /api/agent/*).
+  // Viết review: Codex, the Antigravity CLI or the Claude CLI, for every text step.
+  if (["antigravity", "claude"].includes(text)) args.push("-TextBackend", text);
   const map = join(workspace, "reference-inputs", "references.json");
   if (existsSync(map)) args.push("-ReferenceMapFile", map);
   // Own process group (macOS), so Dừng stops codex and every other child too.
@@ -241,13 +272,15 @@ async function handle(req, res) {
   // another window or port and a cleared browser.
   if (path === "/api/run-settings") {
     const file = join(workspace, "config", "run-settings.json");
-    if (req.method === "GET") { try { return send(res, 200, JSON.parse((await readFile(file, "utf8")).replace(/^﻿/, ""))); } catch { return send(res, 200, {}); } }
+    if (req.method === "GET") { try { const s = JSON.parse((await readFile(file, "utf8")).replace(/^﻿/, "")); if (s.imageBackend && !["codex", "agent"].includes(s.imageBackend)) s.imageBackend = "codex"; if (s.textBackend && !["codex", "antigravity", "claude"].includes(s.textBackend)) s.textBackend = "codex"; delete s.runMode; s.flowAccounts = profileGoogleAccounts(profileDirOf(workspace)); return send(res, 200, s); } catch { return send(res, 200, { flowAccounts: profileGoogleAccounts(profileDirOf(workspace)) }); } }
     if (req.method === "POST") {
       const given = JSON.parse((await body(req)).toString("utf8") || "{}"), saved = {};
       try { Object.assign(saved, JSON.parse((await readFile(file, "utf8")).replace(/^﻿/, ""))); } catch {}
       if (Number.isInteger(given.threads) && given.threads >= 1 && given.threads <= 4) saved.threads = given.threads;
-      if (["codex", "gemini", "antigravity"].includes(given.textBackend)) saved.textBackend = given.textBackend;
-      if (["codex", "flow", "agent"].includes(given.imageBackend)) saved.imageBackend = given.imageBackend;
+      if (["codex", "antigravity", "claude"].includes(given.textBackend)) saved.textBackend = given.textBackend;
+      if (["codex", "agent"].includes(given.imageBackend)) saved.imageBackend = given.imageBackend;
+      if (typeof given.flowAccount === "string") { const v = given.flowAccount.trim(); if (!v) delete saved.flowAccount; else if (v.length <= 120 && /^[^\s@"<>]+@[^\s@"<>]+\.[^\s@"<>]+$/.test(v)) saved.flowAccount = v; }
+      delete saved.runMode;
       await mkdir(dirname(file), { recursive: true }); await writeFile(file, JSON.stringify(saved, null, 2));
       return send(res, 200, saved);
     }
@@ -262,6 +295,9 @@ async function handle(req, res) {
   if (path === "/api/agent/run" && req.method === "POST") {
     if (run.proc) return send(res, 409, { error: "Đang chạy." });
     const given = JSON.parse((await body(req)).toString("utf8") || "{}");
+    if (agent.isActive()) return send(res, 409, { error: "Đã có một lượt Claude đang chạy." });
+    const login = readFlowBrowser(workspace).mode === "own" ? await flowLogin.status() : { state: "logged_in" };
+    if (login.state !== "logged_in") return send(res, 409, { error: login.state === "logged_out" ? "Chưa đăng nhập Google Flow trong Chrome riêng: bấm Mở Chrome để đăng nhập, đăng nhập xong đóng cửa sổ đó rồi Kiểm tra lại." : "Chưa chạy được Claude: " + login.detail });
     const r = agent.start({ run: given.run || undefined });
     return send(res, r.status, r.ok ? { ok: true, run: r.run_id, started: r.started } : { error: r.error });
   }
@@ -269,6 +305,93 @@ async function handle(req, res) {
     const st = agent.status(), dir = st.run_id ? join(workspace, "output", st.run_id) : "";
     return send(res, 200, { ...st, result_folder: dir && existsSync(dir) ? dir : "" });
   }
+  // Quét web: Claude scans a shop website (docs/scan-prompt.md) through the same runner; one agent run at a time (one Chrome profile).
+  if (path === "/api/scan/run" && req.method === "POST") {
+    const given = JSON.parse((await body(req)).toString("utf8") || "{}");
+    let site = String(given.site || "").trim();
+    if (site && !/^https?:\/\//i.test(site)) site = "https://" + site;
+    let host = "";
+    try { const u = new URL(site); if (/^https?:$/.test(u.protocol) && u.hostname.includes(".")) host = u.hostname; } catch { /* below */ }
+    if (!host) return send(res, 400, { error: "Dán link trang chủ của web cần quét, ví dụ https://shop.com." });
+    const max = Math.min(200, Math.max(1, Math.round(Number(given.max)) || 20));
+    if (run.proc) return send(res, 409, { error: "Đang chạy." });
+    if (agent.isActive()) return send(res, 409, { error: "Đã có một lượt Claude đang chạy (Flow hoặc quét). Chờ xong hoặc bấm Dừng." });
+    const r = agent.start({ run: "scan-" + newRunId().slice(6), mode: "scan", site, max });
+    return send(res, r.status, r.ok ? { ok: true, run: r.run_id, started: r.started } : { error: r.error });
+  }
+  if (path === "/api/scan/status" && req.method === "GET") {
+    const st = agent.status();
+    if (st.mode !== "scan") return send(res, 200, { mode: st.mode, scan_run: false, other_active: st.active, active: false, status: "idle", tail: [] });
+    return send(res, 200, { ...st, scan_run: true, other_active: false, scan: scanOfRun(st.run_id) });
+  }
+  if (path === "/api/scan/stop" && req.method === "POST") {
+    if (agent.status().mode !== "scan") return send(res, 409, { error: "Không có lượt quét nào đang chạy." });
+    const r = agent.stop(); return send(res, r.status, r.ok ? { ok: true } : { error: r.error });
+  }
+  // Dự án: read the review number each product page of a project shows (docs/reviews-count-prompt.md), READ ONLY, through the same runner.
+  // One agent run at a time (one Chrome profile), like Flow and Quét web.
+  if (path === "/api/project/reviews/run" && req.method === "POST") {
+    const given = JSON.parse((await body(req)).toString("utf8") || "{}");
+    const id = String(given.project || "").trim();
+    if (!/^[a-z0-9][a-z0-9-]{1,60}$/.test(id) || !existsSync(join(workspace, "projects", id, "project.json"))) return send(res, 400, { error: "Chọn một dự án có sẵn." });
+    if (run.proc) return send(res, 409, { error: "Đang chạy." });
+    if (agent.isActive()) return send(res, 409, { error: "Đã có một lượt Claude đang chạy (Flow, quét hoặc cập nhật review). Chờ xong hoặc bấm Dừng." });
+    const r = agent.start({ run: "reviews-" + newRunId().slice(6), mode: "reviews", project: id });
+    return send(res, r.status, r.ok ? { ok: true, run: r.run_id, started: r.started } : { error: r.error });
+  }
+  if (path === "/api/project/reviews/status" && req.method === "GET") {
+    const st = agent.status();
+    if (st.mode !== "reviews") return send(res, 200, { mode: st.mode, reviews_run: false, other_active: st.active, active: false, status: "idle", tail: [] });
+    return send(res, 200, { ...st, reviews_run: true, other_active: false });
+  }
+  if (path === "/api/project/reviews/stop" && req.method === "POST") {
+    if (agent.status().mode !== "reviews") return send(res, 409, { error: "Không có lượt cập nhật review nào đang chạy." });
+    const r = agent.stop(); return send(res, r.status, r.ok ? { ok: true } : { error: r.error });
+  }
+  // Dự án: put products of a project into the run queue (urls.txt + references.json) with 2 library scenes each chosen by Claude
+  // (docs/queue-prompt.md). Prepares only: no image creation, no review text. One agent run at a time, like the other modes.
+  if (path === "/api/project/queue/run" && req.method === "POST") {
+    const given = JSON.parse((await body(req)).toString("utf8") || "{}");
+    const id = String(given.project || "").trim();
+    if (!/^[a-z0-9][a-z0-9-]{1,60}$/.test(id) || !existsSync(join(workspace, "projects", id, "project.json"))) return send(res, 400, { error: "Chọn một dự án có sẵn." });
+    const count = Math.min(200, Math.max(1, Math.round(Number(given.count)) || 10));
+    const scenes = Math.min(4, Math.max(1, Math.round(Number(given.scenes)) || 2));
+    const category = String(given.category || "").replace(/[\r\n"]+/g, " ").trim().slice(0, 120);
+    if (run.proc) return send(res, 409, { error: "Đang chạy." });
+    if (agent.isActive()) return send(res, 409, { error: "Đã có một lượt Claude đang chạy (Flow, quét hoặc cập nhật). Chờ xong hoặc bấm Dừng." });
+    const options = `category: ${category ? `"${category}"` : "(all categories)"}; only unused (used = F): ${given.unused_only ? "T" : "F"}; products to queue: ${count}; scenes per product: ${scenes}`;
+    const r = agent.start({ run: "queue-" + newRunId().slice(6), mode: "queue", project: id, options });
+    return send(res, r.status, r.ok ? { ok: true, run: r.run_id, started: r.started } : { error: r.error });
+  }
+  // Scenes box = 0: no Claude run. The first N products in table order (category / only-unused filter) go into the queue with only their link and
+  // project photo (src/scan.ps1 queue-direct, the same writer as queue-add).
+  if (path === "/api/project/queue/direct" && req.method === "POST") {
+    const given = JSON.parse((await body(req)).toString("utf8") || "{}");
+    const id = String(given.project || "").trim();
+    if (!/^[a-z0-9][a-z0-9-]{1,60}$/.test(id) || !existsSync(join(workspace, "projects", id, "project.json"))) return send(res, 400, { error: "Chọn một dự án có sẵn." });
+    const count = Math.min(200, Math.max(1, Math.round(Number(given.count)) || 10));
+    const args = ["queue-direct", "-Project", id, "-Limit", String(count), ...(String(given.category || "").trim() ? ["-Collection", String(given.category).trim()] : []), ...(given.unused_only ? ["-UnusedOnly"] : [])];
+    return execFile(PWSH, psFile(join(root, "src", "scan.ps1"), args), { cwd: root, env: toolEnv, timeout: 120000, windowsHide: true, encoding: "utf8" }, (err, out) => {
+      let r = null; try { r = JSON.parse(String(out || "").trim().split(String.fromCharCode(10)).pop()); } catch { /* below */ }
+      if (r?.ok) return send(res, 200, { ok: true, added: r.added });
+      send(res, 500, { error: r?.error || (err && err.message) || "Chưa thêm vào hàng chờ được." });
+    });
+  }
+  if (path === "/api/project/queue/status" && req.method === "GET") {
+    const st = agent.status();
+    if (st.mode !== "queue") return send(res, 200, { mode: st.mode, queue_run: false, other_active: st.active, active: false, status: "idle", tail: [] });
+    return send(res, 200, { ...st, queue_run: true, other_active: false });
+  }
+  if (path === "/api/project/queue/stop" && req.method === "POST") {
+    if (agent.status().mode !== "queue") return send(res, 409, { error: "Không có lượt thêm vào hàng chờ nào đang chạy." });
+    const r = agent.stop(); return send(res, r.status, r.ok ? { ok: true } : { error: r.error });
+  }
+  // Own Chrome sign-in for Claude (Flow): status (short headless check), open (normal Chrome window for the person to sign in).
+  // Which browser Claude (Flow) drives: everyday Chrome (a profile chosen from this machine) or the tool's own Chrome.
+  if (path === "/api/flow-browser" && req.method === "GET") return send(res, 200, { ...readFlowBrowser(workspace), ...localChromeProfiles() });
+  if (path === "/api/flow-browser" && req.method === "POST") { try { const b = JSON.parse((await body(req)).toString("utf8") || "{}"); return send(res, 200, saveFlowBrowser(workspace, b)); } catch (e) { return send(res, 400, { error: e.message }); } }
+  if (path === "/api/flow-login/status" && req.method === "GET") return send(res, 200, await flowLogin.status({ fresh: url.searchParams.get("fresh") === "1" }));
+  if (path === "/api/flow-login/open" && req.method === "POST") { const r = flowLogin.open(); return send(res, r.status, r.ok ? { ok: true } : { error: r.error }); }
   if (path === "/api/agent/stop" && req.method === "POST") { const r = agent.stop(); return send(res, r.status, r.ok ? { ok: true } : { error: r.error }); }
   // Cấu hình (core/setup/config-api.mjs).
   if (await configApi(req, res, path)) return;

@@ -8,15 +8,15 @@ function Assert($Value,[string]$Message){if(-not $Value){throw $Message}}
 $temp=Join-Path $TestWorkspaceRoot ('app-update-'+[Guid]::NewGuid().ToString('N'))
 try{
     $new=Join-Path $temp 'new';$app=Join-Path $temp 'app'
-    # Copy-AppUpdate replaces the app's files and keeps AGENTS.md, workspace/ and the bridge's installed packages.
+    # Copy-AppUpdate replaces the app's files and keeps AGENTS.md and workspace/.
     $rel=Join-Path $temp 'release';$inst=Join-Path $temp 'install'
-    foreach($p in @("$rel/src/gui.ps1","$rel/AGENTS.md","$rel/workspace/config/ai-model.json","$rel/workspace/version.txt","$rel/core/update.ps1","$rel/core/bridge/node_modules/ws/index.js","$inst/src/gui.ps1","$inst/AGENTS.md","$inst/workspace/config/ai-model.json","$inst/workspace/version.txt","$inst/core/bridge/node_modules/ws/index.js")){New-Item -ItemType File -Force -Path $p|Out-Null}
+    foreach($p in @("$rel/src/gui.ps1","$rel/AGENTS.md","$rel/workspace/config/ai-model.json","$rel/workspace/version.txt","$rel/core/update.ps1","$inst/src/gui.ps1","$inst/AGENTS.md","$inst/workspace/config/ai-model.json","$inst/workspace/version.txt")){New-Item -ItemType File -Force -Path $p|Out-Null}
     Set-Content "$rel/src/gui.ps1" 'new';Set-Content "$rel/src/added.ps1" 'added' -Force;Set-Content "$rel/core/update.ps1" 'core' -Force
-    Set-Content "$rel/AGENTS.md" 'upstream';Set-Content "$rel/workspace/config/ai-model.json" 'upstream';Set-Content "$rel/workspace/version.txt" 'upstream';Set-Content "$rel/core/bridge/node_modules/ws/index.js" 'upstream'
-    Set-Content "$inst/AGENTS.md" 'my lessons';Set-Content "$inst/workspace/config/ai-model.json" 'my model';Set-Content "$inst/workspace/version.txt" 'v1';Set-Content "$inst/core/bridge/node_modules/ws/index.js" 'installed'
+    Set-Content "$rel/AGENTS.md" 'upstream';Set-Content "$rel/workspace/config/ai-model.json" 'upstream';Set-Content "$rel/workspace/version.txt" 'upstream'
+    Set-Content "$inst/AGENTS.md" 'my lessons';Set-Content "$inst/workspace/config/ai-model.json" 'my model';Set-Content "$inst/workspace/version.txt" 'v1'
     Copy-AppUpdate $rel $inst
     Assert ((Get-Content "$inst/src/gui.ps1") -eq 'new' -and (Test-Path "$inst/src/added.ps1") -and (Get-Content "$inst/core/update.ps1") -eq 'core') 'App files must be updated and new files added.'
-    Assert ((Get-Content "$inst/AGENTS.md") -eq 'my lessons' -and (Get-Content "$inst/workspace/config/ai-model.json") -eq 'my model' -and (Get-Content "$inst/workspace/version.txt") -eq 'v1' -and (Get-Content "$inst/core/bridge/node_modules/ws/index.js") -eq 'installed') 'Lessons, workspace and installed packages must be kept.'
+    Assert ((Get-Content "$inst/AGENTS.md") -eq 'my lessons' -and (Get-Content "$inst/workspace/config/ai-model.json") -eq 'my model' -and (Get-Content "$inst/workspace/version.txt") -eq 'v1') 'Lessons and workspace must be kept.'
     foreach($p in @("$new/AGENTS.md","$app/AGENTS.md","$app/workspace/x")){New-Item -ItemType File -Force -Path $p|Out-Null}
     # AGENTS.md: the guide follows the release; this machine's lessons stay and the release's new ones are added once.
     $lesson={param($Id,$Text)"### $Id`n<!-- app-lesson: {`"id`":`"$Id`",`"scope`":`"category`",`"category`":`"x`"} -->`n- $Text`n`n"}

@@ -1,4 +1,4 @@
-﻿function New-Batch([string]$OutDir) {
+﻿function New-Batch([string]$OutDir, [switch]$WarmCodex) {
     $localTime = [TimeZoneInfo]::ConvertTimeBySystemTimeZoneId([DateTime]::UtcNow, 'SE Asia Standard Time')
     # One clean name per run, the same stamp as the error files: 2026-10-29_22h40m37s (-2, -3… if two start in one second).
     $stamp = $localTime.ToString("yyyy-MM-dd_HH'h'mm'm'ss's'"); $id = $stamp
@@ -15,6 +15,9 @@
         Csv     = Join-Path $dir 'loox_import.csv'
     }
     # URL history belongs to the output batch; source photos remain reusable.
-    New-Item -ItemType Directory -Force $batch.Images, $batch.Logs, $batch.Refs | Out-Null
+    # Codex (Windows): warm up this new work folder once, sequentially, before the subfolders and parallel jobs
+    # (core/ai/providers/codex.ps1, Initialize-CodexWorkDir), so the sandbox permission race cannot hit images/.
+    if ($WarmCodex) { Initialize-CodexWorkDir $dir @($batch.Images, $batch.Logs, $batch.Refs) }
+    else { New-Item -ItemType Directory -Force $batch.Images, $batch.Logs, $batch.Refs | Out-Null }
     return $batch
 }

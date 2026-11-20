@@ -60,6 +60,7 @@ function Save-DeliveryCache($Item,[string]$ItemId,$Row) {
 }
 
 function Assert-PublicPhotoDelivery($Row) {
+    if($Row.PSObject.Properties['review_only'] -and $Row.review_only){return}
     if(-not $script:Config.Results -and -not $script:Config.ResultsRequired){return}
     $uri=$null
     if(-not [Uri]::TryCreate([string]$Row.photo_url,[UriKind]::Absolute,[ref]$uri) -or $uri.Scheme -ne 'https' -or -not $uri.Host){throw '[CAUSE:RESULT_UPLOAD] Image has no public HTTPS link; CSV not exported.'}
@@ -67,6 +68,8 @@ function Assert-PublicPhotoDelivery($Row) {
 
 # Called by each image worker right after generation, and again by the coordinator for retries.
 function Complete-ResultDelivery($Row,[int]$Index=0) {
+    # Review-only rows have no image: nothing is uploaded.
+    if($Row.PSObject.Properties['review_only'] -and $Row.review_only){return $Row}
     if(-not $script:Config.Results){
         if($script:Config.ResultsRequired){throw '[CAUSE:RESULT_CONFIG] No result store; public image links cannot be made.'}
         return $Row

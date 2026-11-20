@@ -232,9 +232,10 @@ function buildMain() {
   ui.btnAdd = at(button("+ Thêm sản phẩm", true), 0, 0, 160, 34);
   ui.btnBulk = at(button("Nhập hàng loạt"), 172, 0, 150, 34);
   ui.btnClear = at(button("Xóa tất cả"), 334, 0, 120, 34);
+  ui.btnProjects = at(button("Dự án"), 466, 0, 120, 34);
   ui.flow = at(el("div", "flow"), 0, 44, null, null, { right: 0, bottom: 0 });
   Object.assign(ui.flow.style, { background: "#fff", border: "1px solid #000", padding: "10px 10px 6px 10px" });
-  editor.append(ui.btnAdd, ui.btnBulk, ui.btnClear, ui.flow);
+  editor.append(ui.btnAdd, ui.btnBulk, ui.btnClear, ui.btnProjects, ui.flow);
   cardList.append(editor);
 
   // Thao tác (856,78 224x344, Top/Right).
@@ -243,16 +244,49 @@ function buildMain() {
   // In the order they are used: review the results, open them, then support. Cấu hình is in the header.
   const names = [["btnReview", "Duyệt & xuất file"], ["btnOut", "Mở kết quả"], ["btnLogs", "Báo lỗi"], ["btnClearLog", "Xóa thông báo"]];
   names.forEach(([key, text], i) => { ui[key] = at(button(text), 14, 36 + i * 37, 196, 32); cardActions.append(ui[key]); });
+  // Claude (Flow) only: its own Chrome profile must be signed in to Google Flow (workspace/chrome-profile, signed in by hand).
+  // No text lines: the sign-in state is a dot inside the "Mở Chrome để đăng nhập" button (green = signed in, red = signed out, grey = checking / busy / unknown);
+  // the message is its tooltip. Both buttons always stay.
+  // Same 37 px step as the buttons above (36 + 4 * 37): the gap between all buttons is equal.
+  ui.flowLoginBox = at(el("div", "abs"), 0, 36 + names.length * 37, 224, 180);
+  ui.btnFlowOpen = at(button("Mở Chrome để đăng nhập"), 14, 0, 196, 32);
+  ui.btnFlowCheck = at(button("Kiểm tra lại"), 14, 37, 196, 32);
+  // Copy prompt (Claude (Google Flow) only): the fixed prompt of docs/agent-prompt.md, to paste by hand into Claude Code.
+  ui.btnCopyPrompt = at(button("Copy prompt"), 14, 74, 196, 32);
+  ui.btnCopyPrompt.onclick = copyAgentPrompt;
+  ui.flowDot = el("span", "", { style: { display: "inline-block", width: "7px", height: "7px", borderRadius: "50%", marginRight: "6px", verticalAlign: "middle", background: "var(--muted)" } });
+  ui.btnFlowOpen.prepend(ui.flowDot);
+  // Which signed-in Google account Flow uses (the profile may hold several; Flow opens the first, which can be the one out of credits).
+  ui.flowAccount = at(combo(), 14, 111, 196, 32);
+  ui.flowAccount.title = "Để trống = Flow tự chọn. Chọn tài khoản còn credit (đã đăng nhập sẵn trong Chrome riêng); Claude sẽ chọn đúng tài khoản đó, không đăng xuất, không đổi tài khoản khác.";
+  ui.flowAccount.setItems([""], ["Tự chọn tài khoản Flow"]);
+  ui.flowAccount.onchange = () => { const v = ui.flowAccount.value.trim(); fetch("/api/run-settings", { method: "POST", body: JSON.stringify({ flowAccount: v }) }).catch(() => {}); };
+  // Which browser Claude (Flow) drives: "own" = the tool's own Chrome, or a Chrome profile installed on this machine (everyday Chrome through the Playwright extension).
+  ui.flowBrowser = at(combo(), 14, 148, 196, 32);
+  ui.flowBrowser.title = "Trình duyệt cho Claude (Flow): Chrome thật của bạn (chọn profile có sẵn trên máy, cần extension Playwright, bấm Connect mỗi lượt) hoặc Chrome riêng của tool.";
+  ui.flowBrowser.setItems([""], ["Đang đọc profile…"]);
+  ui.flowBrowser.onchange = () => { const v = ui.flowBrowser.value; fetch("/api/flow-browser", { method: "POST", body: JSON.stringify(v === "own" ? { mode: "own" } : { mode: "extension", profile: v }) }).catch(() => {}); };
+  fetch("/api/flow-browser").then((r) => r.json()).then((j) => {
+    const items = ["own", ...(j.profiles || []).map((p) => p.folder)], labels = ["Chrome riêng của tool", ...(j.profiles || []).map((p) => (p.email || p.name || p.folder) + " (" + p.folder + ")" + (p.playwright_extension ? "" : " · chưa có extension"))];
+    ui.flowBrowser.setItems(items, labels);
+    ui.flowBrowser.value = j.mode === "own" ? "own" : j.profile;
+  }).catch(() => {});
+  ui.btnFlowOpen.onclick = openFlowLogin;
+  ui.btnFlowCheck.onclick = () => checkFlowLogin(true);
+  ui.flowLoginBox.style.display = "none";
+  ui.flowLoginBox.append(ui.btnFlowOpen, ui.btnFlowCheck, ui.btnCopyPrompt, ui.flowAccount, ui.flowBrowser);
+  cardActions.append(ui.flowLoginBox);
 
   // Run row (20,434 1060x62).
-  const cardRun = at(el("div", "card"), 20, 434, null, 62, { right: 24 });
-  ui.btnRun = at(button("Bắt đầu", true), 14, 11, 160, 40);
-  ui.btnStop = at(button("Dừng"), 186, 11, 100, 40);
+  const cardRun = at(el("div", "card"), 20, 434, null, 90, { right: 24 });
+  ui.btnRun = at(button("Bắt đầu", true), 14, 25, 160, 40);
+  ui.btnStop = at(button("Dừng"), 186, 25, 100, 40);
   ui.btnStop.disabled = true;
-  ui.lblStatus = at(label("", "muted"), 302, 18, 150, 26);
+  ui.lblStatus = at(label("", "muted"), 302, 32, 150, 26);
   ui.lblStatus.style.lineHeight = "26px";
-  ui.lblThr = at(label("Luồng:", "muted"), null, 19, 56, 24, { right: 88, left: false });
-  ui.numThr = at(numeric(1, 4, 2), null, 16, 64, 24, { right: 22, left: false });
+  // The two pickers and Luồng form one block (2 rows of 22 + 5 gap = 49 px), centered in the 90 px card like the buttons: rows at 20 and 47.
+  ui.lblThr = at(label("Luồng:", "muted"), null, 47, 56, 24, { right: 88, left: false });
+  ui.numThr = at(numeric(1, 4, 2), null, 44, 64, 24, { right: 22, left: false });
   ui.lblThr.style.lineHeight = "24px";
   // Which AI does the work: Codex, or the sites in the tools' own Chrome (signed in from Cấu hình). Viết review covers
   // every text step; Tạo ảnh the photo. Remembered on this machine.
@@ -266,32 +300,30 @@ function buildMain() {
     box.onchange = () => { try { localStorage.setItem(key, box.value); } catch {} saveRunSettings({ [key]: box.value }); updateUsage(); updateAgentControls(); };
     return [name, box];
   };
-  [ui.lblText, ui.cmbText] = picker("Viết review:", 6, "textBackend", ["codex", "gemini", "antigravity"], ["Codex", "Gemini web", "Antigravity CLI"]);
-  [ui.lblBackend, ui.cmbBackend] = picker("Tạo ảnh:", 33, "imageBackend", ["codex", "flow", "agent"], ["Codex", "Google Flow", "Claude (Flow)"]);
+  [ui.lblText, ui.cmbText] = picker("Viết review:", 20, "textBackend", ["codex", "antigravity", "claude"], ["Codex", "Antigravity CLI", "Claude"]);
+  [ui.lblBackend, ui.cmbBackend] = picker("Tạo ảnh:", 47, "imageBackend", ["codex", "agent"], ["Codex", "Claude (Flow)"]);
   // Luồng, Viết review and Tạo ảnh are kept in workspace/config/run-settings.json (the server), so they are the same next time.
   const saveRunSettings = (part) => fetch("/api/run-settings", { method: "POST", body: JSON.stringify(part) }).catch(() => {});
   ui.numThr.onchange = () => saveRunSettings({ threads: ui.numThr.value });
   fetch("/api/run-settings").then((r) => r.json()).then((saved) => {
     if (saved.threads) ui.numThr.value = saved.threads;
-    if (saved.textBackend) ui.cmbText.value = saved.textBackend;
-    if (saved.imageBackend) ui.cmbBackend.value = saved.imageBackend;
+    { const list = [...new Set([...(saved.flowAccounts || []), ...(saved.flowAccount ? [String(saved.flowAccount).toLowerCase()] : [])])]; ui.flowAccount.setItems(["", ...list], ["Tự chọn tài khoản Flow", ...list]); ui.flowAccount.value = String(saved.flowAccount || "").toLowerCase(); }
+    if (["codex", "antigravity", "claude"].includes(saved.textBackend)) ui.cmbText.value = saved.textBackend;
+    if (["codex", "agent"].includes(saved.imageBackend)) ui.cmbBackend.value = saved.imageBackend;
     updateUsage();
     updateAgentControls();
     resumeAgent();
   }).catch(() => {});
   // Tokens this run has used (added up from each Codex call) and the quota left, refreshed in the background.
   // They shrink with the window (cut with …) so they never run under the pickers on the right.
-  ui.lblTokens = at(label("", "muted"), 460, 11, null, 20, { right: 400 });
-  ui.lblQuota = at(label("", "muted"), 460, 31, null, 20, { right: 400 });
+  ui.lblTokens = at(label("", "muted"), 460, 25, null, 20, { right: 400 });
+  ui.lblQuota = at(label("", "muted"), 460, 45, null, 20, { right: 400 });
   for (const l of [ui.lblTokens, ui.lblQuota]) Object.assign(l.style, { fontSize: "12px", lineHeight: "20px" });
-  // Copy prompt (Claude (Google Flow) only): the fixed prompt of docs/agent-prompt.md, to paste by hand into Claude Code.
-  ui.btnCopyPrompt = at(button("Copy prompt"), 460, 15, 120, 32);
-  ui.btnCopyPrompt.style.display = "none";
-  ui.btnCopyPrompt.onclick = copyAgentPrompt;
-  cardRun.append(ui.btnCopyPrompt, ui.btnRun, ui.btnStop, ui.lblStatus, ui.lblTokens, ui.lblQuota, ui.lblText, ui.cmbText, ui.lblBackend, ui.cmbBackend, ui.lblThr, ui.numThr);
+  // Copy prompt lives in the Claude (Flow) group of the Thao tác column (next to the sign-in buttons), see ui.flowLoginBox.
+  cardRun.append(ui.btnRun, ui.btnStop, ui.lblStatus, ui.lblTokens, ui.lblQuota, ui.lblText, ui.cmbText, ui.lblBackend, ui.cmbBackend, ui.lblThr, ui.numThr);
 
   // Tiến trình & thông báo (20,508 1060x282, all anchors).
-  const cardLog = at(el("div", "card"), 20, 508, null, null, { right: 24, bottom: 10 });
+  const cardLog = at(el("div", "card"), 20, 536, null, null, { right: 24, bottom: 10 });
   cardLog.append(at(label("Tiến trình & thông báo"), 14, 10, null, 20));
   ui.bar = at(el("div", "progress"), 14, 36, null, 8, { right: 14 });
   ui.bar.append(el("span"));
@@ -323,7 +355,7 @@ function rowStatus(row) {
   const image = products.find((p) => p.ok)?.file || scenes.find((s) => s.ok)?.file || "";
   if (scenes.some((s) => !s.ok) || products.some((p) => p.file && !p.ok)) return { text: "Không đọc được ảnh, hãy gắn lại.", color: "var(--error)", image };
   if (products.some((p) => !p.scenes.length)) return { text: "● Có ảnh gốc chưa có review", color: "var(--warn)", image };
-  if (scenes.length) return { text: products.length > 1 ? `● ${products.length} mẫu · ${scenes.length} ảnh` : scenes.length > 1 ? `● ${scenes.length} ảnh` : "● Đã có ảnh", color: "var(--ok)", image };
+  if (scenes.length) return { text: (products.length > 1 ? `● ${products.length} mẫu · ${scenes.length} ảnh` : scenes.length > 1 ? `● ${scenes.length} ảnh` : "● Đã có ảnh"), color: "var(--ok)", image };
   return row.url.trim() ? { text: "● Chưa có ảnh", color: "var(--warn)", image: "" } : { text: "Chưa có link", color: "var(--muted)", image: "" };
 }
 // Each row's status label, so a run can update it without rebuilding the row (a rebuild reloads every thumbnail).
@@ -558,6 +590,279 @@ function showLibraryPicker() {
   });
 }
 
+// ----- Quét web: Claude opens a shop website, reads its menu and takes the products with their main image into the web's PROJECT
+// (workspace/projects/<id>/products.csv, docs/scan-prompt.md, /api/scan/*): a web already scanned only gets its new products;
+// "Nhập vào danh sách" opens Nhập hàng loạt on that table -----
+function showScanDialog() {
+  const view = openWindow("Quét web", 760, 480);
+  const hint = at(label("Claude mở web trong Chrome riêng của app, đọc menu, lấy sản phẩm và ảnh chính từng danh mục, rồi lưu vào dự án của web đó (products.csv cho Nhập hàng loạt, cột used = F, chạy xong link nào tự đổi thành T). Quét lại web đã có chỉ thêm sản phẩm mới."), 16, 10, 728, 62);
+  Object.assign(hint.style, { whiteSpace: "normal", lineHeight: "20px" });
+  const siteBox = at(el("input", "text", { value: "", placeholder: "https://ten-shop.com" }), 16, 102, 380, 25);
+  const projectBox = at(combo(["", ]), 412, 102, 230, 25);
+  const maxBox = at(el("input", "text", { type: "number", value: "20", min: "1", max: "200" }), 658, 102, 86, 25);
+  const log = at(el("textarea", "text mono"), 16, 142, 728, 208);
+  log.readOnly = true; log.wrap = "off";
+  const status = at(label(""), 16, 358, 728, 66);
+  status.style.whiteSpace = "pre-line";
+  const openDir = at(button("Mở thư mục"), 16, 436, 120, 32);
+  const toImport = at(button("Nhập vào danh sách"), 146, 436, 180, 32);
+  const start = at(button("Bắt đầu quét", true), 400, 436, 130, 32);
+  const stop = at(button("Dừng"), 540, 436, 90, 32);
+  const close = at(button("Đóng"), 640, 436, 104, 32);
+  view.body.append(
+    hint, at(label("Link trang chủ của web"), 16, 78, 380, 22), siteBox, at(label("Hoặc chọn dự án có sẵn"), 412, 78, 230, 22), projectBox, at(label("Tối đa"), 658, 78, 86, 22), maxBox,
+    log, status, openDir, toImport, start, stop, close,
+  );
+  openDir.hidden = toImport.hidden = true; stop.disabled = true;
+  let timer = null, scan = null, startedAt = 0;
+  const say = (text, color = "") => { status.style.color = color; status.textContent = text; };
+  const clock = () => { const s = Math.max(0, Math.floor((Date.now() - startedAt) / 1000)); return String(Math.floor(s / 60)).padStart(2, "0") + ":" + String(s % 60).padStart(2, "0"); };
+  const setBusy = (on) => { start.disabled = on; stop.disabled = !on; siteBox.readOnly = maxBox.readOnly = on; projectBox.disabled = on; };
+  // Existing projects: picking one fills the link and its last "tối đa" (no re-typing, and the web is updated, not scanned again).
+  let known = [];
+  api("projects").then((all) => {
+    known = list(all);
+    projectBox.setItems(["", ...known.map((p) => p.id)], ["Chọn dự án…", ...known.map((p) => `${p.name || p.id} (${p.products} sản phẩm)`)]);
+  }).catch(() => {});
+  projectBox.onchange = () => {
+    const p = known.find((x) => x.id === projectBox.value);
+    if (p) { siteBox.value = p.site; maxBox.value = p.max_per_collection || 20; }
+  };
+  const poll = async () => {
+    const st = await fetch("/api/scan/status").then((x) => x.json()).catch(() => null);
+    if (!st) return;
+    if (st.other_active) { setBusy(false); start.disabled = true; say("Đang có một lượt Claude khác chạy (tạo ảnh Flow). Chờ xong rồi quét.", "var(--warn)"); return; }
+    if (!st.scan_run) return;
+    if (!startedAt) startedAt = Date.now() - (st.elapsed_s || 0) * 1000;
+    scan = st.scan || scan;
+    log.value = list(st.tail).join("\n"); log.scrollTop = log.scrollHeight;
+    const rows = scan?.rows ?? 0;
+    if (st.active) { setBusy(true); say(`Đang quét… ${clock()} · đã lưu ${rows} sản phẩm\n${st.last_text || ""}`.trim(), "var(--accent)"); return; }
+    clearInterval(timer); timer = null; setBusy(false);
+    const ok = st.status === "done";
+    if (rows) { openDir.hidden = toImport.hidden = false; }
+    const merge = scan && scan.added !== undefined ? ` (mới ${scan.added}, đã có ${scan.already_known})` : "";
+    say(ok ? `Quét xong: ${rows} sản phẩm trong dự án${merge}.\n${scan?.csv || ""}` : `Lượt quét dừng${st.error ? ": " + st.error : ""}. Dự án có ${rows} sản phẩm${merge}.${scan?.csv ? "\n" + scan.csv : ""}`, ok ? "var(--ok)" : "var(--error)");
+  };
+  const watch = () => { if (!timer) timer = setInterval(poll, 1500); poll(); };
+  start.onclick = async () => {
+    if (run.active) return say("Đang có một lượt chạy trong cửa sổ chính. Chờ xong rồi quét.", "var(--warn)");
+    const site = siteBox.value.trim();
+    if (!site) return say("Dán link trang chủ của web cần quét.", "var(--error)");
+    openDir.hidden = toImport.hidden = true; log.value = ""; scan = null; startedAt = Date.now();
+    const r = await fetch("/api/scan/run", { method: "POST", body: JSON.stringify({ site, max: Number(maxBox.value) || 20 }) });
+    const body = await r.json().catch(() => ({}));
+    if (!r.ok) return say(body.error || "Chưa bắt đầu quét được.", "var(--error)");
+    setBusy(true); say("Đang bắt đầu…", "var(--accent)"); watch();
+  };
+  stop.onclick = async () => { stop.disabled = true; say("Đang dừng…", "var(--accent)"); await fetch("/api/scan/stop", { method: "POST" }).catch(() => {}); };
+  openDir.onclick = () => scan?.dir && api("openPath", { path: scan.dir });
+  toImport.onclick = () => { if (!scan?.csv) return; view.close(); showBulkDialog({ csv: scan.csv }); };
+  // Closing the popup leaves a running scan running; opening it again picks it up.
+  view.onClose = () => { if (timer) { clearInterval(timer); timer = null; } };
+  view.cancel = close.onclick = () => view.close();
+  fetch("/api/scan/status").then((x) => x.json()).then((st) => { if (st?.scan_run && st.active) { siteBox.value = st.scan?.site || ""; maxBox.value = st.scan?.max || 20; watch(); } else if (st?.other_active) poll(); }).catch(() => {});
+  siteBox.focus();
+}
+
+// ----- Dự án: each web is a project (workspace/projects/<id>/): its menu, product links, images, the used flag and the review number last
+// seen on each product page. "Quét cập nhật" only adds new products (/api/scan/*); "Cập nhật số review" has Claude read the number every
+// product page shows (READ ONLY, docs/reviews-count-prompt.md, /api/project/reviews/*); "Nhập vào danh sách" imports the used = F rows -----
+function showProjectsDialog(pick = "") {
+  const view = openWindow("Dự án", 900, 520);
+  const fmtStamp = (s) => (s ? `${s.slice(8, 10)}/${s.slice(5, 7)} ${s.slice(11, 16)}` : "chưa có");
+  const oneLine = (style = {}) => Object.assign({ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }, style);
+  const listTitle = at(label("Dự án của bạn", "muted"), 16, 14, 250, 20);
+  const projectLine = at(label("", "muted"), 282, 14, 602, 20);
+  Object.assign(projectLine.style, oneLine());
+  const listBox = at(el("div", "flow"), 16, 40, 250, 340);
+  const addWeb = at(button("Thêm web mới"), 16, 388, 250, 32);
+  addWeb.onclick = () => showScanDialog();
+  Object.assign(listBox.style, { background: "#fff", border: "1px solid #000" });
+  const catLabel = at(label("Danh mục"), 282, 44, 70, 22);
+  const catBox = at(combo(), 356, 40, 230, 25);
+  const unusedOnly = at(checkbox("Chỉ chưa dùng"), 610, 42, 140, 22);
+  const countLabel = at(label("", "muted"), 760, 44, 124, 22);
+  countLabel.style.textAlign = "right";
+  const COLS = "1fr 140px 44px 62px 96px";
+  const head = el("div", "");
+  Object.assign(head.style, { display: "grid", gridTemplateColumns: COLS, gap: "6px", alignItems: "center", fontSize: "12px", color: "var(--muted)", padding: "0 6px", height: "22px", boxSizing: "border-box", position: "sticky", top: "0", background: "var(--smoke)", borderBottom: "1px solid var(--line)" });
+  head.append(...["Sản phẩm", "Danh mục", "Dùng", "Review", "Kiểm tra"].map((t) => el("div", "", { text: t, style: oneLine() })));
+  const tableBox = at(el("div", "flow"), 282, 76, 602, 344);
+  Object.assign(tableBox.style, { background: "#fff", border: "1px solid #000" });
+  const status = at(label(""), 16, 428, 520, 42);
+  // Both numbers of "Thêm vào hàng chờ" sit right of the status text, label above its box, same spacing.
+  const queueHint = at(label("Số sản phẩm", "muted"), 556, 428, 150, 18);
+  const queueCount = at(numeric(1, 200, 10), 556, 448, 64, 25);
+  queueCount.title = "Số sản phẩm đưa vào hàng chờ (theo danh mục và ô Chỉ chưa dùng đang chọn), 1-200";
+  const sceneHint = at(label("Ảnh ngữ cảnh / sản phẩm", "muted"), 724, 428, 160, 18);
+  const sceneCount = at(numeric(1, 4, 2), 724, 448, 64, 25);
+  sceneCount.title = "Số ảnh ngữ cảnh khác nhau cho mỗi sản phẩm, 1-4. Thêm vào hàng chờ tự gắn ảnh gốc của sản phẩm và Claude chọn ảnh ngữ cảnh hợp.";
+  Object.assign(status.style, { whiteSpace: "pre-line", lineHeight: "20px" });
+  // Six buttons share the 868 px row evenly (13 px gaps).
+  const scanBtn = at(button("Quét cập nhật"), 16, 478, 140, 32);
+  const reviewsBtn = at(button("Cập nhật số review"), 169, 478, 170, 32);
+  const queueBtn = at(button("Thêm vào hàng chờ"), 352, 478, 170, 32);
+  const openDir = at(button("Mở thư mục"), 535, 478, 130, 32);
+  const stop = at(button("Dừng"), 678, 478, 90, 32);
+  const close = at(button("Đóng"), 781, 478, 100, 32);
+  view.body.append(listTitle, projectLine, listBox, addWeb, catLabel, catBox, unusedOnly, countLabel, tableBox, status, queueHint, queueCount, sceneHint, sceneCount, scanBtn, reviewsBtn, queueBtn, openDir, stop, close);
+
+  let projects = [], current = "", data = null, timer = null, running = "", startedAt = 0, ticks = 0, otherActive = false;
+  const say = (text, color = "") => { status.style.color = color; status.textContent = text; };
+  const clock = () => { const s = Math.max(0, Math.floor((Date.now() - startedAt) / 1000)); return String(Math.floor(s / 60)).padStart(2, "0") + ":" + String(s % 60).padStart(2, "0"); };
+  const KIND = { scan: "Đang quét cập nhật", reviews: "Đang đọc số review trên các trang sản phẩm", queue: "Đang thêm sản phẩm vào hàng chờ (chọn 2 ảnh bối cảnh cho từng sản phẩm)" };
+  const refreshButtons = () => {
+    const busy = !!running, has = !!data;
+    scanBtn.disabled = busy || otherActive || !has;
+    reviewsBtn.disabled = busy || otherActive || !has || !data.rows.length;
+    queueBtn.disabled = busy || otherActive || !has || !data.rows.length;
+    queueCount.enabled = !busy; sceneCount.enabled = !busy;
+    openDir.disabled = !has;
+    stop.disabled = !busy;
+  };
+
+  const renderList = () => {
+    listBox.replaceChildren(...(projects.length ? projects.map((p) => {
+      const item = el("div", "", { style: { padding: "8px 10px", borderBottom: "1px solid var(--line)", cursor: "pointer" } });
+      if (p.id === current) item.style.background = "var(--hover)";
+      item.append(
+        el("div", "", { text: p.name || p.id, style: oneLine({ fontSize: "13px" }) }),
+        el("div", "label muted", { text: `${p.products} sản phẩm · đã dùng ${p.used}/${p.products}`, style: oneLine({ position: "static", fontSize: "12px" }) }),
+        el("div", "label muted", { text: `Quét: ${fmtStamp(p.last_scan)}`, style: oneLine({ position: "static", fontSize: "12px" }) }),
+        el("div", "label muted", { text: `Review: ${fmtStamp(p.last_reviews_check)}`, style: oneLine({ position: "static", fontSize: "12px" }) }),
+      );
+      item.title = p.site;
+      item.onclick = () => choose(p.id);
+      return item;
+    }) : [el("div", "label muted", { text: "Chưa có dự án. Bấm Thêm web mới để quét web đầu tiên.", style: { position: "static", padding: "10px", whiteSpace: "normal" } })]));
+  };
+
+  const renderTable = () => {
+    if (!data) { tableBox.replaceChildren(); countLabel.textContent = ""; return; }
+    const cat = catBox.value, only = unusedOnly.input.checked;
+    const rows = data.rows.filter((r) => (!cat || r.collection === cat) && (!only || !r.used));
+    countLabel.textContent = `${rows.length}/${data.rows.length} sản phẩm`;
+    tableBox.replaceChildren(head, ...rows.map((r) => {
+      const line = el("div", "", { style: { display: "grid", gridTemplateColumns: COLS, gap: "6px", alignItems: "center", fontSize: "12px", padding: "3px 6px", minHeight: "24px", boxSizing: "border-box", borderBottom: "1px solid var(--line)" } });
+      const name = el("div", "", { text: r.title || r.url, title: r.url, style: oneLine() });
+      const group = el("div", "", { text: r.collection, title: r.collection, style: oneLine({ color: "var(--muted)" }) });
+      const used = el("div", "", { text: r.used ? "T" : "F", title: r.used ? "Đã dùng: bấm để đổi về F" : "Chưa dùng: bấm để đổi thành T", style: { cursor: "pointer", textAlign: "center", color: r.used ? "var(--ok)" : "var(--muted)", border: "1px solid var(--line)", borderRadius: "3px", lineHeight: "18px" } });
+      used.onclick = async () => {
+        try { await api("projectSetUsed", { id: current, url: r.url, used: !r.used }); r.used = !r.used; renderTable(); refreshButtons(); loadProjects(current, true); }
+        catch (e) { say(e.message, "var(--error)"); }
+      };
+      const count = el("div", "", { text: r.reviews_checked_at ? r.reviews_count : "–", title: r.reviews_checked_at ? "" : "Chưa kiểm tra", style: oneLine({ textAlign: "right" }) });
+      const when = el("div", "", { text: r.reviews_checked_at ? fmtStamp(r.reviews_checked_at) : "", style: oneLine({ color: "var(--muted)" }) });
+      line.append(name, group, used, count, when);
+      return line;
+    }));
+  };
+
+  // The category list: every category of the menu, then any that only appear in the table.
+  const fillCategories = () => {
+    const keep = catBox.value;
+    const names = [], seen = new Set();
+    for (const m of list(data?.menu)) { if (m.name && !seen.has(m.name)) { seen.add(m.name); names.push(m.name); } }
+    for (const r of data?.rows || []) { if (r.collection && !seen.has(r.collection)) { seen.add(r.collection); names.push(r.collection); } }
+    const count = (n) => (data?.rows || []).filter((r) => r.collection === n).length;
+    catBox.setItems(["", ...names], ["Tất cả danh mục", ...names.map((n) => `${n} (${count(n)})`)]);
+    catBox.value = names.includes(keep) ? keep : "";
+  };
+
+  const choose = async (id, quiet = false) => {
+    current = id;
+    try {
+      data = id ? await api("projectRows", { id }) : null;
+      if (data) { data.rows = list(data.rows); data.menu = list(data.menu); }
+    } catch (e) { data = null; say(e.message, "var(--error)"); }
+    projectLine.textContent = data ? `${data.project.name} · ${data.project.site}` : "";
+    fillCategories(); renderList(); renderTable(); refreshButtons();
+    if (!quiet && data && !running) say(`${data.project.products} sản phẩm · đã dùng ${data.project.used} · đã kiểm tra review ${data.project.with_reviews}.`, "");
+  };
+  async function loadProjects(select = "", quiet = false) {
+    try { projects = list(await api("projects")); } catch (e) { projects = []; say(e.message, "var(--error)"); }
+    const want = projects.some((p) => p.id === select) ? select : (projects.some((p) => p.id === current) ? current : projects[0]?.id || "");
+    if (quiet && want === current) { renderList(); return; }
+    await choose(want, quiet);
+  }
+
+  // One poll for both kinds of run (and a Flow run that blocks them): /api/agent/status says which one is active.
+  const poll = async () => {
+    const st = await fetch("/api/agent/status").then((x) => x.json()).catch(() => null);
+    if (!st) return;
+    if (st.active && (st.mode === "scan" || st.mode === "reviews" || st.mode === "queue")) {
+      if (!running) { running = st.mode; startedAt = Date.now() - (st.elapsed_s || 0) * 1000; if (st.project && st.mode !== "scan" && st.project !== current) choose(st.project, true); }
+      otherActive = false; refreshButtons();
+      say(`${KIND[st.mode]}… ${clock()}\n${st.last_text || ""}`.trim(), "var(--accent)");
+      if (++ticks % 4 === 0) { choose(current, true); }
+      return;
+    }
+    otherActive = !!st.active;
+    if (running) {
+      const kind = running; running = ""; clearInterval(timer); timer = null;
+      let ok = st.status === "done";
+      let text = ok ? "Xong." : `Lượt chạy dừng${st.error ? ": " + st.error : ""}.`;
+      if (kind === "scan") {
+        const ss = await fetch("/api/scan/status").then((x) => x.json()).catch(() => null);
+        const sc = ss?.scan;
+        if (sc) text = `${ok ? "Quét xong" : "Quét dừng"}: ${sc.rows} sản phẩm trong dự án (mới ${sc.added ?? 0}, đã có ${sc.already_known ?? 0}).${ok ? "" : st.error ? " " + st.error : ""}`;
+      } else if (kind === "queue") {
+        // The queue changed on disk (urls.txt + references.json): reload the main window's list so the person can check every product there.
+        const before = countUrls();
+        await loadState().catch(() => {});
+        const added = countUrls() - before;
+        // "Xong" only counts when links really reached the queue: a run can end without an error and still have added nothing.
+        const worked = ok && added > 0;
+        if (ok && !worked) ok = false;
+        text = (worked ? `Đã thêm ${added} sản phẩm vào hàng chờ. Xem và kiểm tra danh sách ở cửa sổ chính (mỗi sản phẩm có ảnh gốc và ảnh bối cảnh, bấm Xem / sửa để đổi).\n` : (st.error ? `Lượt thêm vào hàng chờ dừng: ${st.error}. ` : "Không có sản phẩm nào được thêm vào hàng chờ. ") + "Phần đã thêm (nếu có) vẫn nằm trong hàng chờ.\n") + (st.last_text || "");
+      } else if (ok) text = "Đã cập nhật số review.";
+      await loadProjects(current, true); await choose(current, true);
+      say(text, ok ? "var(--ok)" : "var(--error)");
+      return;
+    }
+    if (st.active) say("Đang có một lượt Claude khác chạy (tạo ảnh Flow). Chờ xong rồi quét hoặc cập nhật review.", "var(--warn)");
+    refreshButtons();
+    if (!st.active && timer) { clearInterval(timer); timer = null; }
+  };
+  const watch = () => { if (!timer) timer = setInterval(poll, 2000); poll(); };
+  const begin = async (url, body, kind, failText) => {
+    if (run.active) return say("Đang có một lượt chạy trong cửa sổ chính. Chờ xong rồi chạy.", "var(--warn)");
+    const r = await fetch(url, { method: "POST", body: JSON.stringify(body) });
+    const answer = await r.json().catch(() => ({}));
+    if (!r.ok) return say(answer.error || failText, "var(--error)");
+    running = kind; startedAt = Date.now(); ticks = 0; refreshButtons(); say("Đang bắt đầu…", "var(--accent)"); watch();
+  };
+
+  scanBtn.onclick = () => { if (data) begin("/api/scan/run", { site: data.project.site, max: data.project.max_per_collection || 20 }, "scan", "Chưa bắt đầu quét được."); };
+  reviewsBtn.onclick = () => { if (data) begin("/api/project/reviews/run", { project: current }, "reviews", "Chưa bắt đầu cập nhật số review được."); };
+  // Prepares the queue only (docs/queue-prompt.md): the products of the selected project, filtered like the table, go into the run queue with their
+  // project photo and 2 scene photos Claude picks from the library. It never starts image creation and writes no review text.
+  queueBtn.onclick = async () => {
+    if (!data) return;
+    if (sceneCount.value === 0) {
+      // No scenes wanted: add the first N products of the table (same filters) straight into the queue, no Claude run.
+      if (run.active) return say("Đang có một lượt chạy trong cửa sổ chính. Chờ xong rồi thêm.", "var(--warn)");
+      queueBtn.disabled = true; say("Đang thêm vào hàng chờ…", "var(--accent)");
+      const r = await fetch("/api/project/queue/direct", { method: "POST", body: JSON.stringify({ project: current, category: catBox.value, unused_only: unusedOnly.input.checked, count: queueCount.value }) });
+      const answer = await r.json().catch(() => ({}));
+      refreshButtons();
+      if (!r.ok) return say(answer.error || "Chưa thêm vào hàng chờ được.", "var(--error)");
+      await loadState().catch(() => {});
+      return say(`Đã thêm ${answer.added} sản phẩm (không ảnh bối cảnh). Xem danh sách ở cửa sổ chính.`, "var(--ok)");
+    }
+    begin("/api/project/queue/run", { project: current, category: catBox.value, unused_only: unusedOnly.input.checked, count: queueCount.value, scenes: sceneCount.value }, "queue", "Chưa thêm vào hàng chờ được."); };
+  stop.onclick = async () => { stop.disabled = true; say("Đang dừng…", "var(--accent)"); await fetch(running === "queue" ? "/api/project/queue/stop" : running === "reviews" ? "/api/project/reviews/stop" : "/api/scan/stop", { method: "POST" }).catch(() => {}); };
+  openDir.onclick = () => data && api("openPath", { path: data.project.dir });
+  catBox.onchange = renderTable;
+  unusedOnly.input.onchange = renderTable;
+  // Closing the popup leaves a running scan or review update running; opening it again picks it up.
+  view.onClose = () => { if (timer) { clearInterval(timer); timer = null; } };
+  view.cancel = close.onclick = () => view.close();
+  refreshButtons();
+  loadProjects(pick).then(() => watch());
+}
+
 async function showProductDialog(target = null) {
   let root;
   try { root = await api("draftOpen"); } catch (e) { return appendLog(e.message); }
@@ -623,7 +928,7 @@ async function showProductDialog(target = null) {
     if (active >= products.length) active = products.length - 1;
     const rows = products.map((p, i) => {
       // Product image, arrow, then its reviews; many reviews wrap onto more lines so the add tiles stay visible.
-      const row = el("div", "", { style: { display: "flex", alignItems: "flex-start", gap: "6px", padding: "6px", borderBottom: "1px solid var(--line)" } });
+      const row = el("div", "", { style: { display: "flex", flexWrap: "wrap", alignItems: "flex-start", gap: "6px", padding: "6px", borderBottom: "1px solid var(--line)" } });
       if (i === active) row.style.background = "var(--hover)";
       const product = p.file
         ? thumb(p.file, p.ok, async () => { await api("draftRemoveProduct", { root, url, productIndex: i }).catch(fail); refresh(); }, `Ảnh gốc #${i + 1}`)
@@ -718,7 +1023,7 @@ async function addLinks(urls) {
   persist();
   updateStatus();
 }
-function showBulkDialog() {
+function showBulkDialog(preset = null) {
   const view = openWindow("Nhập hàng loạt", 760, 480);
   const hint = at(label("Dán link (mỗi dòng một link), hoặc kéo thả thư mục product-import hay file nén của nó (hoặc bấm Chọn file… và chọn products.csv) để app gắn ảnh."), 16, 14, 728, 40);
   hint.style.whiteSpace = "normal";
@@ -797,7 +1102,7 @@ function showBulkDialog() {
     if (!s) return fail("Chưa nhập được. Thử lại hoặc bấm Báo lỗi.");
     if (s.errors?.length) return fail(s.errors.slice(0, 3).join("\n"));
     await addLinks(list(s.links));
-    const summary = `Đã nhập ${list(s.links).length} link, ${s.products} ảnh gốc, ${s.reviews} ảnh review.`;
+    const summary = `Đã nhập ${list(s.links).length} link, ${s.products} ảnh gốc, ${s.reviews} ảnh review.` + (s.skipped ? ` Bỏ qua ${s.skipped} dòng đã dùng.` : "");
     const failed = list(s.failed);
     if (!failed.length) { view.close(); return; }
     fail(`${summary} Lỗi ${failed.length} ảnh:\n` + failed.slice(0, 2).map((f) => `Dòng ${f.line}: ${f.reason}`).join("; "));
@@ -814,10 +1119,11 @@ function showBulkDialog() {
       if (!r.ok) throw new Error((await r.json()).error);
       busy(true);
       bar.classList.add("marquee");
-      status.textContent = "Đang gắn ảnh…";
+      const skipNote = parsed.skipped ? ` (bỏ qua ${parsed.skipped} dòng đã dùng)` : "";
+      status.textContent = "Đang gắn ảnh…" + skipNote;
       timer = setInterval(async () => {
         const { running, status: s } = await (await fetch("/api/import")).json();
-        if (s?.total) { bar.classList.remove("marquee"); bar.firstChild.style.width = `${Math.round((100 * s.done) / s.total)}%`; status.textContent = `Đang gắn ảnh ${s.done}/${s.total}…`; }
+        if (s?.total) { bar.classList.remove("marquee"); bar.firstChild.style.width = `${Math.round((100 * s.done) / s.total)}%`; status.textContent = `Đang gắn ảnh ${s.done}/${s.total}…` + skipNote; }
         if (!running && timer) finish(s);
       }, 600);
     } catch (e) { fail(e.message); }
@@ -827,6 +1133,16 @@ function showBulkDialog() {
     if (timer) { await fetch("/api/import", { method: "DELETE" }); clearInterval(timer); timer = null; }
     view.close();
   };
+  // Opened from Quét web: the scan's products.csv is loaded, its images/ folder sits next to it.
+  if (preset?.csv) {
+    (async () => {
+      try {
+        text.value = await api("importFile", { path: preset.csv });
+        folder = preset.csv.slice(0, preset.csv.lastIndexOf("/"));
+        status.style.color = ""; status.textContent = "Đã nạp bảng quét. Dòng used = T được bỏ qua. Bấm Nhập.";
+      } catch (err) { fail(err.message); }
+    })();
+  }
   text.focus();
 }
 
@@ -838,7 +1154,7 @@ async function showReviewDialog() {
   const pickAll = at(button("Chọn hết"), null, 8, 76, 26, { right: 96, left: false });
   const pickNone = at(button("Bỏ chọn"), null, 8, 76, 26, { right: 12, left: false });
   const runsBox = at(el("div", "runs"), 12, 40, null, 116, { right: 12 });
-  const hint = at(label("Mỗi dòng một đánh giá. Bấm ảnh để xem lớn; Giữ/Bỏ chỉ áp dụng cho dòng đó.", "muted"), 12, 162, 900, 22);
+  const hint = at(label("Mỗi dòng một đánh giá. Bấm ảnh để xem lớn; Giữ cả ảnh, chỉ lấy nội dung hoặc bỏ từng dòng.", "muted"), 12, 162, 900, 22);
   const flow = at(el("div", "flow"), 12, 188, null, null, { right: 12, bottom: 69 });
   const status = at(label(""), 12, null, 520, 36, { bottom: 17, top: false });
   status.style.lineHeight = "36px";
@@ -851,7 +1167,7 @@ async function showReviewDialog() {
   let items = [], runs = [];
   const chosen = () => runs.filter((r) => r.input.checked).map((r) => r.path);
   const refresh = () => {
-    const done = items.filter((i) => i.decision).length, good = items.filter((i) => i.decision === "ok").length;
+    const done = items.filter((i) => i.decision).length, good = items.filter((i) => ["ok", "text"].includes(i.decision)).length;
     if (!chosen().length) { status.textContent = "Tích chọn ít nhất một lần chạy ở trên để duyệt."; exportBtn.disabled = true; return; }
     status.textContent = `Đã chọn ${chosen().length} lần chạy • Đã duyệt ${done}/${items.length} đánh giá • Giữ ${good} • Bỏ ${done - good}`;
     exportBtn.disabled = !(items.length > 0 && done === items.length && good > 0);
@@ -873,21 +1189,23 @@ async function showReviewDialog() {
       thumb.style.background = "var(--smoke)";
       thumb.style.cursor = "pointer";
       thumb.set(item.image);
-      const title = at(label(`#${n + 1} · ${item.run.slice(11)} · ${item.handle}`), 68, 5, width - 240, 20);
-      const bodyText = at(label(item.body, "muted"), 68, 28, width - 240, 24);
-      const ok = at(button("Giữ"), width - 152, 17, 64, 28), bad = at(button("Bỏ"), width - 80, 17, 64, 28);
+      const title = at(label(`#${n + 1} · ${item.run.slice(11)} · ${item.handle}${item.review_only ? " · review không ảnh" : ""}`), 68, 5, width - 360, 20);
+      const bodyText = at(label(item.body, "muted"), 68, 28, width - 360, 24);
+      const ok = at(button("Giữ"), width - 306, 17, 64, 28), textOnly = at(button("Chỉ lấy nội dung"), width - 234, 17, 146, 28), bad = at(button("Bỏ"), width - 80, 17, 64, 28);
       const paint = () => {
         ok.classList.toggle("primary", item.decision === "ok");
+        textOnly.classList.toggle("primary", item.decision === "text");
         bad.classList.toggle("flat-error", item.decision === "bad");
-        row.classList.toggle("ok", item.decision === "ok");
+        row.classList.toggle("ok", ["ok", "text"].includes(item.decision));
         row.classList.toggle("bad", item.decision === "bad");
       };
       const decide = decideFor(item, paint);
       ok.onclick = () => decide("ok");
+      textOnly.onclick = () => decide("text");
       bad.onclick = () => decide("bad");
       thumb.onclick = () => showReviewPreview(item, decide);
       paint();
-      row.append(thumb, title, bodyText, ok, bad);
+      row.append(thumb, title, bodyText, ok, textOnly, bad);
       return row;
     }));
     refresh();
@@ -937,17 +1255,19 @@ function showReviewPreview(item, decide) {
   for (const p of [product, scene, result]) p.style.background = "var(--smoke)";
   product.set(item.product);
   scene.set(item.scene);
-  result.set(item.image);
+  // Review-only item: no generated image, the result pane stays empty (the original review photo is in the pane on the left).
+  result.set(item.review_only ? "" : item.image, item.review_only ? "Chỉ review, không có ảnh" : "");
   if (!item.product) original.textContent = "Ảnh sản phẩm gốc · không có";
   if (!item.scene) sceneLabel.textContent = "Ảnh review ban đầu · không có";
   const body = at(el("textarea", "text", { readOnly: true, value: item.body }), 12, 584, 1056, 70);
   const state_ = at(label(""), 12, 674, 540, 28);
   // Giữ or Bỏ decides and closes the window, so there is no separate Đóng; Esc closes without deciding.
-  const keep = at(button("Giữ đánh giá"), 796, 670, 130, 36), skip = at(button("Bỏ đánh giá"), 938, 670, 130, 36);
-  state_.textContent = { ok: "Đang giữ đánh giá này", bad: "Đang bỏ đánh giá này khỏi CSV" }[item.decision] || "Chưa chọn giữ hoặc bỏ";
+  const keep = at(button("Giữ cả ảnh"), 650, 670, 130, 36), textOnly = at(button("Chỉ lấy nội dung"), 790, 670, 146, 36), skip = at(button("Bỏ đánh giá"), 946, 670, 122, 36);
+  state_.textContent = { ok: "Đang giữ đánh giá và ảnh", text: "Chỉ giữ nội dung, CSV không có ảnh", bad: "Đang bỏ đánh giá này khỏi CSV" }[item.decision] || "Chưa chọn giữ hoặc bỏ";
   keep.onclick = async () => { await decide("ok"); view.close(); };
+  textOnly.onclick = async () => { await decide("text"); view.close(); };
   skip.onclick = async () => { await decide("bad"); view.close(); };
-  b.append(original, at(label("Ảnh kết quả"), 548, 12, 500, 24), product, sceneLabel, scene, result, body, state_, keep, skip);
+  b.append(original, at(label(item.review_only ? "Chỉ review · không có ảnh kết quả" : "Ảnh kết quả"), 548, 12, 500, 24), product, sceneLabel, scene, result, body, state_, keep, textOnly, skip);
 }
 
 // ----- Cấu hình: core/setup/page.html; "← Quay lại" comes back here -----
@@ -999,10 +1319,15 @@ function showUpdateDialog() {
 const actionLocks = new Set();
 function updateActionAvailability() {
   const busy = run.active || actionLocks.size > 0 || stack.length > 0;
-  for (const b of [ui.btnRun, ui.btnSetup, ui.btnLogs, ui.btnReview, ui.btnOut, ui.btnUpdate, ui.btnClearLog, ui.btnAdd, ui.btnBulk, ui.btnClear]) b.disabled = busy;
+  for (const b of [ui.btnFlowOpen, ui.btnFlowCheck]) if (b) b.disabled = busy || flowLogin.checking;
+  for (const b of [ui.btnRun, ui.btnSetup, ui.btnLogs, ui.btnReview, ui.btnOut, ui.btnUpdate, ui.btnClearLog, ui.btnAdd, ui.btnBulk, ui.btnClear, ui.btnProjects]) b.disabled = busy;
+  // Claude (Flow) cannot start until its own Chrome is signed in to Google Flow.
+  if (ui.cmbBackend?.value === "agent" && flowLogin.state !== "logged_in") ui.btnRun.disabled = true;
   ui.btnStop.disabled = !run.active;
   ui.numThr.enabled = !busy;
-  ui.cmbBackend.disabled = ui.cmbText.disabled = busy;
+  ui.cmbText.disabled = busy;
+  // Both modes keep image generation enabled.
+  ui.cmbBackend.disabled = busy;
   ui.flow.style.pointerEvents = busy ? "none" : "";
 }
 function setActionBusy(reason, on) {
@@ -1038,10 +1363,10 @@ function updateRunDisplay() {
 }
 const usage = { quota: "Hạn mức: đang lấy…", at: 0, reading: false };
 const formatCount = (n) => Number(n).toLocaleString("vi-VN");
-// Web AIs and Antigravity report no tokens: each finished call is counted instead ([AI-CALL]), and their limits are
-// the Google account's own, shown on their sites. Codex's tokens and quota only show when Codex is used.
-const CALL_NAMES = { gemini: ["Gemini web", "lượt"], antigravity: ["Antigravity", "lượt"], flow: ["Flow", "ảnh"] };
-const LIMIT_NAMES = { gemini: "lượt Gemini", antigravity: "hạn mức Antigravity", flow: "credit Flow" };
+// Antigravity and Claude report no tokens here: each finished call is counted instead ([AI-CALL]), and its limit is
+// the Google account's own, shown on its site. Codex's tokens and quota only show when Codex is used.
+const CALL_NAMES = { antigravity: ["Antigravity", "lượt"], claude: ["Claude", "lượt"] };
+const LIMIT_NAMES = { antigravity: "hạn mức Antigravity", claude: "hạn mức Claude" };
 function updateUsage() {
   if (!ui.lblTokens || !ui.cmbText) return;
   const t = run.tokens || { in: 0, cached: 0, out: 0 };
@@ -1051,7 +1376,7 @@ function updateUsage() {
   if (t.in || t.out) parts.unshift(`Token: ${formatCount(t.in + t.out)} · vào ${formatCount(t.in)} · ra ${formatCount(t.out)}`);
   ui.lblTokens.textContent = parts.length ? parts.join(" · ") : usesCodex ? "Token: chưa chạy" : "Lượt AI: chưa chạy";
   const web = [...new Set([text, image])].filter((k) => LIMIT_NAMES[k]).map((k) => LIMIT_NAMES[k]);
-  const webText = web.length ? `${web.join(", ")} theo tài khoản Google` : "";
+  const webText = web.length ? `${web.join(", ")} theo tài khoản của AI` : "";
   ui.lblQuota.textContent = !usesCodex ? `Hạn mức: ${webText}, xem trên trang của AI` : web.length ? `${usage.quota} · ${webText}` : usage.quota;
   // Cut with … in a narrow window: the whole line shows on hover.
   for (const l of [ui.lblTokens, ui.lblQuota]) l.title = l.textContent;
@@ -1089,6 +1414,7 @@ function receive(event) {
 }
 async function startBatch() {
   if (run.active) return;
+  // Use the selected image provider for either run mode.
   if (ui.cmbBackend.value === "agent") return startAgent();
   try { await saveQueue(true); } catch (e) { return appendLog(e.message); }
   if (!countUrls()) return messageBox("Vui lòng thêm ít nhất một link sản phẩm.");
@@ -1101,7 +1427,7 @@ async function startBatch() {
   // The AIs chosen are the only ones used: nothing falls back to Codex without asking (finish()).
   Object.assign(run, { text: ui.cmbText.value, image: ui.cmbBackend.value });
   // Shown on the progress line for the whole run: which AI writes, which one draws.
-  run.ai = `Viết review: ${ui.cmbText.selectedOptions[0]?.text} · Tạo ảnh: ${ui.cmbBackend.selectedOptions[0]?.text}`;
+  run.ai = `Viết review: ${ui.cmbText.selectedOptions[0]?.text} · ` + `Tạo ảnh: ${ui.cmbBackend.selectedOptions[0]?.text}`;
   const r = await fetch("/api/run", { method: "POST", body: JSON.stringify({ threads: ui.numThr.value, backend: run.image, text: run.text }) });
   if (!r.ok) {
     const body = await r.json().catch(() => ({}));
@@ -1114,9 +1440,41 @@ async function startBatch() {
   poll();
 }
 // ----- Claude (Google Flow): Claude Code drives Flow and writes the reviews (/api/agent/*); the images then wait in Duyệt -----
+const flowLogin = { state: "", checking: false };
+const FLOW_TEXT = {
+  logged_in: ["Đã đăng nhập Google Flow", "var(--ok)"],
+  logged_out: ["Chưa đăng nhập: nút Bắt đầu đang bị khoá.", "var(--warn)"],
+  busy: ["Đang bận (Chrome riêng đang mở hoặc Claude đang chạy).", "var(--warn)"],
+  error: ["Chưa kiểm tra được: bấm Kiểm tra lại.", "var(--warn)"],
+};
+function showFlowLogin(state, detail) {
+  flowLogin.state = state;
+  const [text, color] = state === "checking" ? ["Đang kiểm tra…", "var(--muted)"] : FLOW_TEXT[state] || ["", "var(--muted)"];
+  // The dot in the button says it all; the message and any detail from the check are its tooltip.
+  ui.flowDot.style.background = state === "logged_in" ? "var(--ok)" : state === "logged_out" ? "var(--error)" : "var(--muted)";
+  ui.btnFlowOpen.title = (text || "Google Flow") + (detail ? ` (${detail})` : "");
+  updateActionAvailability();
+}
+async function checkFlowLogin(fresh = false) {
+  if (flowLogin.checking) return;
+  flowLogin.checking = true; showFlowLogin("checking");
+  const r = await fetch("/api/flow-login/status" + (fresh ? "?fresh=1" : "")).then((x) => x.json()).catch(() => null);
+  flowLogin.checking = false;
+  showFlowLogin(r?.state || "error", r?.detail || "");
+}
+async function openFlowLogin() {
+  const r = await fetch("/api/flow-login/open", { method: "POST", body: "{}" });
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok) return appendLog("Chưa mở được Chrome đăng nhập: " + (body.error || r.status));
+  appendLog("Đã mở Chrome riêng của Claude. Đăng nhập Google, đóng cửa sổ đó rồi bấm Kiểm tra lại.");
+  showFlowLogin("busy");
+}
 function updateAgentControls() {
   const on = ui.cmbBackend?.value === "agent";
   if (!ui.btnCopyPrompt) return;
+  ui.flowLoginBox.style.display = on ? "" : "none";
+  if (on && !flowLogin.state && !flowLogin.checking) checkFlowLogin();
+  updateActionAvailability();
   ui.btnCopyPrompt.style.display = on ? "" : "none";
   ui.lblTokens.style.display = ui.lblQuota.style.display = on ? "none" : "";
 }
@@ -1132,7 +1490,7 @@ async function startAgent() {
   try { await saveQueue(true); } catch (e) { return appendLog(e.message); }
   if (!countUrls()) return messageBox("Vui lòng thêm ít nhất một link sản phẩm.");
   ui.txtLog.value = "";
-  const r = await fetch("/api/agent/run", { method: "POST", body: "{}" });
+  const r = await fetch("/api/agent/run", { method: "POST", body: JSON.stringify({ text: ui.cmbText.value }) });
   if (!r.ok) { const body = await r.json().catch(() => ({})); return appendLog("Chưa khởi động được Claude: " + (body.error || r.status)); }
   attachAgent(Date.now());
 }
@@ -1145,7 +1503,8 @@ function attachAgent(started) {
 }
 async function resumeAgent() {
   const st = await fetch("/api/agent/status").then((x) => x.json()).catch(() => null);
-  if (st?.active) attachAgent(Date.now() - st.elapsed_s * 1000);
+  // A Quét web or Cập nhật số review run is shown by its own popup, not as a Claude (Flow) run.
+  if (st?.active && st.mode !== "scan" && st.mode !== "reviews") attachAgent(Date.now() - st.elapsed_s * 1000);
 }
 async function pollAgent() {
   if (!run.active || !run.agent) return;
@@ -1166,7 +1525,12 @@ async function finishAgent(st) {
   await loadState();
   await updateReviewButton();
   const pending = run.resultFolder ? await api("pending", { batch: run.resultFolder }).catch(() => 0) : 0;
-  ui.lblProgress.textContent = st.last_text || "Claude đã dừng.";
+  // The run is over: stop the moving bar (full when finished, empty otherwise) and show a clean line, not Claude's last chat text.
+  setBar(st.status === "done" ? 1 : 0, 1);
+  const secs = Math.floor((Date.now() - run.started) / 1000);
+  const took = `${Math.floor(secs / 60)} phút ${secs % 60} giây`;
+  ui.lblProgress.textContent = st.status === "done" ? `Đã xong lượt chạy${pending > 0 ? ` • ${pending} ảnh chờ duyệt` : ""} • ${took} • ${run.ai}`
+    : st.status === "stopped" ? `Đã dừng • ${took} • ${run.ai}` : (st.last_text || "Lượt chạy chưa hoàn tất.");
   if (st.status === "stopped") { setStatus("Đã dừng", "var(--muted)"); appendLog("Đã dừng. Các link chưa hoàn tất được giữ lại."); }
   else if (st.status === "done" && pending > 0) { setStatus("Chờ bạn duyệt", "var(--ok)"); appendLog(`Claude đã xong. ${pending} ảnh chờ bạn duyệt: bấm Duyệt & xuất file (Giữ/Bỏ từng ảnh). Claude không tự Giữ/Bỏ.`); }
   else if (st.status === "done") { setStatus("! Cần kiểm tra", "var(--warn)"); appendLog("Claude đã dừng nhưng chưa có ảnh nào chờ duyệt. Xem tiến trình ở trên."); }
@@ -1206,12 +1570,12 @@ async function finish(r) {
   await updateReviewButton();
   // Another AI was chosen and some links failed: Codex is the steady one, but only on the user's yes, and only for
   // this retry (the choices shown go back to theirs next time).
-  const others = [run.text !== "codex" && ui.cmbText.selectedOptions[0]?.text, run.image !== "codex" && ui.cmbBackend.selectedOptions[0]?.text].filter(Boolean);
+  const others = [run.text !== "codex" && ui.cmbText.selectedOptions[0]?.text, run.image !== "codex" && run.image !== "none" && ui.cmbBackend.selectedOptions[0]?.text].filter(Boolean);
   if (!r.stopped && (r.exitCode !== 0 || run.failure) && others.length && countUrls()) {
     const answer = await messageBox(`Một số sản phẩm chưa xong với ${others.join(" và ")}. Chạy lại các link còn lại bằng Codex?`, "Chạy lại bằng Codex", ["Yes", "No"], { Yes: "Chạy bằng Codex", No: "Không" });
     if (answer === "Yes") {
       if (run.text !== "codex") ui.cmbText.value = "codex";
-      if (run.image !== "codex") ui.cmbBackend.value = "codex";
+      if (run.image !== "codex" && run.image !== "none") ui.cmbBackend.value = "codex";
       startBatch();
     }
   }
@@ -1222,6 +1586,7 @@ setInterval(() => { if (run.active && !run.stopped && !run.agent) { run.anim = (
 // ---------- wiring ----------
 function wire() {
   ui.btnAdd.onclick = () => showProductDialog();
+  ui.btnProjects.onclick = () => showProjectsDialog();
   ui.btnBulk.onclick = showBulkDialog;
   ui.btnClear.onclick = () => { if (run.active) return; state.rows = []; renderRows(); updateStatus(); persist(); };
   // Báo lỗi: src/support-report.mjs runs in the background and keeps the report in workspace/reports; each step

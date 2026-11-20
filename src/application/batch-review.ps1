@@ -18,16 +18,28 @@ function Get-BatchReview([string]$BatchDir) {
         (Get-Content -LiteralPath $reviewPath -Raw -Encoding UTF8 | ConvertFrom-Json).PSObject.Properties | ForEach-Object { $decisions[$_.Name] = $_.Value }
     }
     foreach ($row in @($rows)) {
+        # Review-only row (no generated image): its id is the item id, photo_path is the ORIGINAL review photo in refs/<item>/.
+        if ($row.PSObject.Properties['review_only'] -and $row.review_only) {
+            $id = [string]$row.item_id
+            $scene = [string]$row.photo_path
+            $product = if (Test-Path -LiteralPath $scene) { @(Get-ChildItem -LiteralPath (Split-Path $scene -Parent) -File -Filter '02-product*' | Select-Object -First 1).FullName } else { '' }
+            if ($row.supplemental_review) {
+                $target = Get-FeedbackTarget $scene
+                $product = $target.ProductPath
+            }
+            [pscustomobject]@{ Id = $id; Row = $row; ImagePath = $scene; ProductPath = [string]$product; ScenePath = $scene; Decision = [string]$decisions[$id]; ReviewOnly = $true }
+            continue
+        }
         $id = [IO.Path]::GetFileNameWithoutExtension([string]$row.photo_path)
         $target = $null
         try { $target = Get-FeedbackTarget ([string]$row.photo_path) } catch { Write-Verbose $_ }
-        [pscustomobject]@{ Id = $id; Row = $row; ImagePath = [string]$row.photo_path; ProductPath = [string]$target.ProductPath; ScenePath = [string]$target.ScenePath; Decision = [string]$decisions[$id] }
+        [pscustomobject]@{ Id = $id; Row = $row; ImagePath = [string]$row.photo_path; ProductPath = [string]$target.ProductPath; ScenePath = [string]$target.ScenePath; Decision = [string]$decisions[$id]; ReviewOnly = $false }
     }
 }
 
 # $RejectedRoot defaults to workspace/rejected next to workspace/output (see Save-RejectedSample).
 # $Reason: what is wrong, typed when choosing Bỏ; it goes with the sample into the error report of Gửi lỗi.
-function Set-BatchReviewDecision([string]$BatchDir, [string]$Id, [ValidateSet('ok', 'bad', '')][string]$Decision, [string]$RejectedRoot, [string]$Reason = '') {
+function Set-BatchReviewDecision([string]$BatchDir, [string]$Id, [ValidateSet('ok', 'text', 'bad', '')][string]$Decision, [string]$RejectedRoot, [string]$Reason = '') {
     $path = Join-Path $BatchDir 'review.json'
     $saved = [ordered]@{}
     if (Test-Path -LiteralPath $path) { (Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json).PSObject.Properties | ForEach-Object { $saved[$_.Name] = $_.Value } }

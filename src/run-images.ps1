@@ -11,11 +11,15 @@ param(
     [string]$Model = '',
     [string]$ReferenceMapFile = '',
     [switch]$LocalOnly,
-    # codex: Codex CLI; flow: Google Flow in the signed-in Chrome, through core/bridge + core/extension/.
-    [ValidateSet('codex', 'flow')][string]$ImageBackend = $(if ($env:PIB_IMAGE_BACKEND) { $env:PIB_IMAGE_BACKEND } else { 'codex' }),
-    # Every text step (product, checks, review): codex: Codex CLI; gemini: Gemini web in the tools' own Chrome;
+    # Review-only run: no image step (no Codex/Flow image call, no Codex image warm-up, no upload to the results repo);
+    # each item's review is written from its attached ORIGINAL review photo.
+    [switch]$ReviewOnly,
+    # codex: Codex CLI (Claude (Flow) runs through agent mode, not here).
+    [ValidateSet('codex')][string]$ImageBackend = $(if ($env:PIB_IMAGE_BACKEND) { $env:PIB_IMAGE_BACKEND } else { 'codex' }),
+    # Every text step (product, checks, review): codex: Codex CLI;
     # antigravity: the Antigravity CLI (agy), signed in with Google.
-    [ValidateSet('codex', 'gemini', 'antigravity')][string]$TextBackend = 'codex'
+    # claude: the Claude Code CLI (claude -p), signed in with Claude; only reads the review photos.
+    [ValidateSet('codex', 'antigravity')][string]$TextBackend = 'codex'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -34,19 +38,20 @@ $ai = Get-AiSettings $ProjectRoot
 if (-not $Model) { $Model = $ai.model }
 $script:Config = New-WorkflowConfiguration $ProjectRoot $SourceDir $Model
 $script:Config.ReasoningEffort = $ai.effort
-$script:Config.ResultsRequired = -not $LocalOnly
-if($LocalOnly){$script:Config.Results=$null}
+$script:Config.ResultsRequired = -not ($LocalOnly -or $ReviewOnly)
+if($LocalOnly -or $ReviewOnly){$script:Config.Results=$null}
+$script:Config.ReviewOnly = [bool]$ReviewOnly
 if($script:Config.ResultsRequired){
     try{Assert-ResultStoreReady}
     catch{Write-Warning ("Failed; "+$_.Exception.Message);throw}
 }
 $script:Config.ImageBackend = $ImageBackend
 $script:Config.TextBackend = $TextBackend
-if ($ImageBackend -ne 'codex' -or $TextBackend -eq 'gemini') { Start-ImageBridge -NewSession }
 if($ReferenceMapFile){$script:Config.ManualReferences=Read-ManualReferenceMap $ReferenceMapFile}
 # What each step runs on; the Codex model only matters where Codex is used.
 $name = { param($Id) if ($Id -eq 'codex') { "Codex ($(Get-AiModelSummary $ProjectRoot))" } else { (Get-HubAIProvider $Id).Name } }
-Write-Host "Viết review: $(& $name $TextBackend) | Tạo ảnh: $(& $name $ImageBackend)"
+$imageLabel = if ($ReviewOnly) { 'không (chỉ viết review, dùng ảnh review gốc)' } else { & $name $ImageBackend }
+Write-Host "Viết review: $(& $name $TextBackend) | Tạo ảnh: $imageLabel"
 try {
     Invoke-BatchWorkflow $ProjectRoot $List $OutDir $ThrottleLimit $script:WorkflowModuleFiles
 } catch {

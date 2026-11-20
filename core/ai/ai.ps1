@@ -1,16 +1,14 @@
 ﻿# The AIs every tool can use, behind one call: Invoke-HubAI -Kind text|image|video -Ai <id> -Prompt ... -Output <file>.
 # The app dot-sources this file (from src: ../core/ai/ai.ps1) and keeps only its own prompts and
 # choices. A new AI is one entry in $script:HubAIProviders plus its provider file in providers/:
-#   cli      a command on this machine (codex, agy)
-#   browser  a site in the user's own Chrome, through core/bridge and the Product Review extension (core/extension/sites/)
-# Errors end in [CAUSE:<kind>] (AUTH, QUOTA, BUSY, NETWORK, AI_TIMEOUT, BRIDGE, ...), which tools show and retry by.
+#   cli      a command on this machine (codex, agy, claude)
+# Errors end in [CAUSE:<kind>] (AUTH, QUOTA, BUSY, NETWORK, AI_TIMEOUT, ...), which tools show and retry by.
 . (Join-Path $PSScriptRoot 'common.ps1')
 . (Join-Path $PSScriptRoot 'providers/codex.ps1')
 . (Join-Path $PSScriptRoot 'providers/antigravity.ps1')
-. (Join-Path $PSScriptRoot 'providers/browser.ps1')
+. (Join-Path $PSScriptRoot 'providers/claude.ps1')
 
-# Every call, one JSON line in workspace/logs/ai-usage.jsonl (Cấu hình → Lượt dùng AI): the CLIs here, the web
-# AIs in core/bridge/server.mjs (which knows the Google account a job ran with). Tests point HUB_AI_USAGE_FILE elsewhere.
+# Every call, one JSON line in workspace/logs/ai-usage.jsonl (Cấu hình → Lượt dùng AI): the CLIs, here. Tests point HUB_AI_USAGE_FILE elsewhere.
 $script:HubAIUsageFile = if ($env:HUB_AI_USAGE_FILE) { $env:HUB_AI_USAGE_FILE } else { Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'workspace/logs/ai-usage.jsonl' }
 function Add-HubAIUsage([string]$Ai, [string]$Kind, [string]$Account, [bool]$Ok, [string]$Cause = '', [int]$Ms = 0, $Tokens = $null) {
     $entry = [ordered]@{ t = [DateTime]::UtcNow.ToString('o'); ai = $Ai; kind = $Kind; account = $Account; ok = $Ok; ms = $Ms }
@@ -28,10 +26,8 @@ function Add-HubAIUsage([string]$Ai, [string]$Kind, [string]$Account, [bool]$Ok,
 
 $script:HubAIProviders = [ordered]@{
     codex = [pscustomobject]@{ Name = 'Codex CLI'; Via = 'cli'; Kinds = @('text', 'image') }
-    gemini = [pscustomobject]@{ Name = 'Gemini web'; Via = 'browser'; Kinds = @('text') }
-    flow = [pscustomobject]@{ Name = 'Google Flow'; Via = 'browser'; Kinds = @('image') }
-    grok = [pscustomobject]@{ Name = 'Grok web'; Via = 'browser'; Kinds = @('image', 'video') }
     antigravity = [pscustomobject]@{ Name = 'Antigravity CLI'; Via = 'cli'; Kinds = @('text') }
+    claude = [pscustomobject]@{ Name = 'Claude CLI'; Via = 'cli'; Kinds = @('text') }
 }
 
 function Get-HubAIProvider([string]$Id) {
@@ -49,10 +45,8 @@ function Get-HubAIChoices([ValidateSet('text', 'image', 'video')][string]$Kind) 
 }
 
 # Text: the reply, also written to $Output. Image: the image saved at $Output (PNG); Codex saves it where the prompt
-# says and returns its reply, a web AI returns the bridge's answer (source, bytes). Video: an MP4 at $Output, from a web
-# AI (Grok): image 1 is the first frame, image 2 (optional) the last.
-# Options, all optional: TimeoutSec; Grok: Aspect (9:16, 16:9, 1:1), video also Seconds (6, 10, 15), Resolution
-# (480p, 720p, 1080p), Audio; Codex: WorkDir (required), Model, Effort, ReconnectSec, Attempts, RetryDelaySec,
+# says and returns its reply.
+# Options, all optional: TimeoutSec; Codex: WorkDir (required), Model, Effort, ReconnectSec, Attempts, RetryDelaySec,
 # ReplyFile (an image's reply).
 function Invoke-HubAI {
     param(
@@ -67,7 +61,7 @@ function Invoke-HubAI {
     if ($provider.Kinds -notcontains $Kind) { throw "AI failed. $($provider.Name) không làm được việc này ($Kind). [CAUSE:UNSUPPORTED]" }
     $timeout = if ($Options.ContainsKey('TimeoutSec')) { [Math]::Max(1, [int]$Options.TimeoutSec) } else { 0 }
     if ($provider.Via -eq 'cli') {
-        # The bridge counts the web AIs; the CLIs are counted here, failures too, with what stopped them.
+        # The CLIs are counted here, failures too, with what stopped them.
         $watch = [Diagnostics.Stopwatch]::StartNew(); $script:CodexCallTokens = $null
         $account = if ($Ai -eq 'codex') { Get-CodexAccount } else { '' }
         try { $result = Invoke-HubAIProvider $Kind $Ai $Prompt $Images $Output $Options $timeout }
@@ -97,7 +91,7 @@ function Get-CliInputBoundary {
 }
 
 function Invoke-HubAIProvider([string]$Kind, [string]$Ai, [string]$Prompt, [string[]]$Images, [string]$Output, [hashtable]$Options, [int]$timeout) {
-    if ($Ai -in @('codex', 'antigravity')) { $Prompt += "`n" + (Get-CliInputBoundary) }
+    if ($Ai -in @('codex', 'antigravity', 'claude')) { $Prompt += "`n" + (Get-CliInputBoundary) }
     switch ($Ai) {
         'codex' {
             $codex = @{
@@ -116,10 +110,7 @@ function Invoke-HubAIProvider([string]$Kind, [string]$Ai, [string]$Prompt, [stri
             return Invoke-CodexExec -PromptText $Prompt -Images $Images -ResultFile $reply @codex
         }
         'antigravity' { return Invoke-AntigravityText $Prompt $Images $Output $(if ($timeout) { $timeout } else { 300 }) }
-        default {
-            if ($Kind -eq 'text') { return Invoke-BrowserText $Ai $Prompt $Images $Output $(if ($timeout) { $timeout } else { 300 }) }
-            if ($Kind -eq 'video') { return Invoke-BrowserVideo $Ai $Prompt $Images $Output $Options $(if ($timeout) { $timeout } else { 900 }) }
-            return Invoke-BrowserImage $Ai $Prompt $Images $Output $(if ($timeout) { $timeout } else { 600 }) $Options
-        }
+        'claude' { return Invoke-ClaudeText $Prompt $Images $Output $(if ($timeout) { $timeout } else { 300 }) ([string]$Options.Model) }
+        default { throw "AI không hỗ trợ: $Ai. [CAUSE:UNSUPPORTED]" }
     }
 }

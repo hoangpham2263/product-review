@@ -38,7 +38,7 @@ function Repair-ManualImagePath([string]$File,[string]$Folder) {
 # Product images of a link: { file (may be empty: product read from the page), sha256, scenes[] }.
 function Get-ManualProducts($Entry) {
     if(-not $Entry){return @()}
-    $copyScenes={param($list) @($list|Where-Object{$_}|ForEach-Object{[pscustomobject]@{file=$_.file;sha256=$_.sha256}})}
+    $copyScenes={param($list) @($list|Where-Object{$_}|ForEach-Object{$o=[pscustomobject]@{file=$_.file;sha256=$_.sha256};if($_.PSObject.Properties['sign_text'] -and $_.sign_text){$o|Add-Member NoteProperty sign_text ([string]$_.sign_text)};$o})}
     if($Entry.PSObject.Properties['products'] -and @($Entry.products).Count){
         return @($Entry.products|ForEach-Object{[pscustomobject]@{file=[string]$_.file;sha256=[string]$_.sha256;scenes=@(& $copyScenes $_.scenes)}})
     }
@@ -104,6 +104,27 @@ function Remove-ManualProduct([string]$MapPath,[string]$Url,[int]$ProductIndex) 
     }
 }
 
+# Sets (or clears, when $Text is empty) the sign wording of a made-to-order lettered product: every review image of product
+# ProductIndex (-1: every product of the link) gets sign_text, " | " = line break. Every image path reads it, so the sample
+# lettering of the product photo is replaced (AGENTS.md section 4). Empty = a product without customer lettering.
+function Set-ManualSignText([string]$MapPath,[string]$Url,[int]$ProductIndex,[string]$Text) {
+    $Text=([string]$Text -replace '\s*[\r\n]+\s*',' | ').Trim()
+    $map=Read-ManualReferenceMap $MapPath
+    foreach($entry in @($map.entries|Where-Object product_url -eq $Url)){
+        $products=@(Get-ManualProducts $entry)
+        for($p=0;$p -lt $products.Count;$p++){
+            if($ProductIndex -ge 0 -and $p -ne $ProductIndex){continue}
+            foreach($scene in @($products[$p].scenes)){
+                if($Text){$scene|Add-Member NoteProperty sign_text $Text -Force}
+                elseif($scene.PSObject.Properties['sign_text']){$scene.PSObject.Properties.Remove('sign_text')}
+            }
+        }
+        Set-ManualProducts $entry $products
+        Save-ManualMapEntry $MapPath $map $entry
+        return
+    }
+}
+
 # Product adds a product image; Scene adds a review image to product ProductIndex (-1: the last one).
 function Save-ManualReference([string]$ProjectRoot,[string]$Url,[string]$ImagePath,[ValidateSet('Scene','Product')][string]$Role='Scene',[int]$ProductIndex=-1) {
     $uri=$null
@@ -128,7 +149,13 @@ function Save-ManualReference([string]$ProjectRoot,[string]$Url,[string]$ImagePa
         if(-not $products.Count){$products.Add([pscustomobject]@{file='';sha256='';scenes=@()})}
         $target=if($ProductIndex -ge 0 -and $ProductIndex -lt $products.Count){$products[$ProductIndex]}else{$products[$products.Count-1]}
         if(@($target.scenes|Where-Object sha256 -eq $hash).Count){Remove-Item -LiteralPath $dest -Force}
-        else{$target.scenes=@(@($target.scenes)+@([pscustomobject]@{file=$dest;sha256=$hash}))}
+        else{
+            $scene=[pscustomobject]@{file=$dest;sha256=$hash}
+            # A review image added later keeps the sign wording already set on this product image.
+            $sign=@($target.scenes|Where-Object{$_.PSObject.Properties['sign_text'] -and $_.sign_text}|Select-Object -First 1)
+            if($sign.Count){$scene|Add-Member NoteProperty sign_text ([string]$sign[0].sign_text)}
+            $target.scenes=@(@($target.scenes)+@($scene))
+        }
     }
     Set-ManualProducts $entry $products.ToArray()
     $entry|Add-Member NoteProperty origin 'user_reference' -Force
@@ -148,6 +175,9 @@ function Copy-ManualEntry([string]$ProjectRoot,[string]$Url,$Entry) {
             for($i=0;$i -lt $saved.Count;$i++){if($saved[$i].sha256 -eq $product.sha256){$target=$i}}
         }
         foreach($scene in @($product.scenes)){[void](Save-ManualReference $ProjectRoot $Url $scene.file Scene $target)}
+        # Saving the images does not carry the sign wording over: copy it from the draft's first review image.
+        $sign=@($product.scenes|Where-Object{$_.PSObject.Properties['sign_text'] -and $_.sign_text}|Select-Object -First 1)
+        if($sign.Count){Set-ManualSignText $mapPath $Url $target ([string]$sign[0].sign_text)}
     }
 }
 

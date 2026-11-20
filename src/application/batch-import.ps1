@@ -1,7 +1,12 @@
 ﻿# Nhập hàng loạt: many products at once from one folder (docs/import.md): products.csv with its images in images/,
 # which the table names by file name. Each row is one product image of a link with its review images; several rows with the same link
 # give that link several product images. Plain links, one per line, still work and only add the links.
-$script:ImportColumns = @('product_url', 'product_image', 'review_images')
+# sign_text (optional): the lettering of a made-to-order lettered product (neon name/logo sign), " | " = line break; it replaces
+# the sample lettering of the product photo. Leave it empty for a product without customer lettering.
+# title, collection, used, reviews_count and reviews_checked_at come from a Dự án / Quét web table (scan-store.ps1): title, collection and the review columns are notes for the person (ignored on import); a row with
+# used = T/TRUE/1/X was run already and is skipped (counted in Skipped), so the same table can be imported again and again.
+$script:ImportColumns = @('product_url', 'product_image', 'review_images', 'sign_text', 'title', 'collection', 'used', 'reviews_count', 'reviews_checked_at')
+function Test-ImportRowUsed([string]$Value) { return ([string]$Value).Trim() -match '^(t|true|1|x|y|yes)$' }
 
 # Rows of the table, or the problems found in it (with line numbers) so nothing is half imported by mistake.
 # $Folder is the folder of the table: image names are files in its images/ folder.
@@ -23,8 +28,16 @@ function ConvertFrom-ProductBatch([string]$Text, [string]$Folder = '') {
             $r = $records[$i]
             $get = { param($n) $p = $r.PSObject.Properties | Where-Object { $_.Name.Trim().ToLowerInvariant() -eq $n } | Select-Object -First 1; if ($p) { ([string]$p.Value).Trim() } else { '' } }
             $reviews = @((& $get 'review_images') -split ',' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
-            $rows.Add([pscustomobject]@{ Line = $i + 2; Url = (& $get 'product_url'); Product = (& $get 'product_image'); Reviews = $reviews })
+            $rows.Add([pscustomobject]@{ Line = $i + 2; Url = (& $get 'product_url'); Product = (& $get 'product_image'); Reviews = $reviews; SignText = (& $get 'sign_text'); Used = (Test-ImportRowUsed (& $get 'used')) })
         }
+    }
+    # Rows already used are left out before anything else is checked (their images may be gone on purpose).
+    $skipped = @($rows | Where-Object { $_.PSObject.Properties['Used'] -and $_.Used }).Count
+    if ($skipped) {
+        $keep = [Collections.Generic.List[object]]::new()
+        foreach ($row in $rows) { if (-not ($row.PSObject.Properties['Used'] -and $row.Used)) { $keep.Add($row) } }
+        $rows = $keep
+        if (-not $rows.Count -and -not $errors.Count) { $errors.Add("Cả $skipped dòng đều đã dùng (used = T). Đổi used về F ở dòng cần chạy lại.") }
     }
     $images = if ($Folder) { Join-Path $Folder 'images' } else { '' }
     foreach ($row in $rows) {
@@ -35,7 +48,7 @@ function ConvertFrom-ProductBatch([string]$Text, [string]$Folder = '') {
             if (-not (Test-Path -LiteralPath $image -PathType Leaf)) { $errors.Add("Dòng $($row.Line): không có ảnh '$(Split-Path -Leaf $image)' trong thư mục images.") }
         }
     }
-    return @{ Rows = $rows.ToArray(); Errors = $errors.ToArray() }
+    return @{ Rows = $rows.ToArray(); Errors = $errors.ToArray(); Skipped = $skipped }
 }
 
 # A packed product-import folder (.zip like the sample, .rar or .7z) unpacks into $Temp with the system tar
@@ -109,6 +122,7 @@ function Import-ProductBatch([string]$ProjectRoot, $Rows, [scriptblock]$OnProgre
                 } catch { $result.failed += [ordered]@{ line = $row.Line; image = $review; reason = $_.Exception.Message } }
                 $done++; & $step
             }
+            if ($row.PSObject.Properties['SignText'] -and $row.SignText) { try { Set-ManualSignText $mapPath $row.Url $target ([string]$row.SignText) } catch { $result.failed += [ordered]@{ line = $row.Line; image = ''; reason = "chữ trên biển: $($_.Exception.Message)" } } }
         }
     } finally { Remove-Item -LiteralPath $temp -Recurse -Force -ErrorAction SilentlyContinue }
     return $result

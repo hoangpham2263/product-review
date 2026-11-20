@@ -2,20 +2,15 @@
 // workspace/config.
 //   GET /setup[?back=<path>]        the Cấu hình page (page.html, page.js; tool.css from core/assets)
 //   POST /api/setup                 the steps (setup-check.ps1 -AsJson)
-//   POST /api/setup-step {step}     update-all: Cài / cập nhật tất cả AI (Codex, Antigravity CLI, the bridge), one result each;
-//                                   install: Codex and the bridge (core/bridge); login: codex login with a
-//                                   one-time code, typed on the sign-in page opened in the user's Chrome;
-//                                   browser: Chrome's extensions page and core/extension, to install the Product Review
-//                                   extension; google: Google's account chooser in Chrome (sign in, add or switch);
-//                                   site {site}: gemini, flow or chatgpt opened there; antigravity: a terminal
+//   POST /api/setup-step {step}     update-all: Cài / cập nhật tất cả AI (Codex, Antigravity CLI), one result each;
+//                                   install: Codex; login: codex login with a one-time code, typed on the sign-in page
+//                                   opened in the user's Chrome; site {site}: chatgpt opened there; antigravity: a terminal
 //                                   with agy, where /login (/logout first to switch) signs it in
 //   GET /api/setup-login            { code } while a sign-in waits for it
 //   GET|POST /api/config/ai         Model AI: { settings, models } / save { model, effort }
 //   GET /api/usage                  Lượt dùng AI: { rows } per AI and account (usage.mjs)
-//   GET|POST /api/config/google     the Google account Flow and Gemini run with: { email } / choose { email } ("" is
-//                                   Google's default, the first one signed in)
 import { execFile, spawn } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { homedir, tmpdir } from "node:os";
@@ -39,11 +34,6 @@ export function createConfigApi({ hubRoot, pwsh, env = process.env }) {
     });
   });
   const load = (file) => `. '${q(join(here, file))}'`;
-  // The chosen Google account (setup-check.ps1 shows it and drops it once it is no longer signed in; the browser bridge
-  // opens Flow and Gemini with it).
-  const googleFile = join(hubRoot, "workspace", "config", "google-account.json");
-  const googleAccount = () => { try { return String(JSON.parse(readFileSync(googleFile, "utf8")).email || ""); } catch { return ""; } };
-  const withAccount = (url) => (googleAccount() ? `${url}?authuser=${encodeURIComponent(googleAccount())}` : url);
   const workspace = q(join(hubRoot, "workspace"));
   // Where agy is: on PATH, in ~/.local/bin, or where Google's Windows installer puts it (%LOCALAPPDATA%\agy\bin).
   const AGY_INSTALLER = "https://antigravity.google/cli/install.ps1";
@@ -71,12 +61,8 @@ export function createConfigApi({ hubRoot, pwsh, env = process.env }) {
     } catch (e) { return { ok: false, message: String(e.message || e).slice(0, 300) }; }
     finally { if (dir) rmSync(dir, { recursive: true, force: true }); }
   };
-  // A page in the user's own Chrome, where the AIs are signed in: in the Product Review tab group, opened by the extension
-  // (core/bridge/ensure.mjs --open; without the extension, a plain new tab).
-  const openInChrome = (url, done) => execFile(process.execPath, [join(hubRoot, "core", "bridge", "ensure.mjs"), "--open", url], { cwd: hubRoot, env, timeout: 120000, windowsHide: true }, (err, stdout) => {
-    let r = {}; try { r = JSON.parse(String(stdout).trim().split(/\r?\n/).pop()); } catch { r = { error: err?.message || "Không mở được Chrome." }; }
-    done(r.opened ? { ok: true } : { error: r.error || "Không mở được Chrome." });
-  });
+  // A page in the user's own Chrome (the Codex sign-in page).
+  const openInChrome = (url, done) => openChrome(url).then((error) => done(error ? { error } : { ok: true }));
   // codex login opens the system's default browser; with --device-auth it prints a page and a code instead, so the
   // page opens in Chrome and Cấu hình shows the code to type there.
   // Đăng nhập again while one waits: that one stops (its answer says so) and a new code comes.
@@ -126,13 +112,11 @@ export function createConfigApi({ hubRoot, pwsh, env = process.env }) {
       return true;
     }
     if (path === "/api/setup-step" && req.method === "POST") {
-      // Cài (Codex via npm, then the bridge) or Đăng nhập (opens the browser, waits for the sign-in).
+      // Cài (Codex via npm) or Đăng nhập (opens the browser, waits for the sign-in).
       const { step, site } = await body(req);
-      // Each AI's own sign-in page in Chrome, to sign in or switch accounts there.
-      const SITES = { gemini: "https://gemini.google.com/app", flow: "https://flow.google.com/", chatgpt: "https://chatgpt.com/" };
-      if (step === "google" || (step === "site" && SITES[site])) {
-        const url = step === "google" ? "https://accounts.google.com/AccountChooser?continue=https%3A%2F%2Fgemini.google.com%2Fapp" : site === "chatgpt" ? SITES[site] : withAccount(SITES[site]);
-        openInChrome(url, (r) => json(res, r.error ? 500 : 200, r));
+      // ChatGPT's sign-in page in Chrome, to sign in or switch accounts there.
+      if (step === "site" && site === "chatgpt") {
+        openInChrome("https://chatgpt.com/", (r) => json(res, r.error ? 500 : 200, r));
         return true;
       }
       if (step === "antigravity") {
@@ -145,22 +129,12 @@ export function createConfigApi({ hubRoot, pwsh, env = process.env }) {
       }
       if (step === "update-all") {
         // Cài / cập nhật tất cả AI: Codex (npm @latest installs it or brings it up to date), Antigravity CLI (Google's
-        // installer; it updates itself after that) and the browser bridge. Gemini, Flow and ChatGPT are websites in
-        // Chrome and need nothing installed.
+        // installer; it updates itself after that). ChatGPT is a website in Chrome and needs nothing installed.
         const npmCmd = findTool("npm");
         const results = [];
         results.push({ name: "Codex", ...(npmCmd ? await runAsync(npmCmd, ["install", "-g", "@openai/codex@latest"]) : { ok: false, message: "Chưa có Node.js (npm). Mở lại start-app để cài." }) });
         results.push({ name: "Antigravity CLI", ...(await installAntigravity()) });
-        if (npmCmd) results.push({ name: "Cầu nối trình duyệt", ...(await runAsync(npmCmd, ["install", "--silent"], { cwd: join(hubRoot, "core", "bridge"), timeout: 10 * 60000 })) });
         json(res, 200, { results });
-        return true;
-      }
-      if (step === "browser") {
-        // Installing the extension: Chrome's extensions page, and the folder to choose there (Tải tiện ích đã giải nén).
-        const folder = join(hubRoot, "core", "extension");
-        if (onWindows) execFile("explorer.exe", [folder], () => {}); else execFile("open", [folder], () => {});
-        // Not through the extension: this is where it gets installed.
-        openChrome("chrome://extensions").then((error) => json(res, error ? 500 : 200, error ? { error } : { ok: true }));
         return true;
       }
       const npm = findTool("npm"), codex = findTool("codex");
@@ -176,8 +150,7 @@ export function createConfigApi({ hubRoot, pwsh, env = process.env }) {
       const [cmd, args] = [npm, ["install", "-g", "@openai/codex"]];
       runTool(cmd, args, { cwd: hubRoot, timeout: 15 * 60000, env, windowsHide: true }, (err, stdout, stderr) => {
         if (err) return json(res, 500, { error: (String(stderr || stdout).trim().split(/\r?\n/).pop() || err.message).slice(0, 300) });
-        // The shared bridge between the tools and the Product Review extension (core/bridge).
-        runTool(npm, ["install", "--silent"], { cwd: join(hubRoot, "core", "bridge"), timeout: 10 * 60000, env, windowsHide: true }, () => json(res, 200, { ok: true }));
+        json(res, 200, { ok: true });
       });
       return true;
     }
@@ -192,16 +165,6 @@ export function createConfigApi({ hubRoot, pwsh, env = process.env }) {
         : `${load("ai-settings.ps1")}; [pscustomobject]@{ settings = (Get-AiSettings '${q(hubRoot)}'); models = @(Get-AiModels) } | ConvertTo-Json -Depth 6 -Compress`;
       const r = await ps(script, saved ? { HUB_AI_MODEL: String(saved.model || ""), HUB_AI_EFFORT: String(saved.effort || "") } : {});
       json(res, r.error ? 400 : 200, r);
-      return true;
-    }
-    if (path === "/api/config/google") {
-      if (req.method === "POST") {
-        const email = String((await body(req)).email || "").trim();
-        if (email && !/^[^\s@"]+@[^\s@"]+$/.test(email)) { json(res, 400, { error: "Email không hợp lệ." }); return true; }
-        if (email) { mkdirSync(dirname(googleFile), { recursive: true }); writeFileSync(googleFile, JSON.stringify({ email })); }
-        else rmSync(googleFile, { force: true });
-      }
-      json(res, 200, { email: googleAccount() });
       return true;
     }
     return false;

@@ -2,12 +2,13 @@
 // One run at a time (one browser, one agent). The prompt goes to STDIN, never argv. Nothing secret is stored: only assistant
 // text and tool NAMES are kept, scrubbed and cut (never tool inputs or results).
 import { spawn, spawnSync, execFileSync } from "node:child_process";
-import { mkdirSync, readFileSync, writeFileSync, appendFileSync, rmSync, existsSync } from "node:fs";
+import { mkdirSync, readFileSync, writeFileSync, appendFileSync, rmSync, existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { platform as osPlatform } from "node:os";
 
-export const DEFAULT_MINUTES = 40;
+// 0 = no limit: a run ends when Claude finishes, so a long batch is never cut off half way. Set minutes / maxTurns above 0 to cap a run.
+export const DEFAULT_MINUTES = 0;
 export const MAX_LINE = 300, LOG_LINES = 2000, TAIL_LINES = 30;
 export const PLAYWRIGHT_TOOLS = ["browser_tabs", "browser_navigate", "browser_snapshot", "browser_click", "browser_type", "browser_press_key", "browser_wait_for", "browser_run_code_unsafe", "browser_take_screenshot", "browser_evaluate", "browser_file_upload"].map((n) => "mcp__playwright__" + n);
 export const ALLOWED_TOOLS = ["Bash", "Read", "Write", "Edit", "Glob", "Grep", ...PLAYWRIGHT_TOOLS];
@@ -24,19 +25,107 @@ export function sanitize(text, max = MAX_LINE) {
   return s.length > max ? s.slice(0, max - 1) + "…" : s;
 }
 
-export function mcpConfig({ plat = osPlatform() } = {}) {
-  const server = plat === "win32" ? { command: "cmd", args: ["/c", "npx", "@playwright/mcp@latest", "--extension"] } : { command: "npx", args: ["@playwright/mcp@latest", "--extension"] };
+// What the person reads in "Tiến trình & thông báo": one plain Vietnamese line per Claude step instead of tool names.
+// A tool input is only matched against keywords to pick the wording; it is never stored or shown.
+const TOOL_TEXT = {
+  browser_tabs: "Kiểm tra tab trình duyệt", browser_navigate: "Mở trang Google Flow", browser_snapshot: "Đọc nội dung trang Flow",
+  browser_click: "Bấm nút trên Flow", browser_type: "Nhập nội dung vào Flow", browser_press_key: "Nhấn phím trên Flow",
+  browser_wait_for: "Chờ Flow xử lý", browser_run_code_unsafe: "Thao tác trên Flow (tải ảnh, gửi yêu cầu, tải ảnh về)",
+  browser_take_screenshot: "Chụp màn hình Flow để kiểm tra", browser_evaluate: "Đọc trạng thái trang Flow", browser_file_upload: "Tải ảnh tham chiếu lên Flow",
+};
+// Quét web: the same browser tools, worded for a shop website instead of Google Flow.
+const SCAN_TOOL_TEXT = {
+  browser_tabs: "Kiểm tra tab trình duyệt", browser_navigate: "Mở trang web cần quét", browser_snapshot: "Đọc nội dung trang",
+  browser_click: "Bấm trên trang web", browser_type: "Nhập vào trang web", browser_press_key: "Nhấn phím trên trang web",
+  browser_wait_for: "Chờ trang tải", browser_run_code_unsafe: "Thao tác trên trang web (cuộn, đọc danh sách sản phẩm)",
+  browser_take_screenshot: "Chụp ảnh trang hoặc ảnh sản phẩm", browser_evaluate: "Đọc danh sách link và ảnh trên trang", browser_file_upload: "Tải file lên trang",
+};
+// Cập nhật số review: the same browser tools, worded for reading the review number on a product page (read only).
+const REVIEWS_TOOL_TEXT = {
+  browser_tabs: "Kiểm tra tab trình duyệt", browser_navigate: "Mở trang sản phẩm", browser_snapshot: "Đọc số review hiển thị trên trang",
+  browser_click: "Bấm trên trang sản phẩm (mở phần review)", browser_type: "Nhập vào trang web", browser_press_key: "Nhấn phím trên trang web",
+  browser_wait_for: "Chờ trang tải", browser_run_code_unsafe: "Cuộn trang tới phần review", browser_take_screenshot: "Chụp trang để xem số review",
+  browser_evaluate: "Đọc chữ trên trang sản phẩm", browser_file_upload: "Tải file lên trang",
+};
+// Thêm vào hàng chờ: no browser, only the library photos, the product photos and the queue commands.
+const QUEUE_TOOL_TEXT = {
+  browser_tabs: "Kiểm tra tab trình duyệt", browser_navigate: "Mở trang web", browser_snapshot: "Đọc nội dung trang",
+  browser_click: "Bấm trên trang web", browser_type: "Nhập vào trang web", browser_press_key: "Nhấn phím trên trang web",
+  browser_wait_for: "Chờ trang tải", browser_run_code_unsafe: "Thao tác trên trang web", browser_take_screenshot: "Chụp ảnh trang",
+  browser_evaluate: "Đọc chữ trên trang", browser_file_upload: "Tải file lên trang",
+};
+export function friendlyTool(name, input = {}, mode = "flow") {
+  const n = String(name || "").replace(/^mcp__playwright__/, "");
+  if (mode === "scan" && SCAN_TOOL_TEXT[n]) return SCAN_TOOL_TEXT[n];
+  if (mode === "reviews" && REVIEWS_TOOL_TEXT[n]) return REVIEWS_TOOL_TEXT[n];
+  if (mode === "queue" && QUEUE_TOOL_TEXT[n]) return QUEUE_TOOL_TEXT[n];
+  if (TOOL_TEXT[n]) return TOOL_TEXT[n];
+  const cmd = String(input?.command || input?.file_path || "");
+  if (n === "Bash") {
+    if (/scan\.ps1/i.test(cmd)) {
+      if (/queue-todo/i.test(cmd)) return "Lấy danh sách sản phẩm cần thêm vào hàng chờ";
+      if (/queue-add/i.test(cmd)) return "Thêm sản phẩm vào hàng chờ (link, ảnh gốc, các ảnh bối cảnh)";
+      if (/scene-get/i.test(cmd)) return "Lấy ảnh bối cảnh từ kho ảnh để xem";
+      if (/scenes/i.test(cmd)) return "Xem danh sách ảnh bối cảnh trong kho";
+      if (/set-reviews/i.test(cmd)) return "Lưu số review vừa đọc";
+      if (/reviews-todo/i.test(cmd)) return "Lấy danh sách link cần kiểm tra review";
+      if (/\bstart\b/i.test(cmd)) return "Mở dự án và bắt đầu quét";
+      if (/\bknown\b/i.test(cmd)) return "Xem các link dự án đã có";
+      if (/set-menu/i.test(cmd)) return "Lưu menu của web";
+      if (/add-many|\badd\b/i.test(cmd)) return "Lưu sản phẩm đã quét vào bảng";
+      if (/\bfinish\b/i.test(cmd)) return "Tổng kết lượt quét";
+      if (/set-used/i.test(cmd)) return "Đánh dấu link đã dùng";
+      return "Kiểm tra bảng dự án";
+    }
+    if (/register-image/i.test(cmd)) return "Lưu ảnh Flow vừa tạo vào kết quả";
+    if (/flow-brief/i.test(cmd)) return "Chuẩn bị nội dung gửi Flow cho sản phẩm";
+    if (/review/i.test(cmd)) return "Ghi review cho sản phẩm";
+    return "Chạy lệnh của công cụ";
+  }
+  if (n === "Read") return /\.(png|jpe?g|webp)$/i.test(cmd) ? "Xem ảnh sản phẩm / ảnh bối cảnh" : "Đọc dữ liệu của lượt chạy";
+  if (n === "Write" || n === "Edit") return "Ghi file tạm của lượt chạy";
+  return "Đang xử lý: " + n;
+}
+
+// Playwright MCP on the tool's OWN Chrome profile (workspace/chrome-profile, signed in to Google by the person once). Never the
+// person's real Chrome, never --extension. A normal visible Chrome window by default (Google Flow flagged headless runs as "unusual activity"); PR_FLOW_HEADLESS=1 runs it in the background. This temp file is the only config.
+// extension = { profile: "Profile 1", name, color }: the person's everyday Chrome through the Playwright extension (the Chrome window of that
+// profile must be open; the person clicks Connect). The run's tabs go into one named Chrome tab group.
+export function mcpConfig({ plat = osPlatform(), profile, headless = true, extension = null } = {}) {
+  if (extension) {
+    const a = ["@playwright/mcp@latest", "--extension", "--session-name", extension.name || "Product Review", "--session-color", extension.color || "blue"];
+    const server = plat === "win32" ? { command: "cmd", args: ["/c", "npx", ...a] } : { command: "npx", args: a };
+    if (extension.profile) server.env = { PLAYWRIGHT_MCP_PROFILE_DIR_NAME: extension.profile };
+    return { mcpServers: { playwright: server } };
+  }
+  if (!profile) throw new Error("mcpConfig needs the own Chrome profile folder.");
+  const args = ["@playwright/mcp@latest", "--browser", "chrome", "--user-data-dir", profile, ...(headless ? ["--headless"] : []), "--viewport-size", "1280x900"];
+  const server = plat === "win32" ? { command: "cmd", args: ["/c", "npx", ...args] } : { command: "npx", args };
   return { mcpServers: { playwright: server } };
 }
 
+// Note put in front of the prompt when the run drives the person's everyday Chrome (extension mode).
+export const extensionNote = `RUN-NOW NOTE: this run uses the person's everyday Chrome through the Playwright extension, so the person is at the computer and will click Connect in Chrome.
+If browser_tabs shows only a Welcome / connect.html tab, or the browser tools fail: the Playwright MCP has ALREADY opened that page, do NOT open a second copy; bring it to the front with browser_run_code_unsafe: async (page) => { await page.bringToFront(); } and tell the person in one line to click Connect. Then wait up to 3 minutes, calling browser_tabs about every 15 seconds, until a real page tab appears. If nothing connects, stop and report that Chrome did not connect (CAUSE:BROWSER).
+Downloads: this mode cannot use download.saveAs; click the download button, then take the newest file from the Downloads folder.
+HUMAN PACING: before EVERY prompt you submit in Google Flow run: node core/flow-pace.mjs gate --tag <item id> (it waits the human-like time by itself; submit right after it returns; never several prompts behind one gate).
+
+`;
 export const newRunId = (d = new Date()) => "agent-" + d.toISOString().replace(/\D/g, "").slice(0, 14);
 
-// The text block of docs/agent-prompt.md, placeholders filled.
-export function buildPrompt({ toolRoot, run, options = "defaults" }) {
-  const md = readFileSync(join(toolRoot, "docs", "agent-prompt.md"), "utf8");
+// The text block of docs/agent-prompt.md (mode "flow") or docs/scan-prompt.md (mode "scan"), placeholders filled.
+export const PROMPT_FILES = { flow: "agent-prompt.md", scan: "scan-prompt.md", reviews: "reviews-count-prompt.md", queue: "queue-prompt.md" };
+export function buildPrompt({ toolRoot, run, options = "defaults", mode = "flow", site = "", max = 20, project = "" }) {
+  const file = PROMPT_FILES[mode];
+  if (!file) throw new Error("Unknown run mode: " + mode);
+  const md = readFileSync(join(toolRoot, "docs", file), "utf8");
   const m = md.match(/```text\r?\n([\s\S]*?)\r?\n```/);
-  if (!m) throw new Error("docs/agent-prompt.md has no text block.");
-  return m[1].replace(/\{\{TOOL\}\}/g, toolRoot).replace(/\{\{RUN\}\}/g, run).replace(/\{\{OPTIONS\}\}/g, options);
+  if (!m) throw new Error(`docs/${file} has no text block.`);
+  let acct = ""; // the Google account Flow must use (run-settings.json flowAccount, set in the app); only the image (flow) run opens Flow
+  if (mode === "flow") { try { const e = String(JSON.parse(readFileSync(join(toolRoot, "workspace", "config", "run-settings.json"), "utf8").replace(/^\uFEFF/, "")).flowAccount || ""); if (/^[^\s@"<>]+@[^\s@"<>]+\.[^\s@"<>]+$/.test(e)) acct = e; } catch {} }
+  const acctText = acct ? `\nGOOGLE ACCOUNT FOR FLOW: use ONLY the already signed-in Google account ${acct}. The profile may hold several Google accounts and Flow opens the first one. Before creating the project open https://accounts.google.com/AccountChooser?continue=https%3A%2F%2Fflow.google.com%2F and click THAT email (no password is needed for a signed-in account); on Flow check the avatar menu shows the same email. If that email is not in the list, or Flow says the credits are used up on it: STOP and report. Never sign out, never remove or add an account, never use another account.` : "";
+  return m[1].replace(/\{\{TOOL\}\}/g, toolRoot).replace(/\{\{RUN\}\}/g, run).replace(/\{\{OPTIONS\}\}/g, options)
+    .replace(/\{\{SITE\}\}/g, site).replace(/\{\{MAX\}\}/g, String(max)).replace(/\{\{PROJECT\}\}/g, project) + acctText;
 }
 
 const defaultKill = (child, plat) => {
@@ -63,7 +152,7 @@ export function findClaude(plat = osPlatform()) {
   } catch { return { found: false, path: "" }; }
 }
 
-export function createAgentRunner({ toolRoot, workspace, findCli = findClaude, plat = osPlatform(), spawnFn = spawn, killTree = (c) => defaultKill(c, plat), npxOk = () => defaultNpx(plat), now = () => Date.now(), graceMs = 4000, minutes = DEFAULT_MINUTES, maxTurns = 400 }) {
+export function createAgentRunner({ toolRoot, workspace, profileDir = join(workspace, "chrome-profile"), headless = process.env.PR_FLOW_HEADLESS === "1", getBrowser = () => ({ mode: "extension", profile: "Profile 1" }), findCli = findClaude, plat = osPlatform(), spawnFn = spawn, killTree = (c) => defaultKill(c, plat), npxOk = () => defaultNpx(plat), now = () => Date.now(), graceMs = 4000, minutes = DEFAULT_MINUTES, maxTurns = 0 }) {
   const runsDir = join(workspace, "runs"), tmpDir = join(workspace, "tmp");
   const stateFile = join(runsDir, "agent-run.json"), logFile = join(runsDir, "agent-run.log");
   let cur = null, last = null;
@@ -72,24 +161,29 @@ export function createAgentRunner({ toolRoot, workspace, findCli = findClaude, p
   const saveState = (st) => { try { mkdirSync(runsDir, { recursive: true }); writeFileSync(stateFile, JSON.stringify(st, null, 2)); } catch {} };
   const touch = (run, patch = {}) => { Object.assign(run.state, patch, { updated: new Date(now()).toISOString() }); saveState(run.state); };
   const addLine = (run, text) => {
-    const line = sanitize(text); if (!line) return;
+    let line = sanitize(text); if (!line) return;
+    // Same step twice in a row: one line with a count, not a wall of repeats.
+    if (run.prev === line) { run.repeat = (run.repeat || 1) + 1; run.lines[run.lines.length - 1] = run.stamp + " " + line + ` (×${run.repeat})`; return; }
+    run.prev = line; run.repeat = 1; run.stamp = new Date(now()).toTimeString().slice(0, 8);
+    line = run.stamp + " " + line;
     run.lines.push(line); if (run.lines.length > LOG_LINES) run.lines.splice(0, run.lines.length - LOG_LINES);
     try { mkdirSync(runsDir, { recursive: true }); if (++run.written % 500 === 0) writeFileSync(logFile, run.lines.join("\n") + "\n"); else appendFileSync(logFile, line + "\n"); } catch {}
   };
   const handleLine = (run, raw) => {
-    let ev; try { ev = JSON.parse(raw); } catch { addLine(run, raw); return; }
+    // Not an event (a cut-off fragment, tool output): nothing a person can read, so it stays out of the log.
+    let ev; try { ev = JSON.parse(raw); } catch { return; }
     if (ev.type === "assistant" && Array.isArray(ev.message?.content)) {
       run.state.turns = (run.state.turns || 0) + 1;
       for (const c of ev.message.content) {
-        if (c.type === "text" && c.text) { addLine(run, "A: " + c.text); const t = sanitize(c.text); if (t) run.state.last_text = t; }
-        else if (c.type === "tool_use" && typeof c.name === "string") addLine(run, "tool: " + c.name);
+        if (c.type === "text" && c.text) { addLine(run, "Claude: " + c.text); const t = sanitize(c.text); if (t) run.state.last_text = t; }
+        else if (c.type === "tool_use" && typeof c.name === "string") addLine(run, friendlyTool(c.name, c.input, run.state.mode));
       }
       touch(run);
     } else if (ev.type === "result") {
       run.result = { is_error: !!ev.is_error, subtype: String(ev.subtype || "") };
       if (typeof ev.num_turns === "number") run.state.turns = ev.num_turns;
       if (typeof ev.result === "string" && ev.result) run.state.last_text = sanitize(ev.result);
-      addLine(run, `result: ${run.result.subtype}${run.result.is_error ? " (error)" : ""}`);
+      addLine(run, run.result.is_error ? `Claude báo lỗi (${run.result.subtype || "không rõ"})` : "Claude đã xử lý xong các bước");
       touch(run);
     }
   };
@@ -104,27 +198,48 @@ export function createAgentRunner({ toolRoot, workspace, findCli = findClaude, p
     clearTimeout(run.timer);
     if (run.buf.trim()) handleLine(run, run.buf.trim());
     try { rmSync(run.cfg, { force: true }); } catch {}
-    const status = run.forced || (code === 0 && !run.result?.is_error ? "done" : "failed");
-    const error = status === "failed" ? sanitize(err || run.stderr.at(-1) || (run.result?.is_error ? `Claude reported ${run.result.subtype || "an error"}.` : `Claude exited with code ${code}.`))
+    // An image run (mode "flow") that finished its process cleanly but produced nothing for ANY of its items (no image, no result) is a failed run,
+    // not a success: the final state must not look like "done, 0 errors" when 0 of N items were completed.
+    let nothing = "";
+    if (!run.forced && code === 0 && !run.result?.is_error && run.state.mode === "flow") {
+      try {
+        const dir = join(workspace, "output", run.state.run_id);
+        const parsed = JSON.parse(readFileSync(join(dir, "agent-items.json"), "utf8"));
+        const n = (Array.isArray(parsed) ? parsed : parsed.items || []).length;
+        let made = 0;
+        try { made = readdirSync(join(dir, "images")).filter((x) => /\.(png|jpe?g|webp)$/i.test(x)).length; } catch {}
+        let results = 0;
+        try { const r = JSON.parse(readFileSync(join(dir, "results.json"), "utf8")); results = Array.isArray(r) ? r.length : 0; } catch {}
+        if (n > 0 && made === 0 && results === 0) nothing = "0/" + n + " mục hoàn tất: không có ảnh nào được tạo và không có kết quả nào. Xem lý do của từng mục trong báo cáo cuối của Claude.";
+      } catch {}
+    }
+    const status = nothing ? "failed" : run.forced || (code === 0 && !run.result?.is_error ? "done" : "failed");
+    const error = status === "failed" ? sanitize(nothing || err || run.stderr.at(-1) || (run.result?.is_error ? `Claude reported ${run.result.subtype || "an error"}.` : `Claude exited with code ${code}.`))
       : status === "timeout" ? `Stopped after the ${minutes}-minute limit.` : "";
-    addLine(run, `end: ${status}${code === null || code === undefined ? "" : " (exit " + code + ")"}`);
+    addLine(run, { done: "Lượt chạy kết thúc", failed: `Lượt chạy dừng vì lỗi${code === null || code === undefined ? "" : " (mã " + code + ")"}`, timeout: "Lượt chạy dừng vì quá thời gian" }[status] || `Lượt chạy: ${status}`);
     try { writeFileSync(logFile, run.lines.join("\n") + "\n"); } catch {}
     touch(run, { status, exit_code: code ?? null, error });
     last = run.state; cur = null;
   };
 
-  function start({ run: runId = newRunId(), options = "defaults" } = {}) {
+  // mode "flow": Google Flow images + reviews (docs/agent-prompt.md); mode "scan": Quét web (docs/scan-prompt.md, needs site and max);
+  // mode "queue": put products of a project into the run queue with N scenes each (docs/queue-prompt.md, needs project and options).
+  // mode "reviews": read the review number shown on each product page of a project (docs/reviews-count-prompt.md, needs project).
+  // One run at a time for all: they share the one Chrome profile.
+  function start({ run: runId = newRunId(), options = "defaults", mode = "flow", site = "", max = 20, project = "" } = {}) {
     if (!/^[\w.-]{3,64}$/.test(runId)) return { ok: false, status: 400, error: "Invalid run id." };
     if (cur) return { ok: false, status: 409, error: `An agent run is already active (started ${cur.state.started}). Wait for it or press Stop.` };
     const found = findCli();
     if (!found?.found) return { ok: false, status: 400, error: "Claude CLI not found: install Claude Code, or set PR_CLAUDE_CLI to its path." };
     if (!npxOk()) return { ok: false, status: 400, error: "npx is not available (it comes with Node.js): the Playwright MCP cannot start." };
     let prompt;
-    try { prompt = buildPrompt({ toolRoot, run: runId, options }); } catch (e) { return { ok: false, status: 500, error: sanitize(e.message) }; }
+    try { prompt = buildPrompt({ toolRoot, run: runId, options, mode, site, max, project }); } catch (e) { return { ok: false, status: 500, error: sanitize(e.message) }; }
     mkdirSync(tmpDir, { recursive: true }); mkdirSync(runsDir, { recursive: true });
     const cfg = join(tmpDir, `mcp-${runId}-${randomBytes(3).toString("hex")}.json`);
-    writeFileSync(cfg, JSON.stringify(mcpConfig({ plat })));
-    const args = ["-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "default", "--max-turns", String(maxTurns), "--allowedTools", ALLOWED_TOOLS.join(","), "--add-dir", toolRoot, "--mcp-config", cfg];
+    const bc = getBrowser() || {}, ext = bc.mode !== "own";
+    writeFileSync(cfg, JSON.stringify(mcpConfig({ plat, profile: profileDir, headless, extension: ext ? { profile: bc.profile, name: "Product Review", color: "blue" } : null })));
+    if (!ext) mkdirSync(profileDir, { recursive: true });
+    const args = ["-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "default", ...(maxTurns > 0 ? ["--max-turns", String(maxTurns)] : []), "--allowedTools", ALLOWED_TOOLS.join(","), "--add-dir", toolRoot, "--mcp-config", cfg];
     const env = { ...process.env };
     const cmd = plat === "win32" && /\.(cmd|bat)$/i.test(found.path) ? ["cmd", ["/c", found.path, ...args]] : [found.path, args];
     let child;
@@ -132,20 +247,29 @@ export function createAgentRunner({ toolRoot, workspace, findCli = findClaude, p
     catch (e) { try { rmSync(cfg, { force: true }); } catch {} return { ok: false, status: 500, error: sanitize(e.message) }; }
     const started = new Date(now()).toISOString();
     const run = { child, cfg, lines: [], buf: "", written: 0, stderr: [], ended: false, forced: "", result: null, timer: null,
-      state: { run_id: runId, pid: child.pid ?? null, started, updated: started, status: "running", exit_code: null, last_text: "", turns: 0, error: "" } };
+      state: { run_id: runId, mode, project, pid: child.pid ?? null, started, updated: started, status: "running", exit_code: null, last_text: "", turns: 0, error: "" } };
     cur = run;
     try { writeFileSync(logFile, ""); } catch {}
-    addLine(run, `start: agent run ${runId}`);
+    addLine(run, mode === "scan" ? "Bắt đầu: Claude quét " + site + " (mã lượt " + runId + ")"
+      : mode === "queue" ? "Bắt đầu: Claude thêm sản phẩm của dự án " + project + " vào hàng chờ (mã lượt " + runId + ")"
+      : mode === "reviews" ? "Bắt đầu: Claude đọc số review trên các trang sản phẩm của dự án " + project + " (mã lượt " + runId + ")"
+      : "Bắt đầu: Claude điều khiển Google Flow (mã lượt " + runId + ")");
     saveState(run.state);
     child.stdout?.on("data", (c) => feed(run, c));
-    child.stderr?.on("data", (c) => { for (const l of c.toString("utf8").split(/\r?\n/)) { const t = sanitize(l); if (t) { run.stderr.push(t); if (run.stderr.length > 20) run.stderr.shift(); addLine(run, "! " + t); } } });
+    child.stderr?.on("data", (c) => { for (const l of c.toString("utf8").split(/\r?\n/)) { const t = sanitize(l); if (t) { run.stderr.push(t); if (run.stderr.length > 20) run.stderr.shift(); addLine(run, "Cảnh báo: " + t); } } });
     child.on("error", (e) => finish(run, null, e.message));
     child.on("close", (code) => finish(run, code));
     child.stdin?.on("error", () => {});
-    const note = "RUN-NOW NOTE: this run was started from the app, so the person is at the computer and will click Connect in Chrome if asked. If the browser is not connected yet, bring the Playwright Welcome / connect tab to the front (browser_run_code_unsafe: async (page) => { await page.bringToFront(); }), tell the person in one line to click Connect, then wait up to 3 minutes calling browser_tabs about every 15 seconds; if nothing connects, stop and report that Chrome did not connect.\n\n";
-    try { child.stdin?.end(note + prompt); } catch {}
-    run.timer = setTimeout(() => { if (run.ended) return; run.forced = "timeout"; killTree(child); setTimeout(() => finish(run, null), graceMs).unref?.(); }, minutes * 60000);
-    run.timer.unref?.();
+    const note = mode === "queue"
+      ? "RUN-NOW NOTE: this run only PREPARES the queue (no browser needed, do not open any page): look at photos with the Read tool and use the scan.ps1 queue commands. It never starts image creation and never writes review text.\n\n"
+      : mode === "reviews"
+      ? "RUN-NOW NOTE: this run uses the tool's OWN Chrome (a dedicated profile, no sign-in needed to read a product page)" + (headless ? ", running in the background (headless)" : "") + ". There is no Connect step and no extension: ignore any instruction to click Connect or wait for the person; start with browser_tabs or browser_navigate. If a page shows a login wall or captcha, stop and report it (never sign in for the person). The run is READ ONLY: never write, submit or change any review.\n\n"
+      : mode === "scan"
+      ? "RUN-NOW NOTE: this run uses the tool's OWN Chrome (a dedicated profile, no sign-in needed to scan a shop)" + (headless ? ", running in the background (headless)" : "") + ". There is no Connect step and no extension: ignore any instruction to click Connect or wait for the person; start with browser_tabs or browser_navigate. If the site asks for a login or shows a captcha, stop and report it (never sign in for the person)." + "\n\n"
+      : "RUN-NOW NOTE: this run uses the tool's OWN Chrome (a dedicated profile the person already signed in to Google Flow with)" + (headless ? ", running in the background (headless)" : "") + ". There is no Connect step and no extension: ignore any instruction to click Connect or wait for the person; start with browser_tabs or browser_navigate. If Flow shows a Google sign-in page, stop and report CAUSE:LOGIN (never sign in for the person)." + "\n\n";
+    try { child.stdin?.end((ext && mode !== "queue" ? extensionNote : note) + prompt); } catch {}
+    if (minutes > 0) run.timer = setTimeout(() => { if (run.ended) return; run.forced = "timeout"; killTree(child); setTimeout(() => finish(run, null), graceMs).unref?.(); }, minutes * 60000);
+    run.timer?.unref?.();
     return { ok: true, status: 200, run_id: runId, started };
   }
 
@@ -166,7 +290,7 @@ export function createAgentRunner({ toolRoot, workspace, findCli = findClaude, p
     const shown = st && !run && st.status === "running" ? { ...st, status: "failed", error: "The app closed while this run was active." } : st;
     const lines = run ? run.lines : (() => { try { return readFileSync(logFile, "utf8").split("\n").filter(Boolean); } catch { return []; } })();
     return {
-      active: !!run, status: shown?.status || "idle", run_id: shown?.run_id || "", started: shown?.started || "",
+      active: !!run, status: shown?.status || "idle", run_id: shown?.run_id || "", mode: shown?.mode || "flow", project: shown?.project || "", started: shown?.started || "",
       elapsed_s: shown?.started ? Math.max(0, Math.round(((run ? now() : Date.parse(shown.updated) || now()) - Date.parse(shown.started)) / 1000)) : 0,
       last_text: shown?.last_text || "", turns: shown?.turns || 0, error: shown?.error || "", tail: lines.slice(-TAIL_LINES),
     };

@@ -52,7 +52,6 @@ function New-AgentConfig {
     $config = New-WorkflowConfiguration $ProjectRoot (Join-Path $ProjectRoot 'workspace/source-photos') ''
     $config.Results = $null
     $config.ResultsRequired = $false
-    $config.ImageBackend = 'flow'
     $map = if ($env:PR_AGENT_REFERENCES) { $env:PR_AGENT_REFERENCES } else { Join-Path $ProjectRoot 'workspace/reference-inputs/references.json' }
     $config.ManualReferences = Read-ManualReferenceMap $map
     $config
@@ -149,7 +148,7 @@ function Invoke-AgentPrepare {
             $sceneRef = Join-Path $script:Batch.Refs ($id + '-manual-review' + [IO.Path]::GetExtension($sceneFile))
             [IO.File]::WriteAllBytes($productRef, $pBytes)
             [IO.File]::WriteAllBytes($sceneRef, $sBytes)
-            $all.Add([pscustomobject]@{ id = $id; key = $key; url = $job.Url; handle = $job.Handle; product_image = $productRef; review_photo = $sceneRef; product_sha256 = $productSha; review_sha256 = $sceneSha; status = 'prepared' })
+            $all.Add([pscustomobject]@{ id = $id; key = $key; url = $job.Url; handle = $job.Handle; product_image = $productRef; review_photo = $sceneRef; product_sha256 = $productSha; review_sha256 = $sceneSha; sign_text = $(if ($scene -and $scene.PSObject.Properties['sign_text']) { [string]$scene.sign_text } else { '' }); status = 'prepared' })
             $result.Add([ordered]@{ id = $id; url = $job.Url; product_image = $productRef; review_photo = $sceneRef; handle = $job.Handle })
         } catch {
             $msg = $_.Exception.Message
@@ -168,7 +167,7 @@ function Invoke-AgentContextBrief {
     Open-AgentRun $Run
     $entry = Get-AgentItem $Item
     Write-AgentJson ([ordered]@{ ok = $true; run = $script:Batch.Id; item = $entry.id; product_image = $entry.product_image; prompt = (Get-ProductContextPrompt $entry.handle)
-            file_format = '{"product":"...","presentation":"worn|held|placed|vehicle","details":"numbered visible details","source_categories":["category-key"]} (an id is optional; a raw classification with category_key/existing_profile is accepted too)' })
+            file_format = '{"product":"...","presentation":"worn|held|placed|vehicle","details":"numbered visible details","lettered":true|false (true = the product photo shows SAMPLE customer lettering such as Your Name / YOUR LOGO; false = fixed words or no text),"source_categories":["category-key"]} (an id is optional; a raw classification with category_key/existing_profile is accepted too)' })
 }
 
 function Invoke-AgentContext {
@@ -180,7 +179,7 @@ function Invoke-AgentContext {
     # Reduce to the raw classification and validate it with the same code as the AI step.
     $category = if ($in.category_key) { [string]$in.category_key } elseif (@($in.source_categories).Count) { [string]@($in.source_categories)[0] } elseif ($in.id) { [string]$in.id } else { '' }
     $profile = if ($in.existing_profile) { [string]$in.existing_profile } else { [string]$in.id }
-    $raw = [ordered]@{ category_key = $category; existing_profile = $profile; product = $in.product; presentation = $in.presentation; details = $in.details }
+    $raw = [ordered]@{ category_key = $category; existing_profile = $profile; product = $in.product; presentation = $in.presentation; details = $in.details; lettered = ($in.lettered -eq $true) }
     $context = ConvertFrom-ProductClassification ($raw | ConvertTo-Json -Depth 4)
     $cats = @($in.source_categories | ForEach-Object { [string]$_ } | Where-Object { $_ })
     if ($cats.Count) { $context | Add-Member source_categories $cats -Force }
@@ -191,7 +190,7 @@ function Invoke-AgentContext {
 }
 
 # --- 3. flow-brief ---------------------------------------------------------------------------------------------
-# Same choice as core/extension/sites/flow.js: the Flow aspect closest to the review photo's shape.
+# The Flow aspect closest to the review photo's shape.
 function Get-FlowAspect([string]$ImagePath) {
     $info = Get-ImageSize ([IO.File]::ReadAllBytes($ImagePath))
     if (-not $info -or -not $info.Height) { return '16:9' }
@@ -204,20 +203,36 @@ function Get-FlowAspect([string]$ImagePath) {
     $best
 }
 
-function Get-CondensedFlowPrompt($Context) {
+# $SignText: optional wording for a made-to-order lettered product (references.json scene.sign_text, " | " = line break).
+# Same rule as the Codex path (02-create-image.ps1): the sample lettering of the product photo is replaced entirely.
+function Get-CondensedFlowPrompt($Context, [string]$SignText = '') {
     $details = ([string]$Context.details -replace '\s+', ' ').Trim()
-    if ($details.Length -gt 600) { $details = $details.Substring(0, 600).TrimEnd() + '...' }
+    if ($details.Length -gt 600) {
+        # Cut at a sentence boundary (never mid-word); no sentence end in the first 600 characters = the last whole word.
+        $head = $details.Substring(0, 600)
+        $ends = [regex]::Matches($head, '[.!?](?=\s|$)')
+        if ($ends.Count -gt 0 -and $ends[$ends.Count - 1].Index -ge 200) { $details = $head.Substring(0, $ends[$ends.Count - 1].Index + 1) }
+        else { $details = ($head -replace '\s+\S*$', '').TrimEnd(' ', ',', ';', ':') + '...' }
+    }
     $worn = -not $Context.presentation -or $Context.presentation -eq 'worn'
     $first = if ($worn) {
         'Edit image 1 (the review photo) into ONE photorealistic photo: keep its people, pose, framing, camera and background exactly as they are, and replace only the target garment with the product from image 2. If no person is shown, keep the existing folded or laid-out presentation; do not add a model.'
     } else {
         'Edit image 1 (the base photo) into ONE photorealistic photo: keep its exact room or surroundings, camera, perspective, lighting and all unrelated objects unchanged, and place only the product from image 2 (replacing the old item, if any) at true relative scale.'
     }
+    # The wording rule is the shared template prompts/sign-wording.txt (src/domain/sign-wording.ps1), also used by the Codex path.
+    $signRule = Get-ItemSignRule $SignText $Context 2 'the product text and the no-text rule'
+    $lastRule = if ($signRule) {
+        "$signRule Do not add objects, people or props that image 1 does not have. One single frame: no collage, split screen or multiple views."
+    } else {
+        'Show the product without any brand name or logo; add no text, labels or watermarks. Do not add objects, people or props that image 1 does not have. One single frame: no collage, split screen or multiple views.'
+    }
     @(
         $first
         "Image 2 is the ONLY source for the product's design: $($Context.product). Copy its shape, proportions, colors, pattern, material and every visible detail exactly; its background and props are not part of the result."
         "Key details of image 2 (the picture wins if it differs): $details"
-        'Show the product without any brand name or logo; add no text, labels or watermarks. Do not add objects, people or props that image 1 does not have. One single frame: no collage, split screen or multiple views.'
+        'Photo style: a quick casual snapshot taken with a phone camera, an everyday angle, available light only, natural color, a slight touch of image noise. Do not over-smooth or retouch; no studio lighting, no strong background blur, nothing that feels like an advertisement. Keep the original setting and the product design unchanged.'
+        $lastRule
     ) -join ' '
 }
 
@@ -226,7 +241,8 @@ function Invoke-AgentFlowBrief {
     $entry = Get-AgentItem $Item
     $context = Get-AgentContext $entry.id
     $script:Config.ActiveProductUrl = $entry.url
-    $script:Config.ActiveScene = $null
+    # This item's OWN review photo (a link with 2 scenes = 2 items): with $null Get-ReviewPhoto falls back to the link's FIRST scene and both items get the same room.
+    $script:Config.ActiveScene = if ($entry.review_photo) { [pscustomobject]@{ file = [string]$entry.review_photo; sha256 = [string]$entry.review_sha256 } } else { $null }
     $folder = Join-Path $script:Batch.Refs $entry.id
     if (Test-Path -LiteralPath (Join-Path $folder 'manifest.json')) {
         # Already archived: use the archived copies (01 = review photo, 02 = product).
@@ -252,7 +268,7 @@ function Invoke-AgentFlowBrief {
         $uploads += $dest
     }
     $cmd = "powershell -NoProfile -ExecutionPolicy Bypass -File src/agent.ps1 register-image -Run $($script:Batch.Id) -Item $($entry.id) -From <downloaded file>"
-    Write-AgentJson ([ordered]@{ ok = $true; run = $script:Batch.Id; item = $entry.id; prompt_file = $promptFile; condensed_prompt = (Get-CondensedFlowPrompt $context)
+    Write-AgentJson ([ordered]@{ ok = $true; run = $script:Batch.Id; item = $entry.id; prompt_file = $promptFile; condensed_prompt = (Get-CondensedFlowPrompt $context $(if ($entry.PSObject.Properties['sign_text']) { [string]$entry.sign_text } else { '' }))
             aspect = (Get-FlowAspect $request.Images[0]); uploads = $uploads; register_command = $cmd })
 }
 

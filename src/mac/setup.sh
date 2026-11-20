@@ -1,6 +1,6 @@
 #!/bin/bash
-# One-time install on macOS, run by start-app.command when Node.js or PowerShell is missing: Homebrew, Node.js, PowerShell 7, Codex CLI, ChatGPT sign-in and the
-# browser bridge, each only when missing, then the same readiness check as the app's Cấu hình.
+# One-time install on macOS, run by start-app.command when Node.js or PowerShell is missing: Homebrew, Node.js, PowerShell 7, Codex CLI, ChatGPT sign-in,
+# each only when missing, then the same readiness check as the app's Cấu hình.
 cd "$(dirname "$0")/../.." || exit 1
 export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.dotnet/tools:$PATH"
 step() { printf '\n== %s\n' "$1"; }
@@ -28,9 +28,6 @@ codex --version
 
 step "Đăng nhập ChatGPT"
 if codex login status 2>&1 | grep -qi "logged in"; then echo "Đã đăng nhập."; else codex login; fi
-
-step "Cầu nối trình duyệt"
-[ -f core/bridge/package.json ] && (cd core/bridge && npm install --silent) && echo "Đã cài."
 
 step "Kiểm tra"
 pwsh -NoProfile -File core/setup/setup-check.ps1

@@ -8,7 +8,10 @@ function Save-ProductCheckpoint($Results, $Result, $Completed, $Item, [string]$L
     $Completed.Add($Item.Url)
     Write-Lines $script:Batch.CompletedUrls $Completed.ToArray()
     Remove-FromQueue $List $Item.Url
-    Remove-CompletedDeliveryCache $Item.Url
+    # The link is done: its row in a Quét web table becomes used = T (never fails the checkpoint).
+    [void](Set-ScanUsed $Item.Url)
+    # A review-only row has no image delivery; it must not drop a saved image delivery of the same link.
+    if (-not $Result.review_only) { Remove-CompletedDeliveryCache $Item.Url }
 }
 
 function Complete-BatchExport($Results, [string]$NamesPath) {

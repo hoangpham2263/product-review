@@ -169,6 +169,8 @@ function Invoke-AgentFinish([Parameter(Mandatory)][string]$Run, [Parameter(Manda
     Save-BatchResults $all.ToArray() $script:Batch.Dir
     $state.status = 'finished'; Save-AgentJsonFile $p.State $state
     if (Test-Path -LiteralPath $p.Error) { Remove-Item -LiteralPath $p.Error -Force }
+    # The link is done: its row in a Quét web table becomes used = T (never fails the finish).
+    try { $itemUrl = [string]@(Read-AgentItems | Where-Object id -eq $Item)[0].url; if ($itemUrl) { [void](Set-ScanUsed $itemUrl) } } catch { Write-Verbose $_ }
     $csv = ((@($row.product_handle, $row.rating, $row.author, $row.email, $row.body, $row.created_at, $row.photo_url) | ForEach-Object { '"' + ([string]$_ -replace '"', '""') + '"' }) -join ',')
     Write-AgentJson ([ordered]@{ item = $Item; status = 'awaiting_user_review'; image = $p.Image; photo_url = $row.photo_url; review = $row.body; rating = $row.rating; author = $row.author; csv_row = $csv })
 }
@@ -197,6 +199,10 @@ function Invoke-AgentRunSummary([Parameter(Mandatory)][string]$Run) {
         if ($cause) { $o.cause = $cause }
         [pscustomobject]$o
     })
+    foreach ($row in @($rows | Where-Object supplemental_review)) {
+        $d = [string]$decisions[$row.item_id]
+        $items += [pscustomobject]@{ id = $row.item_id; url = ''; status = $(if ($d -eq 'ok') { 'kept' } elseif ($d -eq 'bad') { 'rejected' } else { 'awaiting_user_review' }); image = ''; review_only = $true }
+    }
     Write-AgentJson ([ordered]@{
         run = $script:Batch.Id; items = $items
         awaiting_user_review = @($items | Where-Object status -eq 'awaiting_user_review').Count

@@ -6,7 +6,7 @@ $ErrorActionPreference = 'Stop'
 $script:Repo = 'hoangpham2263/product-review'
 $script:Asset = 'product-review.zip'
 # Local data the app writes; an update keeps it as it is (AGENTS.md is merged, see Merge-AgentInstructions).
-$script:KeepPaths = '^(workspace|\.git|core/bridge/node_modules|AGENTS\.md)(/|$)'
+$script:KeepPaths = '^(workspace|\.git|AGENTS\.md)(/|$)'
 
 function Copy-AppUpdate([string]$Source, [string]$Target) {
     foreach ($file in @(Get-ChildItem -LiteralPath $Source -Recurse -File -Force)) {

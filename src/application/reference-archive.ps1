@@ -41,9 +41,9 @@ function Save-ProductReferenceBundle($Item, [string]$ItemId, $Context, $Request)
         schema_version = 1; item_id = $ItemId; product = $Context.product
         product_url = $Item.Url; reference_count = 1
         product_context = $Context
-        image_mode = 'direct_image_output'
+        image_mode = $(if ($script:Config.ReviewOnly) { 'review_only' } else { 'direct_image_output' })
         archived_at = [DateTime]::UtcNow.ToString('o')
-        output = "../../images/$ItemId.png"; images = $entries
+        output = $(if ($script:Config.ReviewOnly) { '' } else { "../../images/$ItemId.png" }); images = $entries
     }
     [IO.File]::WriteAllText((Join-Path $folder 'manifest.json'), ($manifest | ConvertTo-Json -Depth 10), [Text.UTF8Encoding]::new($false))
     # The generator consumes these copies, so the archive matches its actual inputs.

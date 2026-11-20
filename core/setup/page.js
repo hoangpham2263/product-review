@@ -12,8 +12,8 @@
   fetch("/api/root").then((r) => r.json()).then((r) => { if (r.version) document.title = `Cấu hình ${r.version}`; }).catch(() => {});
 
   // Which section each step is in, in this order; anything else the check adds goes under Cài đặt.
-  const AI = ["login", "google", "antigravity"];
-  const BASE = ["node", "codex", "browser"];
+  const AI = ["login", "antigravity"];
+  const BASE = ["node", "codex"];
   const marks = { ok: ["✔", "darkgreen"], fail: ["✖", "firebrick"], warn: ["!", "#b06000"] };
   const items = new Map();
   const item = (id, parent) => {
@@ -29,25 +29,23 @@
   };
   for (const id of AI) item(id, $("#ai"));
   for (const id of BASE) item(id, $("#base"));
-  const NAMES = { login: "Codex (ChatGPT)", google: "Google (Flow, Gemini web)", antigravity: "Antigravity CLI", node: "Node.js", codex: "Codex", browser: "Extension Product Review" };
+  const NAMES = { login: "Codex (ChatGPT)", antigravity: "Antigravity CLI", node: "Node.js", codex: "Codex" };
   for (const [id, row] of items) row.name.textContent = NAMES[id];
-  const LABELS = { install: "Cài", browser: "Mở", login: "Đăng nhập", google: "Đăng nhập", antigravity: "Đăng nhập" };
+  const LABELS = { install: "Cài", login: "Đăng nhập", antigravity: "Đăng nhập" };
   // Beside the sign-in button: the AI's own site in Chrome, to see or switch the account there.
-  const SITES = { login: [["Mở ChatGPT", "chatgpt"]], google: [["Mở Gemini", "gemini"], ["Mở Flow", "flow"]] };
+  const SITES = { login: [["Mở ChatGPT", "chatgpt"]] };
   const WAIT = {
     install: "Đang cài…",
-    browser: "Đã mở trang tiện ích của Chrome và thư mục extension: bật Chế độ nhà phát triển, bấm Tải tiện ích đã giải nén, chọn thư mục vừa mở, xong bấm Kiểm tra lại.",
     login: "Đang mở trang đăng nhập ChatGPT trong Chrome…",
-    google: "Đã mở trang chọn tài khoản Google trong Chrome: đăng nhập, thêm hoặc đổi tài khoản ở đó, xong bấm Kiểm tra lại.",
     antigravity: "Đã mở Terminal chạy Antigravity: gõ /logout nếu muốn đổi tài khoản, rồi /login và đăng nhập Google trên trang mở ra. Xong bấm Kiểm tra lại.",
     site: "Đã mở trang trong Chrome. Đăng nhập hoặc đổi tài khoản ở đó, xong bấm Kiểm tra lại.",
   };
 
-  // Cài / cập nhật tất cả AI: Codex, Antigravity CLI and the bridge (server: step update-all), then the check again.
+  // Cài / cập nhật tất cả AI: Codex and Antigravity CLI (server: step update-all), then the check again.
   $(".all").onclick = async () => {
     const button = $(".all"), note = $("#all-result");
     button.disabled = true; note.hidden = false;
-    note.textContent = "Đang cài và cập nhật Codex, Antigravity CLI, cầu nối… có thể mất vài phút, đừng đóng cửa sổ.";
+    note.textContent = "Đang cài và cập nhật Codex, Antigravity CLI… có thể mất vài phút, đừng đóng cửa sổ.";
     const r = await post("/api/setup-step", { step: "update-all" });
     const results = r.results || [{ name: "Lỗi", ok: false, message: r.error || "Không chạy được." }];
     note.replaceChildren(...results.map((x) => el("div", "", `${x.ok ? "✔" : "✖"} ${x.name}${x.message ? ": " + x.message : ""}`)));
@@ -83,26 +81,12 @@
       const lapsed = { expired: " · hết hạn", signedout: " · đã đăng xuất" }[step.SignIn] || "";
       row.account.textContent = step.Account ? `Tài khoản: ${step.Account}${lapsed}` : step.State === "ok" ? "Tài khoản: chưa đọc được email" : "Tài khoản: chưa đăng nhập";
       row.account.classList.toggle("none", !step.Account || !!lapsed);
-      // Google with more than one account signed in: choose here which one Flow and Gemini run with.
-      const accounts = [].concat(step.Accounts || []);
-      if (step.Id === "google" && step.State === "ok" && accounts.length > 1) {
-        const pick = el("select", "account-pick");
-        pick.setAttribute("aria-label", "Tài khoản Google cho Flow và Gemini");
-        for (const email of accounts) pick.append(Object.assign(el("option", "", email), { value: email, selected: email === step.Account }));
-        pick.onchange = async () => {
-          pick.disabled = true;
-          const r = await post("/api/config/google", { email: pick.value });
-          pick.disabled = false;
-          row.detail.textContent = r.error || `Flow và Gemini sẽ chạy bằng ${r.email || pick.value}.`;
-        };
-        row.account.replaceChildren("Tài khoản: ", pick);
-      }
       row.uses.textContent = step.Uses ? `Dùng cho: ${step.Uses}` : "";
       if (step.Id === "login" && quota && quota.State !== "wait" && quota.Detail) row.detail.textContent = `${step.Detail} Hạn mức: ${quota.Detail}`;
       if (step.Id === "antigravity" && step.State !== "ok") row.uses.textContent = `Dùng cho: ${step.Uses || "Viết review: Antigravity CLI"}. Đăng nhập trong Antigravity, đổi tài khoản cũng ở đó.`;
       if (step.Action) {
         const signedIn = step.State === "ok";
-        row.fix.textContent = signedIn && ["login", "google", "antigravity"].includes(step.Action) ? "Đổi tài khoản" : ["expired", "signedout"].includes(step.SignIn) ? "Đăng nhập lại" : LABELS[step.Action] || "Mở";
+        row.fix.textContent = signedIn && ["login", "antigravity"].includes(step.Action) ? "Đổi tài khoản" : ["expired", "signedout"].includes(step.SignIn) ? "Đăng nhập lại" : LABELS[step.Action] || "Mở";
         row.fix.classList.toggle("primary", !signedIn);
         row.fix.hidden = false;
         row.fix.onclick = () => fix(step, row);
@@ -158,14 +142,14 @@
     if (r.superseded) return;
     for (const b of buttons()) b.disabled = false;
     // Signing in on a site or in Antigravity happens outside this page: keep the hint until Kiểm tra lại.
-    if (["google", "antigravity", "site"].includes(step.Action) && !r.error) return;
+    if (["antigravity", "site"].includes(step.Action) && !r.error) return;
     await check();
     if (r.error) row.detail.textContent = r.error;
   };
   $(".again").onclick = () => { check(); usage(); };
 
   // Lượt dùng AI (GET /api/usage): calls, failures and Codex tokens per AI and account; the last failure with its cause.
-  const CAUSES = { QUOTA: "Hết lượt", AUTH: "Chưa đăng nhập", AI_TIMEOUT: "Quá thời gian", NETWORK: "Mất mạng", BUSY: "AI bận hoặc lỗi", BRIDGE: "Extension hoặc Flow cần xử lý", PROCESS_ACTIVE: "Codex chưa dừng hẳn", UNSUPPORTED: "AI không làm được việc này", POLICY: "Bị từ chối (chính sách)", UNKNOWN: "Lỗi khác" };
+  const CAUSES = { QUOTA: "Hết lượt", AUTH: "Chưa đăng nhập", AI_TIMEOUT: "Quá thời gian", NETWORK: "Mất mạng", BUSY: "AI bận hoặc lỗi", PROCESS_ACTIVE: "Codex chưa dừng hẳn", UNSUPPORTED: "AI không làm được việc này", POLICY: "Bị từ chối (chính sách)", UNKNOWN: "Lỗi khác" };
   const when = (t) => { const d = new Date(t); return `${d.toLocaleTimeString("vi-VN", { hour: "2-digit", minute: "2-digit" })} ${d.toLocaleDateString("vi-VN", { day: "2-digit", month: "2-digit" })}`; };
   const tokens = (n) => (n >= 1e6 ? `${(n / 1e6).toFixed(1).replace(".", ",")}M` : n >= 1e3 ? `${Math.round(n / 1e3)}K` : String(n));
   const usage = async () => {

@@ -1,0 +1,3 @@
+SIGN WORDING (this overrides {{OVERRIDES}}, for the sign lettering only): the product in image {{PRODUCT_IMAGE}} shows sample or placeholder lettering ("Your Name", "Your Names", "YOUR LOGO", "Your Shop Name", "YOUR GYM NAME" and similar). Replace that lettering ENTIRELY so the sign reads exactly these {{LINE_COUNT}} line(s), top to bottom, character for character, correctly spelled and clearly legible: {{LINES}}.
+Keep the product's own lettering style, line colors, glow, layout, size and number of lines, and keep every non-text part (icons, crown, star, wings, frame, circle) as in image {{PRODUCT_IMAGE}}.
+No trace of the old words may remain; no other words, no brand or shop logo, no placeholder, no label or watermark.

@@ -1,0 +1,22 @@
+# Reviews-count prompt (Claude Code reads the review number shown on each product page of a project)
+
+The only source of this prompt: the app ("Cập nhật số review" in the Dự án popup) and `buildPrompt({ mode: "reviews" })` in `core/setup/agent-run.mjs` read the `text` block below. Placeholders: `{{TOOL}}` = this tool's folder, `{{RUN}}` = the run id, `{{PROJECT}}` = the project id (folder under `workspace/projects/`), `{{OPTIONS}}` = this run's options (or "defaults"). Same fixed template as `docs/agent-prompt.md` and `docs/scan-prompt.md`: TASK, OPTIONS, TOOL, STEPS (numbered, 1:1 with the "Dự án" section of RUNBOOK.md), STOP IF, NEVER.
+
+It is READ ONLY and has no code that finds or parses numbers: Claude opens each link in the tool's own Chrome and reads the number the page itself shows, whatever widget or wording shows it; `src/scan.ps1 set-reviews` only stores the number Claude reports (and the time), `reviews-todo` only lists the links.
+
+```text
+TASK: Product Review — read the number of reviews each product page of a project shows (read only) — agent: Claude Code
+RUN: {{RUN}}
+PROJECT: {{PROJECT}}
+OPTIONS: {{OPTIONS}}
+TOOL: {{TOOL}}
+STEPS (follow RUNBOOK.md "Dự án", in order, do not skip; every command prints one JSON line {ok,...}; CLI = powershell -NoProfile -ExecutionPolicy Bypass -File src/scan.ps1 <command> -Project {{PROJECT}} ...):
+1. Setup: cd {{TOOL}}; read AGENTS.md (sections 0 and "Dự án") + RUNBOOK.md "Dự án"; CLI reviews-todo (prints the links to read, never checked first; the project and its table already exist).
+2. Browser FIRST: browser_tabs (the Playwright MCP runs the tool's OWN Chrome profile, no sign-in needed); ONE tab; no Playwright MCP or no Chrome = STOP IF.
+3. Per link, one at a time, in the order of reviews-todo: open the product link (browser_navigate); dismiss a cookie banner with one click; look at the page, scroll to the reviews if it helps, and read the review NUMBER the page itself shows (the stars line "N reviews", a reviews tab or section heading, any review widget: whatever it is, you read it with your own eyes). If the page also shows an average rating, note it. "No reviews yet" = 0. A page that shows no review information anywhere, or a number you cannot tell is THIS product's (it looks like a store-wide total, the same number on every page): do not guess, do not call set-reviews, note the link for your report and GO ON to the next link; one doubtful link never stops the run.
+4. Record: CLI set-reviews -Url <the link exactly as listed> -Count <the number you read> [-Rating <average shown>] [-Source "<where on the page you read it, in a few words>"]; a failed call: retry ONCE. KEEP WORKING until EVERY link of reviews-todo is done: this run ends the moment you write a message without a tool call, so write NO progress message, NO partial report and NO question before the last link; the only message you write is the step 5 report.
+5. Finish: CLI project (shows what is recorded), then STOP. Tell me in Vietnamese: how many links you read, each link with its number, the links where the page showed no number, the pages that failed and why.
+Browser rules: start every browser_run_code_unsafe with `await page.bringToFront();`; ONE tab; never use waitForFunction (use waitForLoadState('domcontentloaded') with a short timeout, or waitForTimeout); any single browser call over 30 s counts as stuck: stop using it, go on.
+STOP IF: no Playwright MCP or its own Chrome does not open; a login wall, captcha or block page (403, "checking your browser") on a product page: stop reading and report which link; a page that does not load or is gone (404): skip that link, say so, go on. Do NOT retry endlessly (at most 1 retry of a stuck step); still run step 5.
+NEVER: write, submit, edit, delete, vote on or reply to any review; fill or submit any form (a "write a review" form included); sign in, buy, add to cart, post or change anything on a site; leave the project's site domain; guess, estimate or invent a number (only a number you SEE on the page); write a script that finds or parses the numbers for you; set any target or "missing" number; run two agents on one browser.
+```

@@ -14,6 +14,7 @@ $workspace = Initialize-ProjectWorkspace $root
 . (Join-Path $srcDir 'application/image-feedback.ps1')
 . (Join-Path $srcDir 'application/manual-references.ps1')
 . (Join-Path $srcDir 'application/batch-import.ps1')
+. (Join-Path $srcDir 'application/scan-store.ps1')
 . (Join-Path $srcDir 'infrastructure/csv.ps1')
 . (Join-Path $srcDir 'application/batch-review.ps1')
 . (Join-Path $srcDir 'application/loox-export.ps1')
@@ -21,12 +22,14 @@ $workspace = Initialize-ProjectWorkspace $root
 . (Join-Path $srcDir 'application/progress.ps1')
 $mapPath = Join-Path $workspace.Root 'reference-inputs/references.json'
 $libraryRoot = Join-Path $root 'workspace/source-photos'
+$projectsRoot = Join-Path $workspace.Root 'projects'
 
 function Test-HttpUrl([string]$Url) { $uri = $null; [Uri]::TryCreate($Url, [UriKind]::Absolute, [ref]$uri) -and $uri.Scheme -in @('http', 'https') }
 function Get-EntryInfo([string]$MapFile, [string]$Url) {
     $entry = @((Read-ManualReferenceMap $MapFile).entries | Where-Object product_url -eq $Url)
     $image = { param($file) [pscustomobject]@{ file = [string]$file; ok = [bool]($file -and (Test-Path -LiteralPath $file)) } }
-    $products = @(if ($entry.Count) { Get-ManualProducts $entry[0] | ForEach-Object { [pscustomobject]@{ file = $_.file; ok = (& $image $_.file).ok; scenes = @($_.scenes | ForEach-Object { & $image $_.file }) } } })
+    $products = @(if ($entry.Count) { Get-ManualProducts $entry[0] | ForEach-Object { [pscustomobject]@{ file = $_.file; ok = (& $image $_.file).ok; scenes = @($_.scenes | ForEach-Object { & $image $_.file })
+            sign_text = [string](@($_.scenes | Where-Object { $_.PSObject.Properties['sign_text'] -and $_.sign_text } | ForEach-Object { $_.sign_text } | Select-Object -First 1)[0]) } } })
     [pscustomobject]@{ url = $Url; products = $products; scenes = @($products | ForEach-Object { @($_.scenes) }) }
 }
 function Assert-DraftRoot([string]$Path) {
@@ -80,6 +83,7 @@ function Invoke-Rpc([string]$Cmd, $A) {
             return $url
         }
         'draftRemoveScene' { Assert-DraftRoot $A.root; Remove-ManualScene (Join-Path $A.root 'workspace/reference-inputs/references.json') ([string]$A.url) ([int]$A.index) ([int]$A.productIndex); return $true }
+        'draftSignText' { Assert-DraftRoot $A.root; Set-ManualSignText (Join-Path $A.root 'workspace/reference-inputs/references.json') ([string]$A.url) ([int]$A.productIndex) ([string]$A.text); return $true }
         'draftRemoveProduct' { Assert-DraftRoot $A.root; Remove-ManualProduct (Join-Path $A.root 'workspace/reference-inputs/references.json') ([string]$A.url) ([int]$A.productIndex); return $true }
         'draftSave' {
             # Same rules as Save-ProductQueueDraft in the Windows window.
@@ -126,7 +130,7 @@ function Invoke-Rpc([string]$Cmd, $A) {
         # Nhập hàng loạt: problems by line, the links, and whether any row brings images (then src/import-batch.ps1 runs).
         'importParse' {
             $parsed = ConvertFrom-ProductBatch ([string]$A.text) ([string]$A.folder)
-            return @{ errors = @($parsed.Errors); links = @($parsed.Rows | ForEach-Object Url | Select-Object -Unique); images = [bool]@($parsed.Rows | Where-Object { $_.Product -or @($_.Reviews).Count }).Count }
+            return @{ errors = @($parsed.Errors); links = @($parsed.Rows | ForEach-Object Url | Select-Object -Unique); images = [bool]@($parsed.Rows | Where-Object { $_.Product -or @($_.Reviews).Count }).Count; skipped = [int]$parsed.Skipped }
         }
         'importArchive' { $folder = Expand-ProductBatchArchive ([string]$A.path) (Split-Path -Parent ([string]$A.path)); $csv = Get-ChildItem -LiteralPath $folder -Filter *.csv -File | Sort-Object { $_.Name -ne 'products.csv' } | Select-Object -First 1; return @{ folder = $folder; text = [IO.File]::ReadAllText($csv.FullName) } }
         'importFile' { return [IO.File]::ReadAllText([string]$A.path) }
@@ -138,7 +142,8 @@ function Invoke-Rpc([string]$Cmd, $A) {
         'pending' { return (Get-PendingReviewCount ([string]$A.batch)) }
         'reviewBatches' {
             if (-not (Test-Path -LiteralPath $workspace.Output)) { return @() }
-            return @(Get-ChildItem -LiteralPath $workspace.Output -Directory | Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'results.json') } | Sort-Object Name -Descending | Select-Object -First 60 | ForEach-Object {
+            # Run names may be custom; reviewing/exporting changes LastWriteTime, not the run date.
+            return @(Get-ChildItem -LiteralPath $workspace.Output -Directory | Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'results.json') } | Sort-Object CreationTimeUtc, Name -Descending | Select-Object -First 60 | ForEach-Object {
                     $rows = @(); $decided = 0
                     try { $rows = Get-Content -LiteralPath (Join-Path $_.FullName 'results.json') -Raw -Encoding UTF8 | ConvertFrom-Json } catch { Write-Verbose $_ }
                     $reviewPath = Join-Path $_.FullName 'review.json'
@@ -148,18 +153,37 @@ function Invoke-Rpc([string]$Cmd, $A) {
         }
         'reviewItems' {
             return @(Get-BatchReview ([string]$A.batch) | ForEach-Object {
-                    [pscustomobject]@{ id = $_.Id; handle = [string]$_.Row.product_handle; body = [string]$_.Row.body; image = $_.ImagePath; product = $_.ProductPath; scene = $_.ScenePath; decision = $_.Decision }
+                    [pscustomobject]@{ id = $_.Id; handle = [string]$_.Row.product_handle; body = [string]$_.Row.body; image = $_.ImagePath; product = $_.ProductPath; scene = $_.ScenePath; decision = $_.Decision; review_only = [bool]$_.ReviewOnly }
                 })
         }
         'reviewItemsMany' {
             return @(foreach ($dir in @(@($A.batches) | ForEach-Object { [string]$_ })) {
-                    foreach ($i in @(Get-BatchReview $dir)) { [pscustomobject]@{ batch = $dir; run = (Split-Path $dir -Leaf); id = $i.Id; handle = [string]$i.Row.product_handle; body = [string]$i.Row.body; image = $i.ImagePath; product = $i.ProductPath; scene = $i.ScenePath; decision = $i.Decision } }
+                    foreach ($i in @(Get-BatchReview $dir)) { [pscustomobject]@{ batch = $dir; run = (Split-Path $dir -Leaf); id = $i.Id; handle = [string]$i.Row.product_handle; body = [string]$i.Row.body; image = $i.ImagePath; product = $i.ProductPath; scene = $i.ScenePath; decision = $i.Decision; review_only = [bool]$i.ReviewOnly } }
                 })
         }
         'reviewExportAll' { return (Export-ReviewedCsvMany @(@($A.batches) | ForEach-Object { [string]$_ }) $workspace.Exports) }
         'reviewDecide' { Set-BatchReviewDecision ([string]$A.batch) ([string]$A.id) ([string]$A.decision) -Reason ([string]$A.reason); return $true }
         'event' { return (ConvertTo-UiEvent ([string]$A.line) ([int]$A.index)) }
         'updateCheck' { return (& (Join-Path $root 'core/update.ps1') -Root $root -Check) }
+        # Dự án (src/application/scan-store.ps1): the projects, one project with its menu and products, the used flag. Paths use "/" for the window.
+        'projects' { return @(Get-ProjectList $projectsRoot | ForEach-Object { $_.dir = ([string]$_.dir).Replace('\', '/'); $_.csv = ([string]$_.csv).Replace('\', '/'); $_ }) }
+        'projectRows' {
+            $dir = Get-ProjectDir $projectsRoot ([string]$A.id)
+            if (-not $dir) { throw 'Không tìm thấy dự án.' }
+            $summary = Get-ProjectSummary $dir
+            $summary.dir = ([string]$summary.dir).Replace('\', '/'); $summary.csv = ([string]$summary.csv).Replace('\', '/')
+            $rows = @(Read-ScanRows (Join-Path $dir 'products.csv') | ForEach-Object {
+                    $img = if ($_.product_image) { (Join-Path (Join-Path $dir 'images') $_.product_image).Replace('\', '/') } else { '' }
+                    [pscustomobject]@{ url = [string]$_.product_url; title = [string]$_.title; collection = [string]$_.collection; used = (Test-UsedFlag $_.used); reviews_count = [string]$_.reviews_count; reviews_checked_at = [string]$_.reviews_checked_at; image = $img }
+                })
+            $menu = @(foreach ($m in @(Read-ProjectJson (Join-Path $dir 'menu.json') @())) { $m })
+            return [pscustomobject]@{ project = [pscustomobject]$summary; rows = $rows; menu = $menu }
+        }
+        'projectSetUsed' {
+            $dir = Get-ProjectDir $projectsRoot ([string]$A.id)
+            if (-not $dir) { throw 'Không tìm thấy dự án.' }
+            return (Set-ProjectUsed $dir ([string]$A.url) ([bool]$A.used))
+        }
         'openPath' { $p = [string]$A.path; New-Item -ItemType Directory -Force $p -ErrorAction SilentlyContinue | Out-Null; Open-SystemPath $p; return $true }
         'revealPath' { if ($script:OnWindows) { Start-Process explorer.exe -ArgumentList ('/select,"' + [string]$A.path + '"') } else { & open -R ([string]$A.path) }; return $true }
         default { throw "Unknown command: $Cmd" }

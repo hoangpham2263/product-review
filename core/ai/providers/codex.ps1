@@ -239,3 +239,87 @@ function Invoke-CodexExec([string]$PromptText, [string[]]$Images, [string]$Resul
         if ($delay -gt 0) { Start-Sleep -Seconds $delay }
     }
 }
+
+# ---- Windows sandbox race (lesson): codex gives each -C WorkDir its own capability SID and, at startup, runs
+# "setup refresh" to grant it write access. With a NEW WorkDir and many codex processes starting at once, those refreshes
+# overwrite each other: the batch root gets the right SID but images/refs/logs keep an old one, and Codex then fails
+# to save into images (the PNG stays under ~/.codex/generated_images). So: one tiny sequential codex call per new WorkDir
+# first, only then the subfolders and the parallel jobs; then compare the ACLs and repair empty folders.
+
+# SIDs (S-1-5-21-..., i.e. not named accounts) holding a Modify ACE on a folder, from icacls.
+function Get-CodexFolderSids([string]$Path) {
+    $sids = [Collections.Generic.List[string]]::new()
+    foreach ($line in @(& icacls.exe $Path 2>$null)) {
+        if ($line -match '(S-1-5-21-[\d-]+):(?<flags>(?:\([^)]+\))+)' -and $Matches.flags -match '\(M\)' -and $Matches.flags -notmatch '\(DENY\)') {
+            $sid = $line -replace '^.*?(S-1-5-21-[\d-]+):.*$', '$1'
+            if (-not $sids.Contains($sid)) { $sids.Add($sid) }
+        }
+    }
+    return ,$sids.ToArray()
+}
+
+# Create $Dir and its subfolders the safe way for Codex on Windows. Never throws; notes go to $LogFile (created under
+# the first subfolder named 'logs', if any) and the console.
+function Initialize-CodexWorkDir([string]$Dir, [string[]]$SubDirs, [int]$WarmupSec = 90) {
+    $notes = [Collections.Generic.List[string]]::new()
+    $note = { param($m) $notes.Add("$((Get-Date).ToString('HH:mm:ss')) $m"); Write-Host "  [CODEX-SETUP] $m" -ForegroundColor DarkGray }
+    New-Item -ItemType Directory -Force $Dir | Out-Null
+    if ($script:OnWindows) {
+        $trace = Join-Path ([IO.Path]::GetTempPath()) "codex-warmup-$([guid]::NewGuid().ToString('N')).log"
+        try {
+            $args2 = @('exec', '--json', '--skip-git-repo-check', '-s', 'workspace-write', '-C', $Dir, '-c', 'project_doc_max_bytes=0')
+            & $note 'Warm-up: one small Codex call for this work folder, before the parallel jobs.'
+            $run = Invoke-CodexProcess 'Reply with exactly: OK' $args2 $trace $WarmupSec 20 '' 0
+            & $note "Warm-up finished: exit=$($run.ExitCode) cause=$($run.Cause)"
+        } catch { & $note "Warm-up failed (run continues): $($_.Exception.Message)" }
+        finally { Remove-Item -LiteralPath $trace -Force -ErrorAction SilentlyContinue }
+    }
+    # Subfolders only now, so they inherit the ACEs the warm-up just wrote.
+    foreach ($sub in $SubDirs) { New-Item -ItemType Directory -Force $sub | Out-Null }
+    if ($script:OnWindows) {
+        try {
+            $rootSids = @(Get-CodexFolderSids $Dir)
+            if (-not $rootSids.Count) { & $note 'ACL check skipped: no Codex SID found on the work folder.' }
+            else {
+                foreach ($sub in $SubDirs) {
+                    for ($try = 1; $try -le 2; $try++) {
+                        $subSids = @(Get-CodexFolderSids $sub)
+                        $missing = @($rootSids | Where-Object { $_ -notin $subSids })
+                        if (-not $missing.Count) { if ($try -eq 2) { & $note "ACL repaired: $(Split-Path $sub -Leaf)" }; break }
+                        if ($try -eq 2) { & $note "ACL still differs on $(Split-Path $sub -Leaf); Codex may fail to save there."; break }
+                        if (@(Get-ChildItem -LiteralPath $sub -Force).Count) { & $note "ACL differs on $(Split-Path $sub -Leaf) but it is not empty; left as is."; break }
+                        & $note "ACL differs on $(Split-Path $sub -Leaf) (root SID $($missing -join ',') missing); recreating the empty folder."
+                        Remove-Item -LiteralPath $sub -Force; New-Item -ItemType Directory -Force $sub | Out-Null
+                    }
+                }
+            }
+        } catch { & $note "ACL check failed (run continues): $($_.Exception.Message)" }
+    }
+    $logsDir = @($SubDirs | Where-Object { (Split-Path $_ -Leaf) -eq 'logs' })[0]
+    if ($logsDir -and (Test-Path -LiteralPath $logsDir)) {
+        try { [IO.File]::WriteAllLines((Join-Path $logsDir 'codex-setup.log'), $notes.ToArray(), [Text.UTF8Encoding]::new($false)) } catch {}
+    }
+}
+
+# Codex may generate the image but be denied when saving it into the batch. Find the PNG of THIS job: the thread id
+# comes from the job's own trace, and only a file named in that trace under <codex home>/generated_images/<thread>/
+# that is a PNG written since $Since qualifies. Returns '' when not certain.
+function Find-CodexGeneratedImage([string]$Trace, [datetime]$Since) {
+    if (-not (Test-Path -LiteralPath $Trace -PathType Leaf)) { return '' }
+    $raw = Get-Content -LiteralPath $Trace -Raw -Encoding UTF8
+    if ($raw -notmatch '"thread_id"\s*:\s*"(?<t>[0-9a-fA-F-]{36})"') { return '' }
+    $thread = $Matches.t
+    $codexHome = if ($env:CODEX_HOME) { $env:CODEX_HOME } else { Join-Path $HOME '.codex' }
+    $dir = Join-Path (Join-Path $codexHome 'generated_images') $thread
+    $names = @([regex]::Matches($raw, 'generated_images[\\/]+' + [regex]::Escape($thread) + '[\\/]+(?<f>[A-Za-z0-9._-]+\.png)') | ForEach-Object { $_.Groups['f'].Value })
+    for ($i = $names.Count - 1; $i -ge 0; $i--) {
+        $file = Join-Path $dir $names[$i]
+        if (-not (Test-Path -LiteralPath $file -PathType Leaf)) { continue }
+        $item = Get-Item -LiteralPath $file
+        if ($item.Length -lt 8 -or $item.LastWriteTime -lt $Since) { continue }
+        $head = [byte[]]::new(8)
+        $stream = [IO.File]::OpenRead($file); try { [void]$stream.Read($head, 0, 8) } finally { $stream.Dispose() }
+        if (($head -join ',') -eq '137,80,78,71,13,10,26,10') { return $file }
+    }
+    return ''
+}

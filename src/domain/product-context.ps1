@@ -38,6 +38,9 @@ details: what is clearly visible and must be preserved, in this order, and nothi
 4. Material and markings: material, finish, pattern. Photo watermarks, corner logos, seller stamps and website overlays are not product markings: leave them out.
 Leave out what is unclear or hidden and say which parts are unclear.
 
+STEP 3B - LETTERING
+lettered: true only when the product is a made-to-order lettered item whose photo shows SAMPLE customer lettering that a buyer would replace (e.g. neon name/logo/wedding/gym/shop sign reading "Your Name", "YOUR LOGO", "Your Shop Name"). false when the words are fixed art of the design (BEER, DJ, OPEN, Karaoke) or there is no text.
+
 STEP 4 - LIMITS
 Do not invent brand names, ownership, specifications, performance or customer experiences.
 If the image does not show an identifiable product, return {"error":"product not identifiable"}.
@@ -56,7 +59,7 @@ function Resolve-ProductContext([string]$Handle, [string]$Reference, [string]$It
 function ConvertFrom-ProductClassification($raw) {
     try { $result = $raw | ConvertFrom-Json } catch { throw 'Invalid product classification; no image was generated.' }
     if ($result.error -or $result.category_key -isnot [string] -or $result.category_key -notmatch '^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$' -or $result.category_key.Length -gt 60 -or $result.presentation -notin @('worn', 'held', 'placed', 'vehicle')) { throw 'Product could not be classified reliably.' }
-    # Gemini sometimes returns details as an object ({geometry, supports, ...}) or a list instead of the numbered text; keep its content as text.
+    # The AI sometimes returns details as an object ({geometry, supports, ...}) or a list instead of the numbered text; keep its content as text.
     if ($result.details -is [pscustomobject] -or $result.details -is [array]) { $i = 0; $result.details = (@(if ($result.details -is [array]) { $result.details | ForEach-Object { "$_" } } else { $result.details.PSObject.Properties | ForEach-Object { $i++; "$i. $($_.Name): $($_.Value)" } }) -join "`n") }
     foreach ($field in @('product', 'details')) {
         if ($result.$field -isnot [string] -or -not $result.$field.Trim() -or $result.$field.Length -gt 1500) { throw "Invalid product classification field: $field" }
@@ -69,6 +72,7 @@ function ConvertFrom-ProductClassification($raw) {
         $context.product = $result.product
         $context.details = $result.details
         $context | Add-Member presentation 'worn' -Force
+        $context | Add-Member lettered ($result.lettered -eq $true) -Force
         return $context
     }
     [pscustomobject]@{
@@ -76,6 +80,7 @@ function ConvertFrom-ProductClassification($raw) {
         product = $result.product
         presentation = $result.presentation
         details = $result.details
+        lettered = ($result.lettered -eq $true)
         source_categories = @($result.category_key)
     }
 }

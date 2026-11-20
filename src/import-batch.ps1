@@ -10,10 +10,11 @@ $root = Split-Path $PSScriptRoot -Parent
 . (Join-Path $PSScriptRoot 'application/image-feedback.ps1')
 . (Join-Path $PSScriptRoot 'application/manual-references.ps1')
 . (Join-Path $PSScriptRoot 'application/batch-import.ps1')
-$status = [ordered]@{ done = 0; total = 0; links = @(); products = 0; reviews = 0; failed = @(); errors = @(); finished = $false }
+$status = [ordered]@{ done = 0; total = 0; links = @(); products = 0; reviews = 0; failed = @(); errors = @(); skipped = 0; finished = $false }
 $save = { if ($StatusFile) { [IO.File]::WriteAllText($StatusFile, (ConvertTo-Json -InputObject $status -Depth 4 -Compress), [Text.UTF8Encoding]::new($false)) } }
 try {
     $parsed = ConvertFrom-ProductBatch ([IO.File]::ReadAllText($File)) $Folder
+    $status.skipped = [int]$parsed.Skipped
     if (@($parsed.Errors).Count) { $status.errors = @($parsed.Errors) }
     else {
         $result = Import-ProductBatch $root $parsed.Rows { param($Done, $Total) $status.done = $Done; $status.total = $Total; & $save }

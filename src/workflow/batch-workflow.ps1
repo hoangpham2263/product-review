@@ -30,7 +30,7 @@ function Invoke-BatchWorkflow([string]$ProjectRoot, [string]$List, [string]$OutD
         # Upload right after this image is done, in parallel with other threads.
         # A failed upload leaves photo_url empty; the coordinator then retries it.
         $row = @($rows | Where-Object { $_ -and $_.PSObject.Properties['photo_path'] })[-1]
-        if ($row -and $script:Config.Results -and $row.photo_url -notmatch '^https://') {
+        if ($row -and -not $row.review_only -and $script:Config.Results -and $row.photo_url -notmatch '^https://') {
             try { $row = Complete-ResultDelivery $row }
             catch { Write-Warning "Upload kho kết quả sẽ thử lại sau: $($_.Exception.Message)" }
         }
@@ -50,7 +50,7 @@ function Invoke-BatchWorkflow([string]$ProjectRoot, [string]$List, [string]$OutD
         foreach ($item in $urls) { $jobsPerUrl[$item.Url] = 1 + [int]$jobsPerUrl[$item.Url] }
 
         $started = Get-Date
-        $script:Batch = New-Batch $OutDir
+        $script:Batch = New-Batch $OutDir -WarmCodex:([bool]($script:Config -and -not $script:Config.ReviewOnly -and ($script:Config.ImageBackend -in @($null, '', 'codex'))))
         Write-Lines $script:Batch.InputUrls $queue.Lines
         $completed = New-Object System.Collections.Generic.List[string]
         $results = New-Object System.Collections.Generic.List[object]
@@ -108,7 +108,7 @@ function Invoke-BatchWorkflow([string]$ProjectRoot, [string]$List, [string]$OutD
                 # The unwrapped message first: PowerShell 7 wraps Out-String error text mid-sentence.
                 @($inner; $_ | Out-String; $_.ScriptStackTrace; $job.PS.Streams.Error | Format-List * -Force | Out-String) |
                     Set-Content -LiteralPath $errorLog -Encoding UTF8
-                $causeTag = if ($inner -match '\[CAUSE:(RESULT_CONFIG|RESULT_UPLOAD|BRIDGE|AUTH|QUOTA|NETWORK|AI_TIMEOUT|BUSY|PROCESS_ACTIVE|STORE_LOCKED|PRODUCT_TIMEOUT|PRODUCT_NETWORK|PRODUCT_ACCESS|PRODUCT_NOT_FOUND|PRODUCT_DOWNLOAD|OUTPUT_MISSING|OUTPUT_INVALID|TOOL_ERROR)\]') { $Matches[0] + ' ' } else { '' }
+                $causeTag = if ($inner -match '\[CAUSE:(RESULT_CONFIG|RESULT_UPLOAD|AUTH|QUOTA|NETWORK|AI_TIMEOUT|BUSY|PROCESS_ACTIVE|STORE_LOCKED|PRODUCT_TIMEOUT|PRODUCT_NETWORK|PRODUCT_ACCESS|PRODUCT_NOT_FOUND|PRODUCT_DOWNLOAD|OUTPUT_MISSING|OUTPUT_INVALID|TOOL_ERROR)\]') { $Matches[0] + ' ' } else { '' }
                 # Warning formatting wraps long records, losing reset details in the UI's
                 # line reader. Emit the same WARNING prefix as one unwrapped log line.
                 Write-Host "WARNING: [ITEM $($job.Index)] Failed; ${causeTag}URL and source kept for retry. $inner" -ForegroundColor Yellow
@@ -123,12 +123,13 @@ function Invoke-BatchWorkflow([string]$ProjectRoot, [string]$List, [string]$OutD
             }
             if ($pending -gt 0) { Start-Sleep -Milliseconds 400 }
         }
+        $imageCount = $results.Count
         Complete-BatchExport $results (Join-Path $ProjectRoot 'data/names.txt')
-        Write-Host "`nDone: $($results.Count)/$($urls.Count) exported in $([int]((Get-Date) - $started).TotalSeconds)s" -ForegroundColor Green
+        Write-Host "`nDone: $imageCount/$($urls.Count) exported in $([int]((Get-Date) - $started).TotalSeconds)s" -ForegroundColor Green
         Write-Host "Results: $($script:Batch.Dir)"
         Write-Host "Pending: $List" -ForegroundColor DarkGray
-        if ($results.Count -lt $urls.Count) {
-            throw "Batch incomplete: $($urls.Count - $results.Count) URL(s) failed and remain queued. See $($script:Batch.Logs)"
+        if ($imageCount -lt $urls.Count) {
+            throw "Batch incomplete: $($urls.Count - $imageCount) URL(s) failed and remain queued. See $($script:Batch.Logs)"
         }
     } finally {
         if ($pool) { $pool.Close(); $pool.Dispose() }

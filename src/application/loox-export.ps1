@@ -14,7 +14,7 @@ function Get-ReviewedForExport([string[]]$BatchDirs) {
     if (-not $all.Count) { throw 'Chưa có ảnh nào để duyệt.' }
     $left = @($all | Where-Object { -not $_.Item.Decision })
     if ($left.Count) { throw "Còn $($left.Count) ảnh chưa duyệt." }
-    if (-not @($all | Where-Object { $_.Item.Decision -eq 'ok' }).Count) { throw 'Chưa có ảnh nào Đạt.' }
+    if (-not @($all | Where-Object { $_.Item.Decision -in @('ok', 'text') }).Count) { throw 'Chưa có đánh giá nào được giữ.' }
     return $all
 }
 
@@ -32,8 +32,9 @@ function Get-UnexportedBatchDirs([string]$OutputRoot) {
 # One Loox file for the runs given; returns its path (<ExportRoot>/loox_<time>.csv).
 function Export-ReviewedCsvMany([string[]]$BatchDirs, [string]$ExportRoot) {
     $all = Get-ReviewedForExport $BatchDirs
-    $ok = @($all | Where-Object { $_.Item.Decision -eq 'ok' })
-    $noLink = @($ok | Where-Object { [string]$_.Item.Row.photo_url -notmatch '^https://' })
+    $ok = @($all | Where-Object { $_.Item.Decision -in @('ok', 'text') })
+    # A review-only row has no image: its photo_url stays empty on purpose (Loox accepts an empty photo column).
+    $noLink = @($ok | Where-Object { $_.Item.Decision -ne 'text' -and -not $_.Item.ReviewOnly -and [string]$_.Item.Row.photo_url -notmatch '^https://' })
     if ($noLink.Count) { throw "[CAUSE:RESULT_UPLOAD] $($noLink.Count) ảnh Giữ chưa có link công khai (chạy ở chế độ chỉ lưu máy), Loox không đọc được. Chạy bằng nút Bắt đầu để ảnh được đưa lên kho kết quả." }
     $bare = @($ok | Where-Object { -not [string]$_.Item.Row.rating })
     if ($bare.Count) {
@@ -44,7 +45,13 @@ function Export-ReviewedCsvMany([string[]]$BatchDirs, [string]$ExportRoot) {
     $stamp = (Get-Date).ToString("yyyy-MM-dd_HH'h'mm'm'ss's'")
     $path = Join-Path $ExportRoot "loox_$stamp.csv"
     for ($n = 2; Test-Path -LiteralPath $path; $n++) { $path = Join-Path $ExportRoot "loox_$stamp-$n.csv" }
-    Save-Csv @($ok | ForEach-Object { $_.Item.Row }) $path
+    $exportRows = @(foreach ($entry in $ok) {
+        # Clear only the exported copy: keep the original image/link for comparison and changing the decision later.
+        $copy = $entry.Item.Row.PSObject.Copy()
+        if ($entry.Item.Decision -eq 'text') { $copy.photo_url = '' }
+        $copy
+    })
+    Save-Csv $exportRows $path
     foreach ($dir in $BatchDirs) { [IO.File]::WriteAllText((Join-Path $dir 'exported.txt'), $path, [Text.UTF8Encoding]::new($false)) }
     return $path
 }
