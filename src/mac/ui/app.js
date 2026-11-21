@@ -226,42 +226,37 @@ function buildMain() {
   // Sessions (several windows from one source, core/setup/session.mjs): the badge tells which window this is (number, session, Chrome profile)
   // and which Chrome tab group the next run will open, so a window can be matched to its tab group.
   ui.btnSessions = at(button("Các phiên"), null, 16, 100, 32, { right: 338, left: false });
-  // "Các phiên" panel: the windows open now, then the projects (ONE click opens the project's own window, or focuses it when it is already open).
-  // Closes on a click outside or Esc. The window title bar (Product Review · #stt · phiên · profile) says which window this is.
-  ui.sessionsPanel = at(el("div", "card"), null, 52, 470, null, { right: 24, left: false });
+  // "Các phiên" panel, minimal: ONE labelled combo of projects (+ "Phiên mặc định") and ONE button that opens that project's own window, or focuses it
+  // when it is already open. Closes on a click outside, Esc and right after a window is opened.
+  ui.sessionsPanel = at(el("div", "card"), null, 52, 300, null, { right: 24, left: false });
   Object.assign(ui.sessionsPanel.style, { zIndex: "30", display: "none", padding: "12px", background: "var(--surface)", border: "1px solid var(--line)" });
-  const heading = (text) => { const h = el("div", "", { text }); Object.assign(h.style, { fontWeight: "600", marginBottom: "6px" }); return h; };
-  ui.sessionsList = el("div");
-  const pHead = el("div"); Object.assign(pHead.style, { display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: "10px", paddingTop: "10px", borderTop: "1px solid var(--line)" });
-  const pTitle = heading("Mở cửa sổ cho dự án"); pTitle.style.marginBottom = "0";
-  ui.showAllProjects = checkbox("Hiện tất cả");
-  Object.assign(ui.showAllProjects.style, { position: "static", fontSize: "12px", whiteSpace: "nowrap", flex: "none", width: "96px", overflow: "visible", margin: "0" });
-  try { ui.showAllProjects.input.checked = localStorage.getItem("pr.sessions.showAll") === "1"; } catch {}
-  ui.showAllProjects.input.onchange = () => { try { localStorage.setItem("pr.sessions.showAll", ui.showAllProjects.input.checked ? "1" : "0"); } catch {} renderProjectChoices(); };
-  pHead.append(pTitle, ui.showAllProjects);
-  ui.projectChoices = el("div"); Object.assign(ui.projectChoices.style, { marginTop: "6px", maxHeight: "230px", overflowY: "auto" });
-  // "Khác...": an arbitrary session name, collapsed.
-  const other = el("div"); other.style.marginTop = "6px";
-  const otherToggle = button("Khác…"); Object.assign(otherToggle.style, { position: "static", height: "24px", fontSize: "12px" });
-  const otherBox = el("div"); Object.assign(otherBox.style, { display: "none", marginTop: "6px" });
-  ui.sessionName = el("input", "text", { placeholder: "vd: thu-nghiem (chữ thường, số, gạch ngang)", maxlength: "60" });
-  Object.assign(ui.sessionName.style, { position: "static", display: "block", width: "100%", height: "28px", marginBottom: "6px" });
-  ui.btnSessionOpen = button("Mở"); Object.assign(ui.btnSessionOpen.style, { position: "static", display: "block", height: "28px", minWidth: "90px" });
-  otherBox.append(ui.sessionName, ui.btnSessionOpen);
-  otherToggle.onclick = () => { otherBox.style.display = otherBox.style.display === "none" ? "" : "none"; };
-  other.append(otherToggle, otherBox);
-  const openByName = async () => {
-    const v = ui.sessionName.value.trim().toLowerCase();
-    if (!/^[a-z0-9][a-z0-9-]{0,59}$/.test(v)) return messageBox("Tên phiên chỉ gồm chữ thường, số và dấu gạch ngang (tối đa 60 ký tự).");
-    const res = await fetch("/api/sessions/open", { method: "POST", body: JSON.stringify({ name: v }) }).then((x) => x.json()).catch((e) => ({ error: e.message }));
-    if (res.error) return messageBox(res.error);
-    ui.sessionName.value = ""; ui.sessionsPanel.style.display = "none";
+  const pickLabel = el("div", "muted", { text: "Dự án" }); Object.assign(pickLabel.style, { fontSize: "11px", marginBottom: "2px" });
+  ui.sessionPick = combo();
+  Object.assign(ui.sessionPick.style, { position: "static", display: "block", width: "100%", height: "32px", marginBottom: "8px" });
+  ui.btnSessionOpen = button("Mở cửa sổ", true);
+  Object.assign(ui.btnSessionOpen.style, { position: "static", display: "block", width: "100%", height: "32px" });
+  ui.sessionsPanel.append(pickLabel, ui.sessionPick, ui.btnSessionOpen);
+  const pickedInfo = () => ui.sessionPick.selectedOptions[0]?._info || null;
+  const refreshPickButton = () => {
+    const info = pickedInfo();
+    ui.btnSessionOpen.textContent = info && info.window ? "Chuyển sang cửa sổ #" + info.stt : "Mở cửa sổ";
+    ui.btnSessionOpen.disabled = !info || !!info.busy || !!info.current;
+    ui.btnSessionOpen.title = !info ? "" : info.busy ? "Đang được phiên " + info.busy + " dùng" : info.current ? "Đây là cửa sổ này" : "";
   };
-  ui.btnSessionOpen.onclick = openByName;
-  ui.sessionName.addEventListener("keydown", (e) => { if (e.key === "Enter") openByName(); });
-  ui.sessionsNote = el("div", "muted"); Object.assign(ui.sessionsNote.style, { fontSize: "11px", marginTop: "10px", paddingTop: "8px", borderTop: "1px solid var(--line)" });
-  ui.sessionsPanel.append(heading("Các phiên đang mở"), ui.sessionsList, pHead, ui.projectChoices, other, ui.sessionsNote);
-  ui.btnSessions.onclick = () => { const open = ui.sessionsPanel.style.display !== "none"; ui.sessionsPanel.style.display = open ? "none" : ""; if (!open) { renderSessions(); refreshSessionBadge(); } };
+  const openPicked = async () => {
+    const info = pickedInfo();
+    if (!info || info.busy || info.current) return;
+    try { localStorage.setItem("pr.sessions.last", info.value); } catch {}
+    const body = info.value === "__default" ? { name: "" } : { project: info.value };
+    const res = await fetch("/api/sessions/open", { method: "POST", body: JSON.stringify(body) }).then((x) => x.json()).catch((e) => ({ error: e.message }));
+    if (res.error) return messageBox(res.error);
+    ui.sessionsPanel.style.display = "none";
+  };
+  ui.sessionPick.onchange = () => { const info = pickedInfo(); if (info) { try { localStorage.setItem("pr.sessions.last", info.value); } catch {} } refreshPickButton(); };
+  ui.sessionPick.ondblclick = openPicked;
+  ui.sessionPick.addEventListener("keydown", (e) => { if (e.key === "Enter") openPicked(); });
+  ui.btnSessionOpen.onclick = openPicked;
+  ui.btnSessions.onclick = () => { const open = ui.sessionsPanel.style.display !== "none"; ui.sessionsPanel.style.display = open ? "none" : ""; if (!open) loadSessionPicker(); };
   document.addEventListener("mousedown", (e) => { if (ui.sessionsPanel.style.display !== "none" && !ui.sessionsPanel.contains(e.target) && e.target !== ui.btnSessions) ui.sessionsPanel.style.display = "none"; });
   document.addEventListener("keydown", (e) => { if (e.key === "Escape") ui.sessionsPanel.style.display = "none"; });
   header.append(ui.btnReload, ui.btnSetup, ui.btnUpdate, ui.syncLabel, ui.syncBar, ui.btnSessions, ui.sessionsPanel);
@@ -486,51 +481,28 @@ async function refreshSessionBadge() {
   if (!j || j.error) return;
   sessionState = j;
   document.title = j.title; // the window title bar: Product Review · #stt · phiên · profile (shown once, nowhere else)
-  if (ui.sessionsNote) { const g = j.next_group || {}; ui.sessionsNote.textContent = j.profile_label === "Chrome riêng" ? "Chrome riêng: lượt chạy không có nhóm tab." : "Nhóm tab Chrome của lượt chạy tới: " + (g.name || ""); }
 }
-let projectChoicesData = [];
-async function loadProjectChoices() {
-  const r = await fetch("/api/sessions/projects").then((x) => x.json()).catch(() => ({ projects: [] }));
-  projectChoicesData = r.projects || [];
-  renderProjectChoices();
-}
-// The default view: projects no live window uses AND that still have unused products (or were never scanned). "Hiện tất cả" adds the open and the finished ones.
-function renderProjectChoices() {
-  const all = ui.showAllProjects.input.checked;
-  const shown = projectChoicesData.filter((p) => all || (!p.busy && !p.window_open && (!p.scanned || p.unused > 0)));
-  const rows = shown.map((p) => {
-    const stateText = p.window_open ? (p.current ? "cửa sổ này" : "đang mở #" + p.window_stt) : p.busy ? "đang dùng bởi phiên " + p.busy : "rảnh";
+async function loadSessionPicker() {
+  const [pr, ss] = await Promise.all([fetch("/api/sessions/projects").then((x) => x.json()).catch(() => ({ projects: [] })), fetch("/api/sessions").then((x) => x.json()).catch(() => ({ sessions: [] }))]);
+  const projects = pr.projects || [], def = (ss.sessions || []).find((e) => e.session === "");
+  const entry = (value, label, info = {}) => ({ value, label, ...info });
+  const free = [], open = [], used = [], busy = [];
+  for (const p of projects) {
     const count = p.scanned ? p.unused + "/" + p.products + " chưa dùng" : "chưa quét";
-    const row = button((p.name || p.id) + " · " + count + " · " + stateText);
-    const blocked = !!p.busy && !p.window_open;
-    Object.assign(row.style, { position: "static", display: "block", width: "100%", textAlign: "left", margin: "0 0 4px", height: "auto", minHeight: "28px", padding: "4px 8px", whiteSpace: "normal", lineHeight: "1.3", fontWeight: p.current ? "600" : "400", opacity: blocked ? "0.55" : "1", cursor: blocked || p.current ? "default" : "pointer" });
-    row.title = (p.site || p.id) + (blocked ? " — đang được phiên khác dùng" : p.window_open ? " — bấm để chuyển sang cửa sổ này" : " — bấm để mở cửa sổ riêng cho dự án này");
-    row.disabled = blocked;
-    row.onclick = async () => {
-      if (p.current) return;
-      const res = await fetch("/api/sessions/open", { method: "POST", body: JSON.stringify({ project: p.id }) }).then((x) => x.json()).catch((e) => ({ error: e.message }));
-      if (res.error) return messageBox(res.error);
-      ui.sessionsPanel.style.display = "none";
-    };
-    return row;
-  });
-  if (!rows.length) { const none = el("div", "muted", { text: all ? "Chưa có dự án." : "Không có dự án chưa dùng. Bật Hiện tất cả để xem cả dự án đang mở hoặc đã dùng hết." }); none.style.fontSize = "12px"; rows.push(none); }
-  ui.projectChoices.replaceChildren(...rows);
-}
-async function renderSessions() {
-  const r = await fetch("/api/sessions").then((x) => x.json()).catch(() => ({ sessions: [] }));
-  const rows = [];
-  for (const s of r.sessions || []) {
-    const row = button("#" + s.stt + " · " + s.label + " · " + (s.profile_label || "?") + (s.project && s.project !== s.session ? " · dự án " + s.project : "") + " · " + (s.running ? "đang chạy" : "rảnh") + (s.current ? " (cửa sổ này)" : ""));
-    Object.assign(row.style, { position: "static", display: "block", width: "100%", textAlign: "left", margin: "0 0 4px", height: "auto", minHeight: "28px", padding: "4px 8px", whiteSpace: "normal", lineHeight: "1.3", fontWeight: s.current ? "600" : "400", cursor: s.current ? "default" : "pointer" });
-    row.title = s.current ? "Cửa sổ này" : "Chuyển sang cửa sổ này";
-    row.onclick = async () => { if (s.current) return; await fetch("/api/sessions/open", { method: "POST", body: JSON.stringify({ name: s.session }) }).catch(() => {}); ui.sessionsPanel.style.display = "none"; };
-    rows.push(row);
+    if (p.window_open) open.push(entry(p.id, (p.name || p.id) + " · đang mở #" + p.window_stt, { window: true, stt: p.window_stt, current: p.current }));
+    else if (p.busy) busy.push(entry(p.id, (p.name || p.id) + " · đang dùng bởi phiên " + p.busy, { busy: p.busy }));
+    else if (p.scanned && p.unused === 0) used.push(entry(p.id, (p.name || p.id) + " · hết (" + count + ")"));
+    else free.push(entry(p.id, (p.name || p.id) + " · " + count));
   }
-  ui.sessionsList.replaceChildren(...rows);
-  loadProjectChoices();
+  const items = [entry("__default", "Phiên mặc định" + (def ? " · đang mở #" + def.stt : ""), def ? { window: true, stt: def.stt, current: def.current } : {}), ...free, ...open, ...used, ...busy];
+  ui.sessionPick.replaceChildren(...items.map((it) => { const o = new Option(it.label, it.value); o._info = it; o.disabled = !!it.busy; o.title = it.label; return o; }));
+  // the project picked last time when it is still there, else the first free project, else the default window
+  let last = ""; try { last = localStorage.getItem("pr.sessions.last") || ""; } catch {}
+  const wanted = items.find((it) => it.value === last && !it.busy) || free[0] || items[0];
+  ui.sessionPick.value = wanted.value;
+  refreshPickButton();
 }
-setInterval(() => { refreshSessionBadge(); if (ui.sessionsPanel && ui.sessionsPanel.style.display !== "none") renderSessions(); }, 5000);
+setInterval(refreshSessionBadge, 5000);
 
 async function loadState() {
   await refreshSessionBadge();
