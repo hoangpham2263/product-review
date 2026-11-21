@@ -1011,6 +1011,7 @@ function showProjectsDialog(pick = "") {
       item.append(
         el("div", "", { text: p.name || p.id, style: oneLine({ fontSize: "13px" }) }),
         el("div", "label muted", { text: `${p.products} sản phẩm · đã dùng ${p.used}/${p.products}`, style: oneLine({ position: "static", fontSize: "12px" }) }),
+        el("div", "label muted", { text: `Đã chuẩn bị: ${p.prepared || 0} sẵn sàng`, style: oneLine({ position: "static", fontSize: "12px" }) }),
         el("div", "label muted", { text: `Quét: ${fmtStamp(p.last_scan)}`, style: oneLine({ position: "static", fontSize: "12px" }) }),
         el("div", "label muted", { text: `Review: ${fmtStamp(p.last_reviews_check)}`, style: oneLine({ position: "static", fontSize: "12px" }) }),
       );

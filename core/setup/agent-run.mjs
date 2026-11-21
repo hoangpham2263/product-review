@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { platform as osPlatform } from "node:os";
 import { localChromeProfiles, extensionToken } from "./flow-browser.mjs";
+import { WINDOW_SIZE } from "./flow-login.mjs";
 import { claimLock, releaseLocks, takeGroup, sessionLabel, readSeededJson } from "./session.mjs";
 
 // 0 = no limit: a run ends when Claude finishes, so a long batch is never cut off half way. Set minutes / maxTurns above 0 to cap a run.
@@ -112,13 +113,18 @@ export function friendlyTool(name, input = {}, mode = "flow") {
 // profile must be open; the person clicks Connect). The run's tabs go into one named Chrome tab group.
 export function mcpConfig({ plat = osPlatform(), profile, headless = true, extension = null } = {}) {
   if (extension) {
+    // Background mode (PLAYWRIGHT_MCP_BACKGROUND=1 = the --background flag of Playwright MCP 0.0.86+, checked in its cdpRelay/browserModel
+    // source; the env var is used because an older cached version would refuse an unknown flag): Page.bringToFront / Target.activateTarget become
+    // no-ops (page.bringToFront() and browser_tabs select never raise Chrome), new tabs open with active:false, the extension skips its
+    // chrome.windows.update({ focused: true }) after Connect, and with a token the Connect page opens with --open-in-background. Without it
+    // every run pulled Chrome to the front while the person worked in other apps (worse with several windows running).
     const a = ["@playwright/mcp@latest", "--extension", ...(extension.profile ? ["--profile-dir-name", extension.profile] : []), "--session-name", extension.name || "Product Review", "--session-color", extension.color || "blue"];
     const server = plat === "win32" ? { command: "cmd", args: ["/c", "npx", ...a] } : { command: "npx", args: a };
-    if (extension.profile) server.env = { PLAYWRIGHT_MCP_PROFILE_DIR_NAME: extension.profile };
+    server.env = { ...(extension.profile ? { PLAYWRIGHT_MCP_PROFILE_DIR_NAME: extension.profile } : {}), PLAYWRIGHT_MCP_BACKGROUND: "1" };
     return { mcpServers: { playwright: server } };
   }
   if (!profile) throw new Error("mcpConfig needs the own Chrome profile folder.");
-  const args = ["@playwright/mcp@latest", "--browser", "chrome", "--user-data-dir", profile, ...(headless ? ["--headless"] : []), "--viewport-size", "1280x900"];
+  const args = ["@playwright/mcp@latest", "--browser", "chrome", "--user-data-dir", profile, ...(headless ? ["--headless"] : []), "--viewport-size", `${WINDOW_SIZE.width}x${WINDOW_SIZE.height}`];
   const server = plat === "win32" ? { command: "cmd", args: ["/c", "npx", ...args] } : { command: "npx", args };
   return { mcpServers: { playwright: server } };
 }
@@ -129,7 +135,8 @@ export const extensionNote = ({ groupName = "Product Review", session = "default
   ? `RUN-NOW NOTE: this run uses the person's everyday Chrome through the Playwright extension. The extension token of this Chrome profile is set, so the connection is AUTOMATIC: there is no Connect click and nobody needs to click anything. Your tabs go into the Chrome tab group named "${groupName}" (session "${session}").
 If the browser tools fail at the start: the Chrome window of that profile may still be opening; call browser_tabs about every 10 seconds for up to 1 minute. Still nothing: stop and report that Chrome did not connect (CAUSE:BROWSER; the saved token may be outdated: the person can save the current one or clear it in the app).`
   : `RUN-NOW NOTE: this run uses the person's everyday Chrome through the Playwright extension, so the person is at the computer and will click Connect in Chrome. Your tabs go into the Chrome tab group named "${groupName}" (session "${session}").
-If browser_tabs shows only a Welcome / connect.html tab, or the browser tools fail: the Playwright MCP has ALREADY opened that page, do NOT open a second copy; bring it to the front with browser_run_code_unsafe: async (page) => { await page.bringToFront(); } and tell the person in one line to click Connect. Then wait up to 3 minutes, calling browser_tabs about every 15 seconds, until a real page tab appears. If nothing connects, stop and report that Chrome did not connect (CAUSE:BROWSER).`) + `
+If browser_tabs shows only a Welcome / connect.html tab, or the browser tools fail: the Playwright MCP has ALREADY opened that page, do NOT open a second copy and do not bring it to the front; tell the person in one line to click Connect in Chrome. Then wait up to 3 minutes, calling browser_tabs about every 15 seconds, until a real page tab appears. If nothing connects, stop and report that Chrome did not connect (CAUSE:BROWSER).`) + `
+NEVER STEAL FOCUS: the person keeps working in other apps (often with several windows of this tool running). Never bring Chrome to the front, focus or activate a tab or window: no page.bringToFront, no browser_tabs select just to show a tab, no new windows. Your tabs run in the background in their tab group and a hidden tab is normal. Wait with page.waitForTimeout (Node side), never requestAnimationFrame or page-side timer loops; scroll with window.scrollBy, never page.mouse.wheel. If a click times out on "element is not stable" (a background tab gets no animation frames), do that click in browser_run_code_unsafe with locator.click({ force: true }); uploads (setInputFiles), typing and downloads work in the background.
 CLEAN UP FIRST (once, at the very start): close only leftover tabs that clearly belong to an OLD Chrome tab group of this same session (a group whose title starts with "Product Review · ${session} ·" but is not "${groupName}"). Never close any other tab, never touch the person's own tabs; if you cannot tell which tabs belong to an old group, close nothing.
 Downloads (the Downloads folder is shared by EVERY window of this machine, so two windows must never download at the same moment): around EACH download hold the machine-wide download lock: "node core/flow-pace.mjs download-lock acquire --tag <item id>" (it blocks until free), click the download button, move the NEW file from the Downloads folder AT ONCE into ${downloadsDir || "your own session folder"} and rename it "<item id>.<ext>", check it is the right picture (expected size, the prompt tile you submitted), then "node core/flow-pace.mjs download-lock release --tag <item id>". Never take a file you did not just download yourself. This mode cannot use download.saveAs.
 HUMAN PACING: before EVERY prompt you submit in Google Flow run: node core/flow-pace.mjs gate --tag <item id> (it waits the human-like time by itself; submit right after it returns; never several prompts behind one gate).

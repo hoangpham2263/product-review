@@ -156,6 +156,8 @@ function Get-ProjectSummary([string]$Dir) {
         id = [string]$info.id; name = [string]$info.name; site = [string]$info.site; dir = $Dir; csv = (Join-Path $Dir 'products.csv')
         products = $rows.Count; used = @($rows | Where-Object { Test-UsedFlag $_.used }).Count
         with_reviews = @($rows | Where-Object { [string]$_.reviews_checked_at }).Count
+        # Chuẩn bị trước: rows of prepared.csv still "ready" (not yet taken by the queue)
+        prepared = $(try { $pf = Join-Path $Dir 'prepared.csv'; if (Test-Path -LiteralPath $pf) { @(Import-Csv -LiteralPath $pf -Encoding UTF8 | Where-Object { [string]$_.status -eq 'ready' }).Count } else { 0 } } catch { 0 })
         collections = $per; created = [string]$info.created; last_scan = [string]$info.last_scan; last_reviews_check = [string]$info.last_reviews_check
         max_per_collection = $(if ($info.max_per_collection) { [int]$info.max_per_collection } else { 20 })
     }

@@ -62,6 +62,11 @@ export function profileGoogleAccounts(profileDir, { read = (f) => readFileSync(f
 }
 
 // The URL the sign-in window opens: with a chosen account, Google's account chooser pre-selecting that signed-in account, then Flow.
+// The size and place of every Chrome window the tool opens: compact, not covering the whole screen, never narrower than ~1024x700 (narrower
+// windows switch Flow and shop sites to their mobile layouts and cramp Flow). Chrome reads these switches when it STARTS a window of a new
+// instance (the own profile); a window added to an already running everyday Chrome may keep that Chrome's last size.
+export const WINDOW_SIZE = { width: 1280, height: 800 };
+export const WINDOW_ARGS = [`--window-size=${WINDOW_SIZE.width},${WINDOW_SIZE.height}`, "--window-position=80,60"];
 export const flowOpenUrl = (email = "") => (/^[^\s@"<>]+@[^\s@"<>]+\.[^\s@"<>]+$/.test(email) ? `https://accounts.google.com/AccountChooser?Email=${encodeURIComponent(email)}&continue=${encodeURIComponent("https://flow.google.com/")}` : FLOW_URL);
 export function createFlowLogin({ workspace, runActive = () => false, plat = process.platform, spawnFn = spawn, fetchFn = fetch, now = () => Date.now() }) {
   const dir = profileDirOf(workspace);
@@ -119,7 +124,7 @@ export function createFlowLogin({ workspace, runActive = () => false, plat = pro
     if (opened && now() - opened < 5000) return { ok: false, status: 429, error: "Vừa mở xong, chờ vài giây." };
     try {
       mkdirSync(dir, { recursive: true });
-      const p = spawnFn(chrome, [`--user-data-dir=${dir}`, "--no-first-run", "--no-default-browser-check", flowOpenUrl(chosenAccount())], { detached: true, stdio: "ignore" });
+      const p = spawnFn(chrome, [`--user-data-dir=${dir}`, "--no-first-run", "--no-default-browser-check", ...WINDOW_ARGS, flowOpenUrl(chosenAccount())], { detached: true, stdio: "ignore" });
       p.on?.("error", () => {}); p.unref?.(); opened = now(); cache = null;
       return { ok: true, status: 200 };
     } catch (e) { return { ok: false, status: 500, error: String(e.message || e).slice(0, 200) }; }

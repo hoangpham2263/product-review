@@ -14,7 +14,7 @@ import { createConfigApi } from "../../core/setup/config-api.mjs";
 import { createAgentRunner, buildPrompt, newRunId, readFlowAccount, FEATURE } from "../../core/setup/agent-run.mjs";
 import { readFlowBrowser, saveFlowBrowser, localChromeProfiles, tokenProfiles, saveExtensionToken } from "../../core/setup/flow-browser.mjs";
 import { currentSession, sessionLabel, sessionWorkspace, sharedWorkspace, registerSession, updateSession, unregisterSession, listSessions, lockHolder, releaseLocks, peekGroup, sessionTitle, profileLabelOf, projectBusyBy, setSessionProject, claimProjectFocus, readSeededJson, updateJsonLocked, SESSION_RE } from "../../core/setup/session.mjs";
-import { createFlowLogin, profileDirOf, profileGoogleAccounts, findChrome, flowOpenUrl } from "../../core/setup/flow-login.mjs";
+import { createFlowLogin, profileDirOf, profileGoogleAccounts, findChrome, flowOpenUrl, WINDOW_ARGS } from "../../core/setup/flow-login.mjs";
 import { PWSH, toolEnv, psFile, psCommand, killTree, appWindow, chooseFiles } from "../../core/platform.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -609,7 +609,7 @@ async function handle(req, res) {
       if (!localChromeProfiles().profiles.some((p) => p.folder === folder)) return send(res, 400, { error: "Profile này không có trên máy." });
       const chrome = findChrome();
       if (!chrome) return send(res, 400, { error: "Không tìm thấy Google Chrome (đặt PR_CHROME_PATH nếu cài ở chỗ khác)." });
-      const child = spawn(chrome, ["--profile-directory=" + folder, "https://chromewebstore.google.com/detail/playwright-mcp-bridge/mmlmfjhmonkocbjadbfplnigmagldckm"], { detached: true, stdio: "ignore" });
+      const child = spawn(chrome, ["--profile-directory=" + folder, ...WINDOW_ARGS, "https://chromewebstore.google.com/detail/playwright-mcp-bridge/mmlmfjhmonkocbjadbfplnigmagldckm"], { detached: true, stdio: "ignore" });
       child.on("error", () => {}); child.unref();
       return send(res, 200, { ok: true, profile: folder });
     } catch (e) { return send(res, 400, { error: e.message }); }
@@ -711,7 +711,7 @@ function openEverydayChrome(browser) {
   try { account = String(readSeededJson(join(workspace, "config", "run-settings.json"), join(sharedWs, "config", "run-settings.json"), {}).flowAccount || ""); } catch {}
   if (account && p.accounts && p.accounts.length && !p.accounts.includes(account.toLowerCase())) account = "";
   try {
-    const child = spawn(chrome, ["--profile-directory=" + p.folder, flowOpenUrl(account)], { detached: true, stdio: "ignore" });
+    const child = spawn(chrome, ["--profile-directory=" + p.folder, ...WINDOW_ARGS, flowOpenUrl(account)], { detached: true, stdio: "ignore" });
     child.on("error", () => {}); child.unref(); everydayOpened = Date.now();
     return [200, { ok: true, profile: p.folder, account }];
   } catch (e) { return [500, { error: String(e.message || e).slice(0, 200) }]; }
