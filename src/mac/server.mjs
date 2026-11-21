@@ -246,7 +246,6 @@ async function handle(req, res) {
   if (path === "/api/session/project" && req.method === "POST") {
     const b = JSON.parse((await body(req)).toString("utf8") || "{}");
     let project = String(b.project || "").trim().toLowerCase();
-    if (project === LOOSE) project = "";
     if (agent.isActive() || light.isActive()) return send(res, 409, { error: "Đang có một lượt chạy trong cửa sổ này: chờ xong hoặc bấm Dừng rồi đổi dự án." });
     if (lockedProject && project !== lockedProject) return send(res, 409, { error: "Cửa sổ này dành riêng cho dự án " + lockedProject + ". Mở cửa sổ khác từ Các phiên để làm dự án khác." });
     if (project && !projectExists(project)) return send(res, 400, { error: "Chọn một dự án có sẵn." });
@@ -581,8 +580,7 @@ function alignFlowAccount(browser) {
 let self = null; // this window's registry entry, once the server listens
 function profileLabel() { try { const b = readFlowBrowser(workspace, sharedWs); return profileLabelOf(b, localChromeProfiles().profiles); } catch { return ""; } }
 // ----- the project this window works on (registry field project): none at start ("mặc định", as before) until the person picks one in the Dự án popup;
-// "Lẻ" (__loose) gives it back. A window opened for a project (session named after it) stays locked to it.
-const LOOSE = "__loose";
+// an empty project gives it back ("Bỏ chọn dự án"). A window opened for a project (session named after it) stays locked to it.
 const lockedProject = /^[a-z0-9][a-z0-9-]{1,60}$/.test(process.env.PR_PROJECT || "") && process.env.PR_PROJECT === session ? process.env.PR_PROJECT : "";
 const projectExists = (id) => /^[a-z0-9][a-z0-9-]{1,60}$/.test(id) && existsSync(join(sharedWs, "projects", id, "project.json"));
 function projectNameOf(id) { try { return JSON.parse(readFileSync(join(sharedWs, "projects", id, "project.json"), "utf8").replace(/^\uFEFF/, "")).name || id; } catch { return id; } }
@@ -591,7 +589,7 @@ function initFocus() {
   claimProjectFocus(root, session, process.pid, lockedProject || "");
 }
 // every project action of this window acts on the focused project: a request for another one is refused (no stale selection)
-const focusMismatch = (id) => { const f = selfProject(); return f === id ? "" : f ? "Dự án đang chọn của cửa sổ này là " + f + ", không phải " + id + ". Chọn lại dự án trong cửa sổ Dự án." : "Cửa sổ này đang ở chế độ Lẻ (không thuộc dự án). Chọn một dự án trong cửa sổ Dự án trước."; };
+const focusMismatch = (id) => { const f = selfProject(); return f === id ? "" : f ? "Dự án đang chọn của cửa sổ này là " + f + ", không phải " + id + ". Chọn lại dự án trong cửa sổ Dự án." : "Cửa sổ này chưa chọn dự án. Chọn một dự án trong cửa sổ Dự án trước."; };
 function selfProject() { try { return listSessions(root).find((e) => e.pid === process.pid)?.project || ""; } catch { return ""; } }
 function sessionInfo() {
   const label = profileLabel();
@@ -643,19 +641,25 @@ function csvCounts(text) {
 const recentFile = join(sharedWs, "config", "recent-projects.json");
 function readRecent() { try { return JSON.parse(readFileSync(recentFile, "utf8")); } catch { return {}; } }
 function touchRecent(id) { try { updateJsonLocked(recentFile, (all) => { all[id] = new Date().toISOString(); return all; }, {}); } catch {} }
+// ONE place decides who holds project n, for every endpoint: a live window whose focus (registry field project) is n, or a window named after n,
+// else a run lock of another session. current = it is THIS window.
+function projectHolder(live, n) {
+  const w = live.find((e) => e.project === n) || live.find((e) => e.session === n);
+  if (w) return { session: w.session, label: w.session || "mặc định", stt: w.stt, current: w.pid === process.pid, via: "window" };
+  const h = lockHolder(root, "project", n, session);
+  return h ? { session: h.session, label: h.session || "mặc định", stt: 0, current: false, via: "run" } : null;
+}
 function projectChoices(live) {
   const base = join(sharedWs, "projects");
   let names = []; try { names = readdirSync(base); } catch { return []; }
-  const open = new Set(live.map((e) => e.session));
   return names.filter((n) => /^[a-z0-9][a-z0-9-]{1,60}$/.test(n) && existsSync(join(base, n, "project.json"))).map((n) => {
     let info = {}; try { info = JSON.parse(readFileSync(join(base, n, "project.json"), "utf8").replace(/^\uFEFF/, "")); } catch {}
-    const mine = live.some((e) => e.project === n && e.pid === process.pid);
-    const other = live.find((e) => e.project === n && e.pid !== process.pid), holder = other ? null : lockHolder(root, "project", n, session);
-    const busy = other ? { session: other.session, via: "window" } : holder ? { session: holder.session, via: "run" } : null;
+    const h = projectHolder(live, n);
     const { products, unused, scanned } = projectCounts(n);
     const recent = readRecent()[n] || info.updated || info.last_scan || "";
-    const window = live.find((e) => e.session === n);
-    return { id: n, name: info.name || n, site: info.site || "", products, unused, used: products - unused, scanned, mine, recent, busy: busy ? busy.session : "", busy_via: busy ? busy.via : "", window_open: open.has(n), window_stt: window ? window.stt : 0, current: window ? window.pid === process.pid : false };
+    return { id: n, name: info.name || n, site: info.site || "", products, unused, used: products - unused, scanned, recent,
+      window_open: !!h && h.via === "window", window_stt: h ? h.stt : 0, current: !!h && h.current, mine: !!h && h.current,
+      busy: h && !h.current ? h.label : "", busy_via: h && !h.current ? h.via : "" };
   }).sort((a, b) => String(b.recent).localeCompare(String(a.recent)) || a.id.localeCompare(b.id));
 }
 function syncRegistry() { try { if (self) updateSession(root, session, process.pid, { profile_label: profileLabel(), running: agent.isActive() || light.isActive() }); } catch {} }

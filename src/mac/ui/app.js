@@ -826,7 +826,11 @@ function showProjectsDialog(pick = "") {
   const view = openWindow("Dự án", 900, 520);
   const fmtStamp = (s) => (s ? `${s.slice(8, 10)}/${s.slice(5, 7)} ${s.slice(11, 16)}` : "chưa có");
   const oneLine = (style = {}) => Object.assign({ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }, style);
-  const listTitle = at(label("Dự án của bạn", "muted"), 16, 14, 250, 20);
+  const listTitle = at(label("Dự án của bạn", "muted"), 16, 14, 150, 20);
+  const unpick = at(button("Bỏ chọn dự án"), 160, 10, 106, 24);
+  Object.assign(unpick.style, { fontSize: "12px" });
+  unpick.title = "Cửa sổ này thôi làm dự án đang chọn (nhả khóa dự án); tiêu đề về mặc định.";
+  unpick.onclick = () => selectProject("");
   const projectLine = at(label("", "muted"), 282, 14, 602, 20);
   Object.assign(projectLine.style, oneLine());
   const listBox = at(el("div", "flow"), 16, 40, 250, 340);
@@ -862,7 +866,7 @@ function showProjectsDialog(pick = "") {
   const openDir = at(button("Mở thư mục"), 612, 478, 100, 32);
   const stop = at(button("Dừng"), 721, 478, 70, 32);
   const close = at(button("Đóng"), 800, 478, 80, 32);
-  view.body.append(listTitle, projectLine, listBox, addWeb, catLabel, catBox, unusedOnly, countLabel, tableBox, status, queueHint, queueCount, sceneHint, sceneCount, scanBtn, reviewsBtn, queueBtn, prepBtn, openDir, stop, close);
+  view.body.append(listTitle, unpick, projectLine, listBox, addWeb, catLabel, catBox, unusedOnly, countLabel, tableBox, status, queueHint, queueCount, sceneHint, sceneCount, scanBtn, reviewsBtn, queueBtn, prepBtn, openDir, stop, close);
 
   // Two kinds of run can go at once: the main runner (scan / review count / the Flow run of Bắt đầu) and the LIGHT runner (queue, prep: no browser).
   let projects = [], current = "", data = null, timer = null, runningMain = "", runningLight = "", startedAt = 0, lightStarted = 0, ticks = 0, otherActive = false, otherLight = false, prepText = "", fastNote = "";
@@ -895,14 +899,8 @@ function showProjectsDialog(pick = "") {
   let prepShowIdle = true;
 
   const renderList = () => {
-    const loose = lockedProject ? [] : [(() => {
-      const item = el("div", "", { style: { padding: "8px 10px", borderBottom: "1px solid var(--line)", cursor: "pointer" } });
-      if (!current) item.style.background = "var(--hover)";
-      item.append(el("div", "", { text: "Lẻ (không thuộc dự án)", style: oneLine({ fontSize: "13px" }) }), el("div", "label muted", { text: "Sản phẩm gõ tay, không gắn dự án", style: oneLine({ position: "static", fontSize: "12px" }) }));
-      item.onclick = () => selectProject("");
-      return item;
-    })()];
-    listBox.replaceChildren(...loose, ...(projects.length ? projects.map((p) => {
+    unpick.style.display = current && !lockedProject ? "" : "none";
+    listBox.replaceChildren(...(projects.length ? projects.map((p) => {
       const item = el("div", "", { style: { padding: "8px 10px", borderBottom: "1px solid var(--line)", cursor: "pointer" } });
       if (p.id === current) item.style.background = "var(--hover)";
       item.append(
@@ -912,7 +910,8 @@ function showProjectsDialog(pick = "") {
         el("div", "label muted", { text: `Review: ${fmtStamp(p.last_reviews_check)}`, style: oneLine({ position: "static", fontSize: "12px" }) }),
       );
       item.title = p.site;
-      item.onclick = () => selectProject(p.id);
+      if (p.heldBy) { item.style.opacity = "0.55"; item.style.cursor = "default"; item.append(el("div", "label muted", { text: "Đang mở ở cửa sổ " + p.heldBy, style: oneLine({ position: "static", fontSize: "12px" }) })); }
+      item.onclick = () => { if (!p.heldBy) selectProject(p.id); };
       return item;
     }) : [el("div", "label muted", { text: "Chưa có dự án. Bấm Thêm web mới để quét web đầu tiên.", style: { position: "static", padding: "10px", whiteSpace: "normal" } })]));
   };
@@ -962,16 +961,18 @@ function showProjectsDialog(pick = "") {
   // The project of a window is the one selected here: another live window cannot take it (409 with the Vietnamese message).
   const selectProject = async (id) => {
     if (id === current) return;
-    const r = await fetch("/api/session/project", { method: "POST", body: JSON.stringify({ project: id || "__loose" }) }).then(async (x) => ({ ok: x.ok, ...(await x.json().catch(() => ({}))) })).catch(() => ({ ok: true }));
+    const r = await fetch("/api/session/project", { method: "POST", body: JSON.stringify({ project: id }) }).then(async (x) => ({ ok: x.ok, ...(await x.json().catch(() => ({}))) })).catch(() => ({ ok: true }));
     if (!r.ok) return say(r.error || "Dự án đang được phiên khác dùng.", "var(--error)");
     sessionState.project = id;
     await refreshSessionBadge(); // the window title follows the focus
     await choose(id);
+    await loadProjects(id, true); // the list shows the new holder at once
+    if (ui.sessionsPanel && ui.sessionsPanel.style.display !== "none") loadSessionPicker(); // and so does an open Các phiên panel
   };
   async function loadProjects(select = "", quiet = false) {
     try { projects = list(await api("projects")).filter((p) => !lockedProject || p.id === lockedProject); } catch (e) { projects = []; say(e.message, "var(--error)"); }
     // the counts shown everywhere come from ONE server function (/api/sessions/projects -> projectCounts), not from a second computation
-    try { const c = await fetch("/api/sessions/projects").then((x) => x.json()); for (const p of projects) { const m = (c.projects || []).find((x) => x.id === p.id); if (m) { p.products = m.products; p.used = m.used; } } } catch {}
+    try { const c = await fetch("/api/sessions/projects").then((x) => x.json()); for (const p of projects) { const m = (c.projects || []).find((x) => x.id === p.id); if (m) { p.products = m.products; p.used = m.used; p.heldBy = m.window_open && !m.current ? "#" + m.window_stt : m.busy && !m.current ? m.busy : ""; } } } catch {}
     // the focus decides: "Lẻ" stays Lẻ, a project stays itself (never the first of the list by accident)
     const want = !select && !sessionState.project ? "" : (projects.some((p) => p.id === select) ? select : (projects.some((p) => p.id === current) ? current : ""));
     if (quiet && want === current) { renderList(); return; }
