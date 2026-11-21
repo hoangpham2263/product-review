@@ -625,10 +625,11 @@ function syncRegistry() { try { if (self) updateSession(root, session, process.p
 function openSessionWindow(name, project = "") {
   try {
     const windows = process.platform === "win32";
-    const cmd = windows ? "powershell.exe" : "bash";
-    const args = windows ? ["-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File", join(root, "core", "launch.ps1"), "-Session", name, "-Project", project] : [join(root, "start-app.command"), name, project];
+    // Windows: the launcher must be started through `cmd /c start`. Started straight from Node, powershell.exe either exits at once (detached) or runs with its window hidden (windowsHide), so the session server ran but no window ever showed (verified); `start` gives it a normal start and -WindowStyle Hidden hides only the console.
+    const cmd = windows ? "cmd.exe" : "bash";
+    const args = windows ? ["/c", "start", "", "powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File", join(root, "core", "launch.ps1"), "-Session", name, "-Project", project] : [join(root, "start-app.command"), name, project];
     // Windows: detached:true makes powershell.exe exit at once without running launch.ps1 (verified), so the launcher is a normal hidden child; unref() lets this server exit independently.
-    const child = spawn(cmd, args, { cwd: root, detached: !windows, stdio: "ignore", windowsHide: true });
+    const child = spawn(cmd, args, { cwd: root, detached: !windows, stdio: "ignore", windowsHide: windows });
     child.on("error", () => {});
     child.unref();
     return { ok: true, session: name, label: sessionLabel(name) };
