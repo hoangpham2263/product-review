@@ -5,7 +5,7 @@ import { createServer } from "node:http";
 import { spawn, execFile } from "node:child_process";
 import { createInterface } from "node:readline";
 import { writeFile, mkdir, copyFile, rm, stat, appendFile, readFile } from "node:fs/promises";
-import { createReadStream, existsSync, mkdirSync, openSync, renameSync, statSync, appendFileSync, readdirSync, readFileSync } from "node:fs";
+import { createReadStream, existsSync, mkdirSync, openSync, renameSync, statSync, appendFileSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, dirname, extname, resolve, sep, basename } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -287,7 +287,7 @@ async function handle(req, res) {
   // another window or port and a cleared browser.
   if (path === "/api/run-settings") {
     const file = join(sharedWs, "config", "run-settings.json");
-    if (req.method === "GET") { try { const s = JSON.parse((await readFile(file, "utf8")).replace(/^﻿/, "")); if (s.imageBackend && !["codex", "agent"].includes(s.imageBackend)) s.imageBackend = "codex"; if (s.textBackend && !["codex", "antigravity", "claude"].includes(s.textBackend)) s.textBackend = "codex"; delete s.runMode; s.flowAccounts = profileGoogleAccounts(profileDirOf(workspace)); return send(res, 200, s); } catch { return send(res, 200, { flowAccounts: profileGoogleAccounts(profileDirOf(workspace)) }); } }
+    if (req.method === "GET") { try { const s = JSON.parse((await readFile(file, "utf8")).replace(/^﻿/, "")); if (s.imageBackend && !["codex", "agent"].includes(s.imageBackend)) s.imageBackend = "codex"; if (s.textBackend && !["codex", "antigravity", "claude"].includes(s.textBackend)) s.textBackend = "codex"; delete s.runMode; s.flowAccounts = flowAccountsFor(readFlowBrowser(sharedWs)); return send(res, 200, s); } catch { return send(res, 200, { flowAccounts: flowAccountsFor(readFlowBrowser(sharedWs)) }); } }
     if (req.method === "POST") {
       const given = JSON.parse((await body(req)).toString("utf8") || "{}"), saved = {};
       try { Object.assign(saved, JSON.parse((await readFile(file, "utf8")).replace(/^﻿/, ""))); } catch {}
@@ -417,7 +417,7 @@ async function handle(req, res) {
       return send(res, 200, { ok: true, profile: folder });
     } catch (e) { return send(res, 400, { error: e.message }); }
   }
-  if (path === "/api/flow-browser" && req.method === "POST") { try { const b = JSON.parse((await body(req)).toString("utf8") || "{}"); return send(res, 200, saveFlowBrowser(sharedWs, b)); } catch (e) { return send(res, 400, { error: e.message }); } }
+  if (path === "/api/flow-browser" && req.method === "POST") { try { const b = JSON.parse((await body(req)).toString("utf8") || "{}"); const saved = saveFlowBrowser(sharedWs, b); alignFlowAccount(saved); return send(res, 200, saved); } catch (e) { return send(res, 400, { error: e.message }); } }
   if (path === "/api/flow-login/status" && req.method === "GET") return send(res, 200, await flowLogin.status({ fresh: url.searchParams.get("fresh") === "1" }));
   if (path === "/api/flow-login/open" && req.method === "POST") { const h = lockHolder(root, "chrome", "own", session); if (h) return send(res, 409, { error: "Chrome riêng của tool đang được phiên \"" + sessionLabel(h.session) + "\" dùng: đóng nó trước." }); const r = flowLogin.open(); return send(res, r.status, r.ok ? { ok: true } : { error: r.error }); }
   if (path === "/api/agent/stop" && req.method === "POST") { const r = agent.stop(); return send(res, r.status, r.ok ? { ok: true } : { error: r.error }); }
@@ -480,6 +480,23 @@ function startMenuBar() {
 process.on("exit", () => { try { menuBar?.kill(); } catch {} try { agent.shutdown(); } catch {} try { releaseLocks(root, session); unregisterSession(root, session); } catch {} });
 for (const sig of ["SIGINT", "SIGTERM"]) process.on(sig, () => process.exit(0));
 
+// The Google accounts the Flow account combo may list: those signed in in the chosen Chrome profile (extension mode), or in the tool's own Chrome.
+function flowAccountsFor(browser) {
+  if (!browser || browser.mode === "own") return profileGoogleAccounts(profileDirOf(sharedWs));
+  const p = localChromeProfiles().profiles.find((x) => x.folder === browser.profile);
+  return p ? p.accounts : [];
+}
+// After the Chrome profile changed: the saved Flow account must belong to it; else it becomes the profile's primary account (or none).
+function alignFlowAccount(browser) {
+  if (!browser || browser.mode === "own") return;
+  const file = join(sharedWs, "config", "run-settings.json");
+  let saved = {}; try { saved = JSON.parse(readFileSync(file, "utf8").replace(/^\uFEFF/, "")); } catch {}
+  const accounts = flowAccountsFor(browser), cur = String(saved.flowAccount || "").toLowerCase();
+  if (cur && accounts.includes(cur)) return;
+  if (accounts[0]) saved.flowAccount = accounts[0]; else delete saved.flowAccount;
+  mkdirSync(join(file, ".."), { recursive: true });
+  writeFileSync(file, JSON.stringify(saved, null, 2));
+}
 // ----- Sessions (several windows from one source) -----
 let self = null; // this window's registry entry, once the server listens
 function profileLabel() { try { const b = readFlowBrowser(sharedWs); return profileLabelOf(b, localChromeProfiles().profiles); } catch { return ""; } }

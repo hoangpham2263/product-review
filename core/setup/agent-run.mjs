@@ -116,10 +116,16 @@ HUMAN PACING: before EVERY prompt you submit in Google Flow run: node core/flow-
 `;
 // Extension mode only works on a profile that HAS the Playwright MCP Bridge extension: otherwise the MCP silently uses "the last used profile that
 // has it". So a chosen profile without the extension (or missing) refuses to start; another profile is never used instead.
-export function checkExtensionProfile(profile, { profiles = localChromeProfiles().profiles } = {}) {
+// The Google account chosen for Flow (workspace/config/run-settings.json flowAccount), "" when none.
+export function readFlowAccount(toolRoot) {
+  try { const e = String(JSON.parse(readFileSync(join(toolRoot, "workspace", "config", "run-settings.json"), "utf8").replace(/^\uFEFF/, "")).flowAccount || ""); return /^[^\s@"<>]+@[^\s@"<>]+\.[^\s@"<>]+$/.test(e) ? e : ""; } catch { return ""; }
+}
+export function checkExtensionProfile(profile, { profiles = localChromeProfiles().profiles, account = "" } = {}) {
   const p = profiles.find((x) => x.folder === profile);
   if (!p) return { ok: false, error: `Profile Chrome "${profile}" không có trên máy này. Chọn profile khác ở ô trình duyệt.` };
   if (!p.playwright_extension) return { ok: false, error: `Profile ${profile}${p.email ? " (" + p.email + ")" : ""} chưa có extension Playwright MCP Bridge. Cài extension vào profile đó (nút "Cài extension vào profile này") hoặc chọn profile khác; tool không dùng profile khác thay thế.` };
+  const want = String(account || "").toLowerCase();
+  if (want && !(p.accounts || []).includes(want)) return { ok: false, error: `Tài khoản ${account} không đăng nhập trong profile ${profile}${p.email ? " (" + p.email + ")" : ""} (có: ${(p.accounts || []).join(", ") || "không có tài khoản nào"}). Chọn tài khoản khác ở ô tài khoản Flow hoặc đăng nhập tài khoản đó vào profile này.` };
   return { ok: true };
 }
 export const newRunId = (d = new Date()) => "agent-" + d.toISOString().replace(/\D/g, "").slice(0, 14);
@@ -249,7 +255,7 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
     mkdirSync(tmpDir, { recursive: true }); mkdirSync(runsDir, { recursive: true });
     const cfg = join(tmpDir, `mcp-${runId}-${randomBytes(3).toString("hex")}.json`);
     const bc = getBrowser() || {}, ext = bc.mode !== "own";
-    if (ext) { const chk = checkProfile(bc.profile); if (!chk.ok) return { ok: false, status: 409, error: chk.error }; }
+    if (ext) { const chk = checkProfile(bc.profile, { account: mode === "flow" ? readFlowAccount(toolRoot) : "" }); if (!chk.ok) return { ok: false, status: 409, error: chk.error }; }
     // Sessions (several windows): the own Chrome profile and a project are used by one live session at a time.
     const holderText = (h) => "phiên \"" + sessionLabel(h.session) + "\"";
     if (!ext) {

@@ -36,12 +36,21 @@ export function chromeUserDataDir({ plat = process.platform, env = process.env, 
   return join(env.XDG_CONFIG_HOME || join(home, ".config"), "google-chrome");
 }
 
-// The Chrome profiles installed on this machine (Local State): [{ folder, name, email, playwright_extension }].
+// Google accounts signed in inside one profile: <User Data>/<folder>/Preferences account_info[].email (emails only, never cookies or tokens),
+// the profile's primary account (Local State user_name) first. Lowercase.
+export function profileAccounts(dir, folder, primary = "", { read = (f) => readFileSync(f, "utf8") } = {}) {
+  const found = [];
+  try { for (const a of JSON.parse(read(join(dir, folder, "Preferences")).replace(/^\uFEFF/, "")).account_info || []) if (a && typeof a.email === "string" && a.email.includes("@")) found.push(a.email.toLowerCase()); } catch {}
+  const first = String(primary || "").toLowerCase();
+  return [...new Set([...(first ? [first] : []), ...found])];
+}
+
+// The Chrome profiles installed on this machine (Local State): [{ folder, name, email, accounts, playwright_extension }].
 export function localChromeProfiles({ plat = process.platform, env = process.env, home = homedir(), exists = existsSync, read = (f) => readFileSync(f, "utf8") } = {}) {
   const dir = chromeUserDataDir({ plat, env, home });
   let cache = {};
   try { cache = JSON.parse(read(join(dir, "Local State"))).profile?.info_cache || {}; } catch {}
-  const profiles = Object.entries(cache).map(([folder, v]) => ({ folder, name: String(v?.name || v?.gaia_name || ""), email: String(v?.user_name || ""), playwright_extension: exists(join(dir, folder, "Extensions", PLAYWRIGHT_EXTENSION_ID)) }))
+  const profiles = Object.entries(cache).map(([folder, v]) => ({ folder, name: String(v?.name || v?.gaia_name || ""), email: String(v?.user_name || ""), accounts: profileAccounts(dir, folder, v?.user_name, { read }), playwright_extension: exists(join(dir, folder, "Extensions", PLAYWRIGHT_EXTENSION_ID)) }))
     .sort((a, b) => (a.folder === "Default" ? -1 : b.folder === "Default" ? 1 : a.folder.localeCompare(b.folder, undefined, { numeric: true })));
   return { dir, profiles };
 }

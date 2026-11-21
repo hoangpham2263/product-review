@@ -268,9 +268,17 @@ function buildMain() {
   ui.btnFlowOpen.prepend(ui.flowDot);
   // Which signed-in Google account Flow uses (the profile may hold several; Flow opens the first, which can be the one out of credits).
   ui.flowAccount = at(combo(), 14, 111, 196, 32);
-  ui.flowAccount.title = "Để trống = Flow tự chọn. Chọn tài khoản còn credit (đã đăng nhập sẵn trong Chrome riêng); Claude sẽ chọn đúng tài khoản đó, không đăng xuất, không đổi tài khoản khác.";
+  ui.flowAccount.title = "Để trống = Flow tự chọn. Danh sách là các tài khoản Google đã đăng nhập trong profile Chrome đang chọn (hoặc Chrome riêng); Claude sẽ chọn đúng tài khoản đó, không đăng xuất, không đổi tài khoản khác. Đổi profile thì tài khoản tự về tài khoản chính của profile.";
   ui.flowAccount.setItems([""], ["Tự chọn tài khoản Flow"]);
-  ui.flowAccount.onchange = () => { const v = ui.flowAccount.value.trim(); fetch("/api/run-settings", { method: "POST", body: JSON.stringify({ flowAccount: v }) }).catch(() => {}); };
+  // The account list is read from the server: the accounts of the chosen Chrome profile (or of the own Chrome).
+  const loadFlowAccounts = () => fetch("/api/run-settings").then((r) => r.json()).then((saved) => {
+    const list = [...new Set([...(saved.flowAccounts || []), ...(saved.flowAccount ? [String(saved.flowAccount).toLowerCase()] : [])])];
+    ui.flowAccount.setItems(["", ...list], ["Tự chọn tài khoản Flow", ...list]);
+    ui.flowAccount.value = String(saved.flowAccount || "").toLowerCase();
+    ui.flowAccountSaved = ui.flowAccount.value;
+  }).catch(() => {});
+  ui.flowAccountSaved = "";
+  ui.flowAccount.onchange = () => { const v = ui.flowAccount.value.trim(); if (v === ui.flowAccountSaved) return; ui.flowAccountSaved = v; fetch("/api/run-settings", { method: "POST", body: JSON.stringify({ flowAccount: v }) }).catch(() => {}); };
   // Which browser Claude (Flow) drives: "own" = the tool's own Chrome, or a Chrome profile installed on this machine (everyday Chrome through the Playwright extension).
   ui.flowBrowser = at(combo(), 14, 148, 196, 32);
   ui.flowBrowser.title = "Trình duyệt cho Claude (Flow): Chrome thật của bạn (chọn profile có sẵn trên máy, cần extension Playwright, bấm Connect mỗi lượt) hoặc Chrome riêng của tool.";
@@ -296,7 +304,7 @@ function buildMain() {
     refreshInstallButton();
     if (v === ui.flowBrowserSaved) return;
     const r = await fetch("/api/flow-browser", { method: "POST", body: JSON.stringify(v === "own" ? { mode: "own" } : { mode: "extension", profile: v }) }).then((x) => x.ok).catch(() => false);
-    if (r) { ui.flowBrowserSaved = v; refreshSessionBadge(); } else ui.flowBrowser.value = ui.flowBrowserSaved;
+    if (r) { ui.flowBrowserSaved = v; refreshSessionBadge(); loadFlowAccounts(); } else ui.flowBrowser.value = ui.flowBrowserSaved;
   };
   ui.btnInstallExt.onclick = async () => {
     const r = await fetch("/api/flow-browser/install-extension", { method: "POST", body: JSON.stringify({ profile: ui.flowBrowser.value }) }).then((x) => x.json()).catch((e) => ({ error: e.message }));
@@ -339,7 +347,7 @@ function buildMain() {
   ui.numThr.onchange = () => saveRunSettings({ threads: ui.numThr.value });
   fetch("/api/run-settings").then((r) => r.json()).then((saved) => {
     if (saved.threads) ui.numThr.value = saved.threads;
-    { const list = [...new Set([...(saved.flowAccounts || []), ...(saved.flowAccount ? [String(saved.flowAccount).toLowerCase()] : [])])]; ui.flowAccount.setItems(["", ...list], ["Tự chọn tài khoản Flow", ...list]); ui.flowAccount.value = String(saved.flowAccount || "").toLowerCase(); }
+    loadFlowAccounts();
     if (["codex", "antigravity", "claude"].includes(saved.textBackend)) ui.cmbText.value = saved.textBackend;
     if (["codex", "agent"].includes(saved.imageBackend)) ui.cmbBackend.value = saved.imageBackend;
     updateUsage();
