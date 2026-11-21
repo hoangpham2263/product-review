@@ -60,7 +60,9 @@ export function localChromeProfiles({ plat = process.platform, env = process.env
 // With it an extension-mode run connects without the Connect click (env PLAYWRIGHT_MCP_EXTENSION_TOKEN of the spawned claude process only);
 // without it nothing changes. SHARED file workspace/playwright-tokens.json { "<profile folder>": "<token>" } (gitignored with /workspace/).
 // The token is never sent back to the page, never logged and never written into the temp MCP config; the UI only learns token_saved.
-const TOKEN_RE = /^[A-Za-z0-9_.-]{8,200}$/;
+const TOKEN_RE = /^[A-Za-z0-9_\-.+/=]{8,200}$/; // base64/base64url too; the token only ever goes into an env var
+// What people paste: the bare token, or the whole line the Bridge page shows (PLAYWRIGHT_MCP_EXTENSION_TOKEN=..., quoted, "export ...", JSON "key": "value").
+const cleanToken = (s) => String(s || "").trim().replace(/^export\s+/i, "").replace(/^["']?PLAYWRIGHT_MCP_EXTENSION_TOKEN["']?\s*[:=]\s*/i, "").replace(/[,;]$/, "").trim().replace(/^["'`](.*)["'`]$/s, "$1").trim();
 const tokenFileOf = (sharedWorkspace) => join(sharedWorkspace, "playwright-tokens.json");
 function readTokens(sharedWorkspace) { try { const j = JSON.parse(readFileSync(tokenFileOf(sharedWorkspace), "utf8").replace(/^\uFEFF/, "")); return j && typeof j === "object" && !Array.isArray(j) ? j : {}; } catch { return {}; } }
 export function extensionToken(sharedWorkspace, profile) { const t = readTokens(sharedWorkspace)[String(profile || "")]; return typeof t === "string" && TOKEN_RE.test(t) ? t : ""; }
@@ -69,8 +71,8 @@ export function tokenProfiles(sharedWorkspace) { return Object.keys(readTokens(s
 export function saveExtensionToken(sharedWorkspace, profile, token) {
   const p = String(profile || "").trim();
   if (!PROFILE_RE.test(p)) throw new Error("Profile Chrome không hợp lệ.");
-  const t = String(token || "").trim();
-  if (t && !TOKEN_RE.test(t)) throw new Error("Token không hợp lệ: chép đúng chuỗi token trên trang Playwright MCP Bridge của profile đó.");
+  const t = cleanToken(token);
+  if (t && !TOKEN_RE.test(t)) throw new Error("Token không hợp lệ: chỉ dán chuỗi token (hoặc cả dòng PLAYWRIGHT_MCP_EXTENSION_TOKEN=...) trên trang Playwright MCP Bridge của profile đó.");
   const all = readTokens(sharedWorkspace);
   if (t) all[p] = t; else delete all[p];
   mkdirSync(sharedWorkspace, { recursive: true });
