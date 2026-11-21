@@ -580,6 +580,24 @@ function alignFlowAccount(browser) {
     return saved;
   }, {});
 }
+// Everyday-Chrome mode: "Mở Chrome để đăng nhập" opens Flow in the chosen profile through Google's account chooser, pre-selecting this
+// window's Flow account (run-settings.json of the session). Lost in the sessions audit (f6d0469) while its route still called it; restored.
+let everydayOpened = 0;
+function openEverydayChrome(browser) {
+  const p = localChromeProfiles().profiles.find((x) => x.folder === browser.profile);
+  if (!p) return [400, { error: "Profile Chrome \"" + browser.profile + "\" không có trên máy này. Chọn profile khác ở ô Chrome profile." }];
+  const chrome = findChrome();
+  if (!chrome) return [400, { error: "Không tìm thấy Google Chrome (đặt PR_CHROME_PATH nếu cài ở chỗ khác)." }];
+  if (Date.now() - everydayOpened < 5000) return [429, { error: "Vừa mở xong, chờ vài giây." }];
+  let account = "";
+  try { account = String(readSeededJson(join(workspace, "config", "run-settings.json"), join(sharedWs, "config", "run-settings.json"), {}).flowAccount || ""); } catch {}
+  if (account && p.accounts && p.accounts.length && !p.accounts.includes(account.toLowerCase())) account = "";
+  try {
+    const child = spawn(chrome, ["--profile-directory=" + p.folder, flowOpenUrl(account)], { detached: true, stdio: "ignore" });
+    child.on("error", () => {}); child.unref(); everydayOpened = Date.now();
+    return [200, { ok: true, profile: p.folder, account }];
+  } catch (e) { return [500, { error: String(e.message || e).slice(0, 200) }]; }
+}
 // ----- Sessions (several windows from one source) -----
 let self = null; // this window's registry entry, once the server listens
 function profileLabel() { try { const b = readFlowBrowser(workspace, sharedWs); return profileLabelOf(b, localChromeProfiles().profiles); } catch { return ""; } }
