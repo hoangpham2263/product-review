@@ -233,28 +233,66 @@ function buildMain() {
   const pickLabel = el("div", "muted", { text: "Dự án" }); Object.assign(pickLabel.style, { fontSize: "11px", marginBottom: "2px" });
   ui.sessionPick = combo();
   Object.assign(ui.sessionPick.style, { position: "static", display: "block", width: "100%", height: "32px", marginBottom: "8px" });
+  // A typed name opens a BLANK session (not tied to a project): shown only when the last entry "＋ Phiên mới (đặt tên)…" is picked.
+  ui.newNameBox = el("div"); Object.assign(ui.newNameBox.style, { display: "none", marginBottom: "8px" });
+  const nameLabel = el("div", "muted", { text: "Tên phiên mới" }); Object.assign(nameLabel.style, { fontSize: "11px", marginBottom: "2px" });
+  ui.sessionName = el("input", "text", { placeholder: "vd: grenheim-2", maxlength: "30" });
+  Object.assign(ui.sessionName.style, { position: "static", display: "block", width: "100%", height: "32px" });
+  ui.nameHint = el("div", "muted", { text: "Chữ thường a-z, số 0-9 và dấu -, tối đa 30 ký tự." }); Object.assign(ui.nameHint.style, { fontSize: "11px", marginTop: "3px", minHeight: "14px" });
+  ui.newNameBox.append(nameLabel, ui.sessionName, ui.nameHint);
   ui.btnSessionOpen = button("Mở cửa sổ", true);
   Object.assign(ui.btnSessionOpen.style, { position: "static", display: "block", width: "100%", height: "32px" });
-  ui.sessionsPanel.append(pickLabel, ui.sessionPick, ui.btnSessionOpen);
+  ui.sessionsPanel.append(pickLabel, ui.sessionPick, ui.newNameBox, ui.btnSessionOpen);
+  ui.openNames = new Set(); // names of the windows open now (sessions and projects), for the live check of a typed name
+  ui.projectIds = new Set();
+  const NAME_RE = /^[a-z0-9][a-z0-9-]{0,29}$/;
+  // "" = fine, else the red hint
+  const nameProblem = () => {
+    const v = ui.sessionName.value.trim();
+    if (!v) return "Nhập tên phiên.";
+    if (!NAME_RE.test(v)) return "Tên không hợp lệ: chỉ a-z, 0-9 và -, bắt đầu bằng chữ hoặc số, tối đa 30 ký tự.";
+    if (ui.openNames.has(v)) return "Phiên \"" + v + "\" đang mở.";
+    if (ui.projectIds.has(v)) return "Trùng tên một dự án: chọn dự án trong danh sách.";
+    return "";
+  };
   const pickedInfo = () => ui.sessionPick.selectedOptions[0]?._info || null;
   const refreshPickButton = () => {
-    const info = pickedInfo();
-    ui.btnSessionOpen.textContent = info && info.window ? "Chuyển sang cửa sổ #" + info.stt : "Mở cửa sổ";
-    ui.btnSessionOpen.disabled = !info || !!info.busy || !!info.current;
-    ui.btnSessionOpen.title = !info ? "" : info.busy ? "Đang được phiên " + info.busy + " dùng" : info.current ? "Đây là cửa sổ này" : "";
+    const info = pickedInfo(), isNew = !!info && info.value === "__new";
+    ui.newNameBox.style.display = isNew ? "" : "none";
+    if (isNew) {
+      const problem = nameProblem();
+      ui.nameHint.textContent = ui.sessionName.value.trim() && problem ? problem : "Chữ thường a-z, số 0-9 và dấu -, tối đa 30 ký tự.";
+      ui.nameHint.style.color = ui.sessionName.value.trim() && problem ? "var(--error)" : "var(--muted)";
+      ui.sessionName.style.borderColor = ui.sessionName.value.trim() && problem ? "var(--error)" : "";
+      ui.btnSessionOpen.textContent = "Mở cửa sổ"; ui.btnSessionOpen.disabled = !!problem; ui.btnSessionOpen.title = problem;
+      return;
+    }
+    ui.btnSessionOpen.textContent = "Mở cửa sổ";
+    ui.btnSessionOpen.disabled = !info || !!info.disabled;
+    ui.btnSessionOpen.title = !info ? "Không còn dự án rảnh" : info.disabled ? info.reason || "" : "";
   };
+  // The server answers { ok, session }: success only when it opened exactly what was asked for.
   const openPicked = async () => {
     const info = pickedInfo();
-    if (!info || info.busy || info.current) return;
-    try { localStorage.setItem("pr.sessions.last", info.value); } catch {}
-    const body = info.value === "__default" ? { name: "" } : { project: info.value };
+    if (!info || info.disabled) return;
+    let body, expected;
+    if (info.value === "__new") { if (nameProblem()) return; expected = ui.sessionName.value.trim(); body = { name: expected }; }
+    else if (info.value === "__default") { expected = ""; body = { name: "" }; }
+    else { expected = info.value; body = { project: info.value }; }
+    ui.btnSessionOpen.disabled = true;
     const res = await fetch("/api/sessions/open", { method: "POST", body: JSON.stringify(body) }).then((x) => x.json()).catch((e) => ({ error: e.message }));
-    if (res.error) return messageBox(res.error);
+    if (res.error) { refreshPickButton(); return messageBox(res.error); }
+    if (!res.ok || res.session !== expected) { refreshPickButton(); return messageBox("Máy chủ mở cửa sổ khác với dự án đã chọn (" + (res.session === undefined ? "không rõ" : res.session || "phiên mặc định") + "). Chưa mở."); }
+    try { localStorage.setItem("pr.sessions.last", info.value === "__new" ? "" : info.value); } catch {}
+    ui.sessionName.value = "";
     ui.sessionsPanel.style.display = "none";
+    loadSessionPicker(); // the new window shows as disabled "· đang mở #n" as soon as it has registered
   };
-  ui.sessionPick.onchange = () => { const info = pickedInfo(); if (info) { try { localStorage.setItem("pr.sessions.last", info.value); } catch {} } refreshPickButton(); };
+  ui.sessionPick.onchange = () => { const info = pickedInfo(); if (info && !info.disabled && info.value !== "__new") { try { localStorage.setItem("pr.sessions.last", info.value); } catch {} } refreshPickButton(); if (info && info.value === "__new") ui.sessionName.focus(); };
   ui.sessionPick.ondblclick = openPicked;
   ui.sessionPick.addEventListener("keydown", (e) => { if (e.key === "Enter") openPicked(); });
+  ui.sessionName.addEventListener("input", refreshPickButton);
+  ui.sessionName.addEventListener("keydown", (e) => { if (e.key === "Enter") openPicked(); });
   ui.btnSessionOpen.onclick = openPicked;
   ui.btnSessions.onclick = () => { const open = ui.sessionsPanel.style.display !== "none"; ui.sessionsPanel.style.display = open ? "none" : ""; if (!open) loadSessionPicker(); };
   document.addEventListener("mousedown", (e) => { if (ui.sessionsPanel.style.display !== "none" && !ui.sessionsPanel.contains(e.target) && e.target !== ui.btnSessions) ui.sessionsPanel.style.display = "none"; });
@@ -484,22 +522,29 @@ async function refreshSessionBadge() {
 }
 async function loadSessionPicker() {
   const [pr, ss] = await Promise.all([fetch("/api/sessions/projects").then((x) => x.json()).catch(() => ({ projects: [] })), fetch("/api/sessions").then((x) => x.json()).catch(() => ({ sessions: [] }))]);
-  const projects = pr.projects || [], def = (ss.sessions || []).find((e) => e.session === "");
-  const entry = (value, label, info = {}) => ({ value, label, ...info });
-  const free = [], open = [], used = [], busy = [];
+  const projects = pr.projects || [], sessions = ss.sessions || [], def = sessions.find((e) => e.session === "");
+  ui.openNames = new Set(sessions.map((e) => e.session).filter(Boolean));
+  ui.projectIds = new Set(projects.map((p) => p.id));
+  // value = the session / project id, never parsed from the label. disabled = already open (this window too) or used by another session: greyed, not selectable.
+  const entry = (value, label, extra = {}) => ({ value, label, disabled: false, ...extra });
+  const free = [], usedUp = [], taken = [];
   for (const p of projects) {
-    const count = p.scanned ? p.unused + "/" + p.products + " chưa dùng" : "chưa quét";
-    if (p.window_open) open.push(entry(p.id, (p.name || p.id) + " · đang mở #" + p.window_stt, { window: true, stt: p.window_stt, current: p.current }));
-    else if (p.busy) busy.push(entry(p.id, (p.name || p.id) + " · đang dùng bởi phiên " + p.busy, { busy: p.busy }));
-    else if (p.scanned && p.unused === 0) used.push(entry(p.id, (p.name || p.id) + " · hết (" + count + ")"));
-    else free.push(entry(p.id, (p.name || p.id) + " · " + count));
+    const name = p.name || p.id, count = p.scanned ? p.unused + "/" + p.products + " chưa dùng" : "chưa quét";
+    if (p.window_open) taken.push(entry(p.id, name + " · đang mở #" + p.window_stt, { disabled: true, reason: p.current ? "Đây là cửa sổ này" : "Đã có cửa sổ #" + p.window_stt }));
+    else if (p.busy) taken.push(entry(p.id, name + " · đang dùng bởi " + p.busy, { disabled: true, reason: "Đang được phiên " + p.busy + " dùng" }));
+    else if (p.scanned && p.unused === 0) usedUp.push(entry(p.id, name + " · hết (" + count + ")"));
+    else free.push(entry(p.id, name + " · " + count));
   }
-  const items = [entry("__default", "Phiên mặc định" + (def ? " · đang mở #" + def.stt : ""), def ? { window: true, stt: def.stt, current: def.current } : {}), ...free, ...open, ...used, ...busy];
-  ui.sessionPick.replaceChildren(...items.map((it) => { const o = new Option(it.label, it.value); o._info = it; o.disabled = !!it.busy; o.title = it.label; return o; }));
-  // the project picked last time when it is still there, else the first free project, else the default window
+  const defaultItem = def ? entry("__default", "Phiên mặc định · đang mở #" + def.stt, { disabled: true, reason: def.current ? "Đây là cửa sổ này" : "Đã có cửa sổ #" + def.stt }) : entry("__default", "Phiên mặc định");
+  const selectable = [...free, ...usedUp];
+  const placeholder = selectable.length ? [] : [entry("", "Không còn dự án rảnh", { disabled: true, placeholder: true })];
+  const items = [...placeholder, defaultItem, ...free, ...usedUp, ...taken, entry("__new", "＋ Phiên mới (đặt tên)…")];
+  ui.sessionPick.replaceChildren(...items.map((it) => { const o = new Option(it.label, it.value); o._info = it; o.disabled = it.disabled; o.title = it.label; return o; }));
+  // the project picked last time while it is still selectable, else the first selectable free project; nothing selectable = the placeholder
   let last = ""; try { last = localStorage.getItem("pr.sessions.last") || ""; } catch {}
-  const wanted = items.find((it) => it.value === last && !it.busy) || free[0] || items[0];
-  ui.sessionPick.value = wanted.value;
+  const wanted = selectable.find((it) => it.value === last) || free[0] || selectable[0] || items.find((it) => it.placeholder);
+  ui.sessionPick.value = wanted ? wanted.value : "";
+  if (wanted && wanted.placeholder) ui.sessionPick.selectedIndex = items.indexOf(wanted);
   refreshPickButton();
 }
 setInterval(refreshSessionBadge, 5000);
