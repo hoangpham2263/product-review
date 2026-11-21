@@ -528,14 +528,14 @@ async function loadSessionPicker() {
   ui.openNames = new Set(sessions.map((e) => e.session).filter(Boolean));
   ui.projectIds = new Set(projects.map((p) => p.id));
   // read-only line: the windows that are really alive now
-  ui.openLine.textContent = sessions.length ? "Đang mở: " + sessions.map((e) => "#" + e.stt + " " + (e.session ? e.session : "mặc định") + (e.current ? " (cửa sổ này)" : "")).join(" · ") : "";
+  ui.openLine.textContent = sessions.length ? "Đang mở: " + sessions.map((e) => "#" + e.stt + " " + (e.project_name || e.session || "mặc định") + (e.current ? " (cửa sổ này)" : "")).join(" · ") : "";
   ui.openLine.style.display = sessions.length ? "" : "none";
   // the dropdown lists ONLY what can be opened: free projects (most unused products first), the used-up ones last, then "＋ Phiên mới (đặt tên)…".
   // value = the project id, never parsed from the label. Projects that are open or used by another session are not listed.
   const entry = (value, label, extra = {}) => ({ value, label, disabled: false, ...extra });
   const free = [], usedUp = [];
   for (const p of projects) {
-    if (p.window_open || p.busy) continue;
+    if (p.window_open || p.busy || p.mine) continue; // held by a window (this one too) or a run: not offered
     const name = p.name || p.id, count = p.scanned ? p.unused + "/" + p.products + " chưa dùng" : "chưa quét";
     if (p.scanned && p.unused === 0) usedUp.push(entry(p.id, name + " · hết (" + count + ")"));
     else free.push(entry(p.id, name + " · " + count, { unused: p.scanned ? p.unused : -1 }));
@@ -889,7 +889,7 @@ function showProjectsDialog(pick = "") {
     if (!current) { prepText = ""; return; }
     const q = new URLSearchParams({ project: current, category: catBox.value, unused_only: unusedOnly.input.checked ? "1" : "0" });
     const r = await fetch("/api/project/prepared?" + q).then((x) => x.json()).catch(() => null);
-    prepText = r && !r.error ? `Đã chuẩn bị: ${r.ready} sẵn sàng / ${r.products} sản phẩm${r.skipped ? ` (bỏ qua ${r.skipped}, không hợp ảnh)` : ""}` : "";
+    prepText = r && !r.error ? `Chuẩn bị trước: ${r.ready} sẵn sàng · ${r.to_prepare} chưa chuẩn bị${r.skipped ? ` · ${r.skipped} bỏ qua (không hợp ảnh)` : ""}${r.in_queue ? ` · ${r.in_queue} đã ở hàng chờ` : ""} (${r.in_filter} sản phẩm${unusedOnly.input.checked ? " chưa dùng" : ""}${catBox.value ? " của danh mục" : ""})` : "";
     if (!runningMain && !runningLight && !otherActive && !otherLight && data && prepShowIdle) say(idleText(), "");
   };
   let prepShowIdle = true;
@@ -953,7 +953,7 @@ function showProjectsDialog(pick = "") {
     current = id;
     try {
       data = id ? await api("projectRows", { id }) : null;
-      if (data) { data.rows = list(data.rows); data.menu = list(data.menu); }
+      if (data) { data.rows = list(data.rows); data.menu = list(data.menu); try { const c = await fetch("/api/project/counts?project=" + encodeURIComponent(id)).then((x) => x.json()); if (!c.error) { data.project.products = c.products; data.project.used = c.used; } } catch {} }
     } catch (e) { data = null; say(e.message, "var(--error)"); }
     projectLine.textContent = data ? `${data.project.name} · ${data.project.site}` : "";
     fillCategories(); renderList(); renderTable(); refreshButtons();
@@ -970,6 +970,8 @@ function showProjectsDialog(pick = "") {
   };
   async function loadProjects(select = "", quiet = false) {
     try { projects = list(await api("projects")).filter((p) => !lockedProject || p.id === lockedProject); } catch (e) { projects = []; say(e.message, "var(--error)"); }
+    // the counts shown everywhere come from ONE server function (/api/sessions/projects -> projectCounts), not from a second computation
+    try { const c = await fetch("/api/sessions/projects").then((x) => x.json()); for (const p of projects) { const m = (c.projects || []).find((x) => x.id === p.id); if (m) { p.products = m.products; p.used = m.used; } } } catch {}
     // the focus decides: "Lẻ" stays Lẻ, a project stays itself (never the first of the list by accident)
     const want = !select && !sessionState.project ? "" : (projects.some((p) => p.id === select) ? select : (projects.some((p) => p.id === current) ? current : ""));
     if (quiet && want === current) { renderList(); return; }

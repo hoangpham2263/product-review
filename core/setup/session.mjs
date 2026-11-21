@@ -170,8 +170,8 @@ export function takeGroup(workspace, session, now = new Date()) {
 }
 
 // Text of the window title and header badge.
-// Window title: the project in focus (its name) or, for loose products, the session.
-export const sessionTitle = ({ stt, session, profileLabel, projectName = "" }) => `Product Review · #${stt || "?"} · ${projectName || sessionLabel(session)} · ${profileLabel || ""}`.replace(/ · $/, "");
+// Window title: the project the window works on (its name), else the session name ("mặc định" for the default window).
+export const sessionTitle = ({ stt, session, profileLabel, projectName = "" }) => `Product Review · #${stt || "?"} · ${projectName || session || "mặc định"} · ${profileLabel || ""}`.replace(/ · $/, "");
 export const profileLabelOf = (browser, profiles = []) => {
   if (!browser || browser.mode === "own") return "Chrome riêng";
   const p = profiles.find((x) => x.folder === browser.profile);

@@ -240,6 +240,7 @@ async function handle(req, res) {
     }
     return send(res, 200, openSessionWindow(name));
   }
+  if (path === "/api/project/counts" && req.method === "GET") { const id = String(url.searchParams.get("project") || ""); return send(res, projectExists(id) ? 200 : 400, projectExists(id) ? { project: id, ...projectCounts(id) } : { error: "Chọn một dự án có sẵn." }); }
   if (path === "/api/sessions/projects" && req.method === "GET") return send(res, 200, { projects: projectChoices(await liveSessions()) });
   // The project selected in this window's Dự án popup is the one this window uses: another live session cannot take it.
   if (path === "/api/session/project" && req.method === "POST") {
@@ -252,7 +253,6 @@ async function handle(req, res) {
     // one atomic step under the registry lock: the old focus is released and the new one taken, or nothing changes
     const claimed = claimProjectFocus(root, session, process.pid, project);
     if (!claimed.ok) return send(res, 409, { error: claimed.notRegistered ? "Cửa sổ chưa đăng ký xong, thử lại sau vài giây." : "Dự án " + project + " đang được phiên \"" + sessionLabel(claimed.holder) + "\" dùng. Chọn dự án khác hoặc đóng phiên đó trước." });
-    persistFocus(project);
     if (project) touchRecent(project);
     return send(res, 200, { ok: true, project, name: project ? projectNameOf(project) : "", title: sessionInfo().title });
   }
@@ -580,28 +580,15 @@ function alignFlowAccount(browser) {
 // ----- Sessions (several windows from one source) -----
 let self = null; // this window's registry entry, once the server listens
 function profileLabel() { try { const b = readFlowBrowser(workspace, sharedWs); return profileLabelOf(b, localChromeProfiles().profiles); } catch { return ""; } }
-// ----- the focus of this window: ALWAYS one project (default: the project used most recently that is free, else the first free one in the sessions-combo order),
-// or "Lẻ" (loose products typed by hand, project ""). A window opened for a project (session named after it) stays locked to it.
-const FOCUS_FILE = join(workspace, "config", "focus.json");
+// ----- the project this window works on (registry field project): none at start ("mặc định", as before) until the person picks one in the Dự án popup;
+// "Lẻ" (__loose) gives it back. A window opened for a project (session named after it) stays locked to it.
 const LOOSE = "__loose";
 const lockedProject = /^[a-z0-9][a-z0-9-]{1,60}$/.test(process.env.PR_PROJECT || "") && process.env.PR_PROJECT === session ? process.env.PR_PROJECT : "";
 const projectExists = (id) => /^[a-z0-9][a-z0-9-]{1,60}$/.test(id) && existsSync(join(sharedWs, "projects", id, "project.json"));
 function projectNameOf(id) { try { return JSON.parse(readFileSync(join(sharedWs, "projects", id, "project.json"), "utf8").replace(/^\uFEFF/, "")).name || id; } catch { return id; } }
-function persistFocus(project) { try { updateJsonLocked(FOCUS_FILE, () => ({ project: project || LOOSE }), {}); } catch {} }
 function initFocus() {
-  const choices = projectChoices(listSessions(root)); // sorted by recent use; busy = used by another live window or a run of another session
-  const free = choices.filter((c) => !c.busy);
-  const take = (id) => { const r = claimProjectFocus(root, session, process.pid, id); if (r.ok) { persistFocus(id); return true; } return false; };
-  if (lockedProject) { take(lockedProject); return; } // a window opened for a project keeps it
-  let saved = ""; try { saved = String(JSON.parse(readFileSync(FOCUS_FILE, "utf8")).project || ""); } catch {}
-  if (saved === LOOSE) { claimProjectFocus(root, session, process.pid, ""); return; } // the person chose "Lẻ" last time
-  if (saved && projectExists(saved) && free.some((c) => c.id === saved) && take(saved)) return;
-  // automatic: the project used most recently (recent-projects.json) that is free, else the first free one (most unused products first, as in the combo)
-  const recent = readRecent();
-  const byRecent = free.filter((c) => recent[c.id]).sort((a, b) => String(recent[b.id]).localeCompare(String(recent[a.id])));
-  const byUnused = free.slice().sort((a, b) => (b.scanned ? b.unused : -1) - (a.scanned ? a.unused : -1));
-  for (const c of [...byRecent, ...byUnused]) if (take(c.id)) return;
-  persistFocus(""); claimProjectFocus(root, session, process.pid, ""); // no project exists (or none is free): Lẻ
+  // A window opened for a project keeps it; every other window (the default one, a free-name session) starts with NO project, as before.
+  claimProjectFocus(root, session, process.pid, lockedProject || "");
 }
 // every project action of this window acts on the focused project: a request for another one is refused (no stale selection)
 const focusMismatch = (id) => { const f = selfProject(); return f === id ? "" : f ? "Dự án đang chọn của cửa sổ này là " + f + ", không phải " + id + ". Chọn lại dự án trong cửa sổ Dự án." : "Cửa sổ này đang ở chế độ Lẻ (không thuộc dự án). Chọn một dự án trong cửa sổ Dự án trước."; };
@@ -626,7 +613,7 @@ async function liveSessions() {
   return alive.filter(Boolean);
 }
 function sessionRows(live) {
-  return live.map((e) => ({ stt: e.stt, session: e.session, label: sessionLabel(e.session), port: e.port, pid: e.pid, profile_label: e.profile_label || "", running: !!e.running, project: e.project || "", current: e.pid === process.pid }));
+  return live.map((e) => ({ project_name: e.project ? projectNameOf(e.project) : "", stt: e.stt, session: e.session, label: sessionLabel(e.session), port: e.port, pid: e.pid, profile_label: e.profile_label || "", running: !!e.running, project: e.project || "", current: e.pid === process.pid }));
 }
 // The projects a new window can be opened for: every folder of workspace/projects with a project.json, and who uses it right now.
 // products.csv: how many rows and how many are still unused (column "used" is not T / true / 1 / x / y / yes). Quoted cells may hold commas.
@@ -638,6 +625,11 @@ function csvCells(line) {
     else if (ch === '"') q = true; else if (ch === ",") { out.push(cur); cur = ""; } else cur += ch;
   }
   out.push(cur); return out;
+}
+// The counts of a project, the ONLY place they are computed for the UI: { products, used, unused, scanned }.
+function projectCounts(id) {
+  try { const t = csvCounts(readFileSync(join(sharedWs, "projects", id, "products.csv"), "utf8")); return { products: t.products, used: t.products - t.unused, unused: t.unused, scanned: true }; }
+  catch { return { products: 0, used: 0, unused: 0, scanned: false }; }
 }
 function csvCounts(text) {
   const lines = text.replace(/^\uFEFF/, "").split(/\r?\n/).filter((l) => l.trim());
@@ -657,13 +649,13 @@ function projectChoices(live) {
   const open = new Set(live.map((e) => e.session));
   return names.filter((n) => /^[a-z0-9][a-z0-9-]{1,60}$/.test(n) && existsSync(join(base, n, "project.json"))).map((n) => {
     let info = {}; try { info = JSON.parse(readFileSync(join(base, n, "project.json"), "utf8").replace(/^\uFEFF/, "")); } catch {}
+    const mine = live.some((e) => e.project === n && e.pid === process.pid);
     const other = live.find((e) => e.project === n && e.pid !== process.pid), holder = other ? null : lockHolder(root, "project", n, session);
     const busy = other ? { session: other.session, via: "window" } : holder ? { session: holder.session, via: "run" } : null;
-    let products = 0, unused = 0, scanned = false;
-    try { const t = csvCounts(readFileSync(join(base, n, "products.csv"), "utf8")); products = t.products; unused = t.unused; scanned = true; } catch {}
+    const { products, unused, scanned } = projectCounts(n);
     const recent = readRecent()[n] || info.updated || info.last_scan || "";
     const window = live.find((e) => e.session === n);
-    return { id: n, name: info.name || n, site: info.site || "", products, unused, scanned, recent, busy: busy ? busy.session : "", busy_via: busy ? busy.via : "", window_open: open.has(n), window_stt: window ? window.stt : 0, current: window ? window.pid === process.pid : false };
+    return { id: n, name: info.name || n, site: info.site || "", products, unused, used: products - unused, scanned, mine, recent, busy: busy ? busy.session : "", busy_via: busy ? busy.via : "", window_open: open.has(n), window_stt: window ? window.stt : 0, current: window ? window.pid === process.pid : false };
   }).sort((a, b) => String(b.recent).localeCompare(String(a.recent)) || a.id.localeCompare(b.id));
 }
 function syncRegistry() { try { if (self) updateSession(root, session, process.pid, { profile_label: profileLabel(), running: agent.isActive() || light.isActive() }); } catch {} }

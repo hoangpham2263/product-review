@@ -659,12 +659,14 @@ try {
             # Counts for the project (narrowed by -Collection / -UnusedOnly): products, ready, skipped, consumed, still to prepare.
             $dir = Get-ScanDir $ProjectId
             $queued = Get-QueuedKeys
-            $candidates = @(Get-ProjectCandidates $dir | Where-Object { -not $queued.Contains((Get-ScanUrlKey $_.product_url)) })
+            $inFilter = @(Get-ProjectCandidates $dir)
+            $candidates = @($inFilter | Where-Object { -not $queued.Contains((Get-ScanUrlKey $_.product_url)) })
             $prepared = @(Read-PreparedRows $dir)
             $byKey = @{}; foreach ($pr in $prepared) { $byKey[(Get-ScanUrlKey $pr.product_url)] = $pr }
             $ready = @($candidates | Where-Object { $byKey.ContainsKey((Get-ScanUrlKey $_.product_url)) -and $byKey[(Get-ScanUrlKey $_.product_url)].status -eq 'ready' }).Count
             $skipped = @($candidates | Where-Object { $byKey.ContainsKey((Get-ScanUrlKey $_.product_url)) -and ([string]$byKey[(Get-ScanUrlKey $_.product_url)].status).StartsWith('skipped') }).Count
-            Write-ScanJson ([ordered]@{ project = $ProjectId; products = $candidates.Count; ready = $ready; skipped = $skipped; to_prepare = ($candidates.Count - $ready - $skipped)
+            # products = rows of the filter NOT in this window's queue; in_queue = rows of the filter already queued; in_filter = all rows of the filter (with a photo)
+            Write-ScanJson ([ordered]@{ project = $ProjectId; in_filter = $inFilter.Count; in_queue = ($inFilter.Count - $candidates.Count); products = $candidates.Count; ready = $ready; skipped = $skipped; to_prepare = ($candidates.Count - $ready - $skipped)
                     consumed_total = @($prepared | Where-Object { $_.status -eq 'consumed' }).Count; ready_total = @($prepared | Where-Object { $_.status -eq 'ready' }).Count })
         }
         'queue-from-prepared' {
