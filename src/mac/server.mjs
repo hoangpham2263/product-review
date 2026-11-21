@@ -11,10 +11,10 @@ import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { randomUUID, createHash } from "node:crypto";
 import { createConfigApi } from "../../core/setup/config-api.mjs";
-import { createAgentRunner, buildPrompt, newRunId } from "../../core/setup/agent-run.mjs";
+import { createAgentRunner, buildPrompt, newRunId, readFlowAccount } from "../../core/setup/agent-run.mjs";
 import { readFlowBrowser, saveFlowBrowser, localChromeProfiles } from "../../core/setup/flow-browser.mjs";
 import { currentSession, sessionLabel, sessionWorkspace, sharedWorkspace, registerSession, updateSession, unregisterSession, listSessions, lockHolder, releaseLocks, peekGroup, sessionTitle, profileLabelOf, SESSION_RE } from "../../core/setup/session.mjs";
-import { createFlowLogin, profileDirOf, profileGoogleAccounts, findChrome } from "../../core/setup/flow-login.mjs";
+import { createFlowLogin, profileDirOf, profileGoogleAccounts, findChrome, flowOpenUrl } from "../../core/setup/flow-login.mjs";
 import { PWSH, toolEnv, psFile, psCommand, killTree, appWindow, chooseFiles } from "../../core/platform.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -418,7 +418,9 @@ async function handle(req, res) {
     } catch (e) { return send(res, 400, { error: e.message }); }
   }
   if (path === "/api/flow-browser" && req.method === "POST") { try { const b = JSON.parse((await body(req)).toString("utf8") || "{}"); const saved = saveFlowBrowser(sharedWs, b); alignFlowAccount(saved); return send(res, 200, saved); } catch (e) { return send(res, 400, { error: e.message }); } }
-  if (path === "/api/flow-login/status" && req.method === "GET") return send(res, 200, await flowLogin.status({ fresh: url.searchParams.get("fresh") === "1" }));
+  // Everyday-Chrome (extension) mode: nothing to probe in the tool's own profile; the button opens Flow in the CHOSEN profile instead.
+  if (path === "/api/flow-login/status" && req.method === "GET") return send(res, 200, readFlowBrowser(sharedWs).mode === "own" ? await flowLogin.status({ fresh: url.searchParams.get("fresh") === "1" }) : { state: "extension", detail: "Chrome thật: không kiểm tra đăng nhập ở đây" });
+  if (path === "/api/flow-login/open" && req.method === "POST" && readFlowBrowser(sharedWs).mode !== "own") return send(res, ...openEverydayChrome(readFlowBrowser(sharedWs)));
   if (path === "/api/flow-login/open" && req.method === "POST") { const h = lockHolder(root, "chrome", "own", session); if (h) return send(res, 409, { error: "Chrome riêng của tool đang được phiên \"" + sessionLabel(h.session) + "\" dùng: đóng nó trước." }); const r = flowLogin.open(); return send(res, r.status, r.ok ? { ok: true } : { error: r.error }); }
   if (path === "/api/agent/stop" && req.method === "POST") { const r = agent.stop(); return send(res, r.status, r.ok ? { ok: true } : { error: r.error }); }
   // Cấu hình (core/setup/config-api.mjs).
@@ -496,6 +498,21 @@ function alignFlowAccount(browser) {
   if (accounts[0]) saved.flowAccount = accounts[0]; else delete saved.flowAccount;
   mkdirSync(join(file, ".."), { recursive: true });
   writeFileSync(file, JSON.stringify(saved, null, 2));
+}
+// Adds a tab to the chosen everyday Chrome profile: Flow through Google's account chooser, pre-selecting the chosen Flow account.
+// No --user-data-dir, no run or lock checks (that Chrome is normally open already); only the profile must exist.
+let everydayOpened = 0;
+function openEverydayChrome(browser) {
+  const p = localChromeProfiles().profiles.find((x) => x.folder === browser.profile);
+  if (!p) return [400, { error: "Profile Chrome \"" + browser.profile + "\" không có trên máy này. Chọn profile khác ở ô trình duyệt." }];
+  const chrome = findChrome();
+  if (!chrome) return [400, { error: "Không tìm thấy Google Chrome (đặt PR_CHROME_PATH nếu cài ở chỗ khác)." }];
+  if (Date.now() - everydayOpened < 5000) return [429, { error: "Vừa mở xong, chờ vài giây." }];
+  try {
+    const child = spawn(chrome, ["--profile-directory=" + p.folder, flowOpenUrl(readFlowAccount(root))], { detached: true, stdio: "ignore" });
+    child.on("error", () => {}); child.unref(); everydayOpened = Date.now();
+    return [200, { ok: true, profile: p.folder }];
+  } catch (e) { return [500, { error: String(e.message || e).slice(0, 200) }]; }
 }
 // ----- Sessions (several windows from one source) -----
 let self = null; // this window's registry entry, once the server listens

@@ -297,14 +297,14 @@ function buildMain() {
     ui.flowBrowser.setItems(items, labels);
     ui.flowBrowserSaved = j.mode === "own" ? "own" : j.profile;
     ui.flowBrowser.value = ui.flowBrowserSaved;
-    refreshInstallButton();
+    refreshInstallButton(); applyFlowBrowserMode();
   }).catch(() => {});
   ui.flowBrowser.onchange = async () => {
     const v = ui.flowBrowser.value;
     refreshInstallButton();
     if (v === ui.flowBrowserSaved) return;
     const r = await fetch("/api/flow-browser", { method: "POST", body: JSON.stringify(v === "own" ? { mode: "own" } : { mode: "extension", profile: v }) }).then((x) => x.ok).catch(() => false);
-    if (r) { ui.flowBrowserSaved = v; refreshSessionBadge(); loadFlowAccounts(); } else ui.flowBrowser.value = ui.flowBrowserSaved;
+    if (r) { ui.flowBrowserSaved = v; refreshSessionBadge(); loadFlowAccounts(); applyFlowBrowserMode(); } else ui.flowBrowser.value = ui.flowBrowserSaved;
   };
   ui.btnInstallExt.onclick = async () => {
     const r = await fetch("/api/flow-browser/install-extension", { method: "POST", body: JSON.stringify({ profile: ui.flowBrowser.value }) }).then((x) => x.json()).catch((e) => ({ error: e.message }));
@@ -1398,7 +1398,7 @@ function updateActionAvailability() {
   for (const b of [ui.btnFlowOpen, ui.btnFlowCheck]) if (b) b.disabled = busy || flowLogin.checking;
   for (const b of [ui.btnRun, ui.btnSetup, ui.btnLogs, ui.btnReview, ui.btnOut, ui.btnUpdate, ui.btnClearLog, ui.btnAdd, ui.btnBulk, ui.btnClear, ui.btnProjects]) b.disabled = busy;
   // Claude (Flow) cannot start until its own Chrome is signed in to Google Flow.
-  if (ui.cmbBackend?.value === "agent" && flowLogin.state !== "logged_in") ui.btnRun.disabled = true;
+  if (ui.cmbBackend?.value === "agent" && !flowExtensionMode() && flowLogin.state !== "logged_in") ui.btnRun.disabled = true;
   ui.btnStop.disabled = !run.active;
   ui.numThr.enabled = !busy;
   ui.cmbText.disabled = busy;
@@ -1517,6 +1517,21 @@ async function startBatch() {
 }
 // ----- Claude (Google Flow): Claude Code drives Flow and writes the reviews (/api/agent/*); the images then wait in Duyệt -----
 const flowLogin = { state: "", checking: false };
+// Everyday-Chrome (extension) mode: the own profile is never probed, so the sign-in dot and "Kiểm tra lại" do not apply.
+const flowExtensionMode = () => !!ui.flowBrowserSaved && ui.flowBrowserSaved !== "own";
+function applyFlowBrowserMode() {
+  const ext = flowExtensionMode();
+  ui.flowDot.style.display = ext ? "none" : "inline-block";
+  ui.btnFlowCheck.style.display = ext ? "none" : "";
+  if (ext) {
+    flowLogin.state = "extension";
+    ui.btnFlowOpen.title = "Mở Flow trong profile Chrome đã chọn (" + (ui.flowBrowser.selectedOptions[0]?.text || "") + "), đúng tài khoản Flow đã chọn: thêm một tab vào Chrome đang mở, bạn đăng nhập hoặc kiểm tra ở đó. Tool không kiểm tra đăng nhập ở chế độ này.";
+    updateActionAvailability();
+  } else {
+    ui.btnFlowOpen.title = "Mở Chrome riêng của tool để đăng nhập Google Flow (đăng nhập xong đóng cửa sổ đó rồi Kiểm tra lại).";
+    flowLogin.state = ""; if (ui.cmbBackend?.value === "agent") checkFlowLogin();
+  }
+}
 const FLOW_TEXT = {
   logged_in: ["Đã đăng nhập Google Flow", "var(--ok)"],
   logged_out: ["Chưa đăng nhập: nút Bắt đầu đang bị khoá.", "var(--warn)"],
@@ -1542,6 +1557,7 @@ async function openFlowLogin() {
   const r = await fetch("/api/flow-login/open", { method: "POST", body: "{}" });
   const body = await r.json().catch(() => ({}));
   if (!r.ok) return appendLog("Chưa mở được Chrome đăng nhập: " + (body.error || r.status));
+  if (flowExtensionMode()) return appendLog("Đã mở Flow trong profile Chrome đã chọn (thêm một tab vào Chrome đang mở).");
   appendLog("Đã mở Chrome riêng của Claude. Đăng nhập Google, đóng cửa sổ đó rồi bấm Kiểm tra lại.");
   showFlowLogin("busy");
 }
@@ -1549,7 +1565,7 @@ function updateAgentControls() {
   const on = ui.cmbBackend?.value === "agent";
   if (!ui.btnCopyPrompt) return;
   ui.flowLoginBox.style.display = on ? "" : "none";
-  if (on && !flowLogin.state && !flowLogin.checking) checkFlowLogin();
+  if (on && !flowLogin.state && !flowLogin.checking && !flowExtensionMode()) checkFlowLogin();
   updateActionAvailability();
   ui.btnCopyPrompt.style.display = on ? "" : "none";
   ui.lblTokens.style.display = ui.lblQuota.style.display = on ? "none" : "";
