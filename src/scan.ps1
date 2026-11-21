@@ -665,8 +665,10 @@ try {
             $byKey = @{}; foreach ($pr in $prepared) { $byKey[(Get-ScanUrlKey $pr.product_url)] = $pr }
             $ready = @($candidates | Where-Object { $byKey.ContainsKey((Get-ScanUrlKey $_.product_url)) -and $byKey[(Get-ScanUrlKey $_.product_url)].status -eq 'ready' }).Count
             $skipped = @($candidates | Where-Object { $byKey.ContainsKey((Get-ScanUrlKey $_.product_url)) -and ([string]$byKey[(Get-ScanUrlKey $_.product_url)].status).StartsWith('skipped') }).Count
+            # ready_usable = ready rows with at least -SceneCount scenes (the rows Thêm vào hàng chờ can take with that number of scenes)
+            $readyUsable = @($candidates | Where-Object { $k = Get-ScanUrlKey $_.product_url; $byKey.ContainsKey($k) -and $byKey[$k].status -eq 'ready' -and ($SceneCount -le 0 -or [int]$byKey[$k].scene_count -ge $SceneCount) }).Count
             # products = rows of the filter NOT in this window's queue; in_queue = rows of the filter already queued; in_filter = all rows of the filter (with a photo)
-            Write-ScanJson ([ordered]@{ project = $ProjectId; in_filter = $inFilter.Count; in_queue = ($inFilter.Count - $candidates.Count); products = $candidates.Count; ready = $ready; skipped = $skipped; to_prepare = ($candidates.Count - $ready - $skipped)
+            Write-ScanJson ([ordered]@{ project = $ProjectId; in_filter = $inFilter.Count; in_queue = ($inFilter.Count - $candidates.Count); products = $candidates.Count; ready = $ready; ready_usable = $readyUsable; skipped = $skipped; to_prepare = ($candidates.Count - $ready - $skipped)
                     consumed_total = @($prepared | Where-Object { $_.status -eq 'consumed' }).Count; ready_total = @($prepared | Where-Object { $_.status -eq 'ready' }).Count })
         }
         'queue-from-prepared' {

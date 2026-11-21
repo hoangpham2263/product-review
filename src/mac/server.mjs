@@ -341,6 +341,9 @@ async function handle(req, res) {
         if (["codex", "antigravity", "claude"].includes(given.textBackend)) cur.textBackend = given.textBackend;
         if (["codex", "agent"].includes(given.imageBackend)) cur.imageBackend = given.imageBackend;
         if (typeof given.flowAccount === "string") { const v = given.flowAccount.trim(); if (!v) delete cur.flowAccount; else if (v.length <= 120 && /^[^\s@"<>]+@[^\s@"<>]+\.[^\s@"<>]+$/.test(v)) cur.flowAccount = v; }
+        // the two separate pairs of the Dự án popup: Thêm vào hàng chờ (count 1-200, scenes 1-4) and Chuẩn bị trước (count 0-500, 0 = all; scenes 1-4)
+        const int = (v, lo, hi) => (Number.isInteger(v) && v >= lo && v <= hi ? v : undefined);
+        for (const [k, lo, hi] of [["queueCount", 1, 200], ["queueScenes", 1, 4], ["prepCount", 0, 500], ["prepScenes", 1, 4]]) { const v = int(given[k], lo, hi); if (v !== undefined) cur[k] = v; }
         delete cur.runMode;
         return cur;
       }, {});
@@ -451,7 +454,8 @@ async function handle(req, res) {
     const id = String(url.searchParams.get("project") || "").trim();
     if (!/^[a-z0-9][a-z0-9-]{1,60}$/.test(id) || !existsSync(join(sharedWs, "projects", id, "project.json"))) return send(res, 400, { error: "Chọn một dự án có sẵn." });
     { const fp = focusMismatch(id); if (fp) return send(res, 409, { error: fp }); }
-    const r = await runScan(["prep-status", "-Project", id, ...projectArgs({ category: url.searchParams.get("category"), unused_only: url.searchParams.get("unused_only") === "1" })], 60000);
+    const sc = Math.min(4, Math.max(0, Number(url.searchParams.get("scenes")) || 0));
+    const r = await runScan(["prep-status", "-Project", id, ...(sc ? ["-SceneCount", String(sc)] : []), ...projectArgs({ category: url.searchParams.get("category"), unused_only: url.searchParams.get("unused_only") === "1" })], 60000);
     return send(res, r.ok ? 200 : 500, r.ok ? r : { error: r.error });
   }
   // Status of the light runner (queue and prep runs): its own file runs/prep-run.json.

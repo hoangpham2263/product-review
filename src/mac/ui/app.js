@@ -823,7 +823,7 @@ function showScanDialog() {
 // seen on each product page. "Quét cập nhật" only adds new products (/api/scan/*); "Cập nhật số review" has Claude read the number every
 // product page shows (READ ONLY, docs/reviews-count-prompt.md, /api/project/reviews/*); "Nhập vào danh sách" imports the used = F rows -----
 function showProjectsDialog(pick = "") {
-  const view = openWindow("Dự án", 900, 520);
+  const view = openWindow("Dự án", 900, 600);
   const fmtStamp = (s) => (s ? `${s.slice(8, 10)}/${s.slice(5, 7)} ${s.slice(11, 16)}` : "chưa có");
   const oneLine = (style = {}) => Object.assign({ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }, style);
   const listTitle = at(label("Dự án của bạn", "muted"), 16, 14, 150, 20);
@@ -848,25 +848,40 @@ function showProjectsDialog(pick = "") {
   head.append(...["Sản phẩm", "Danh mục", "Dùng", "Review", "Kiểm tra"].map((t) => el("div", "", { text: t, style: oneLine() })));
   const tableBox = at(el("div", "flow"), 282, 76, 602, 344);
   Object.assign(tableBox.style, { background: "#fff", border: "1px solid #000" });
-  const status = at(label(""), 16, 428, 520, 42);
-  // Both numbers of "Thêm vào hàng chờ" sit right of the status text, label above its box, same spacing.
-  const queueHint = at(label("Số sản phẩm", "muted"), 556, 428, 150, 18);
-  const queueCount = at(numeric(1, 200, 10), 556, 448, 64, 25);
-  queueCount.title = "Số sản phẩm đưa vào hàng chờ (theo danh mục và ô Chỉ chưa dùng đang chọn), 1-200";
-  const sceneHint = at(label("Ảnh ngữ cảnh / sản phẩm", "muted"), 724, 428, 160, 18);
-  const sceneCount = at(numeric(1, 4, 2), 724, 448, 64, 25);
-  sceneCount.title = "Số ảnh ngữ cảnh khác nhau cho mỗi sản phẩm, 1-4. Thêm vào hàng chờ tự gắn ảnh gốc của sản phẩm và Claude chọn ảnh ngữ cảnh hợp.";
+  const status = at(label(""), 16, 426, 868, 40);
   Object.assign(status.style, { whiteSpace: "pre-line", lineHeight: "20px" });
-  // Six buttons share the 868 px row evenly (13 px gaps).
-  const scanBtn = at(button("Quét cập nhật"), 16, 478, 120, 32);
-  const reviewsBtn = at(button("Cập nhật số review"), 145, 478, 150, 32);
-  const queueBtn = at(button("Thêm vào hàng chờ"), 304, 478, 160, 32);
-  const prepBtn = at(button("Chuẩn bị trước"), 473, 478, 130, 32);
+  // Two SEPARATE groups, each with its own numbers (remembered per session) and its own button; labels above the boxes.
+  const group = (title, x) => { const t = at(label(title, ""), x, 470, 200, 18); t.style.fontWeight = "600"; return t; };
+  const small = (text, x, w) => { const l = at(label(text, "muted"), x, 490, w, 16); l.style.fontSize = "11px"; return l; };
+  const qTitle = group("Thêm vào hàng chờ", 16);
+  const qCountHint = small("Số sản phẩm", 16, 90), queueCount = at(numeric(1, 200, 10), 16, 508, 64, 28);
+  queueCount.title = "Số sản phẩm đưa vào hàng chờ (theo danh mục và ô Chỉ chưa dùng đang chọn), 1-200";
+  const qSceneHint = small("Ảnh ngữ cảnh / sản phẩm", 110, 150), sceneCount = at(numeric(1, 4, 2), 110, 508, 64, 28);
+  sceneCount.title = "Số ảnh ngữ cảnh khác nhau cho mỗi sản phẩm khi thêm vào hàng chờ, 1-4. Lấy trước từ kho đã chuẩn bị (dòng có ít nhất số ảnh này), phần thiếu Claude chọn.";
+  const queueBtn = at(button("Thêm vào hàng chờ"), 270, 506, 160, 32);
+  const divider = at(el("div", "abs"), 448, 470, 1, 68); divider.style.background = "var(--line)";
+  const pTitle = group("Chuẩn bị trước", 466);
+  const pCountHint = small("Số sản phẩm (0 = tất cả)", 466, 140), prepCount = at(numeric(0, 500, 50), 466, 508, 64, 28);
+  prepCount.title = "Số sản phẩm Claude chuẩn bị trước lần này, 0 = tất cả sản phẩm còn lại (theo danh mục và ô Chỉ chưa dùng)";
+  const pSceneHint = small("Ảnh ngữ cảnh / sản phẩm", 616, 150), prepScenes = at(numeric(1, 4, 4), 616, 508, 64, 28);
+  prepScenes.title = "Số ảnh ngữ cảnh chuẩn bị cho mỗi sản phẩm, 1-4. Nên để 4: Thêm vào hàng chờ dùng được mọi số ảnh từ 1 đến 4 từ cùng một dòng.";
+  const prepBtn = at(button("Chuẩn bị trước"), 770, 506, 110, 32);
   prepBtn.title = "Claude chọn sẵn ảnh bối cảnh cho các sản phẩm chưa chuẩn bị của dự án (theo danh mục và ô Chỉ chưa dùng), lưu vào kho đã chuẩn bị; không đụng hàng chờ, chạy được khi Bắt đầu đang chạy. Lần sau Thêm vào hàng chờ lấy ngay từ kho này.";
-  const openDir = at(button("Mở thư mục"), 612, 478, 100, 32);
-  const stop = at(button("Dừng"), 721, 478, 70, 32);
-  const close = at(button("Đóng"), 800, 478, 80, 32);
-  view.body.append(listTitle, unpick, projectLine, listBox, addWeb, catLabel, catBox, unusedOnly, countLabel, tableBox, status, queueHint, queueCount, sceneHint, sceneCount, scanBtn, reviewsBtn, queueBtn, prepBtn, openDir, stop, close);
+  const scanBtn = at(button("Quét cập nhật"), 16, 556, 120, 32);
+  const reviewsBtn = at(button("Cập nhật số review"), 145, 556, 150, 32);
+  const openDir = at(button("Mở thư mục"), 304, 556, 100, 32);
+  const stop = at(button("Dừng"), 413, 556, 70, 32);
+  const close = at(button("Đóng"), 800, 556, 80, 32);
+  view.body.append(listTitle, unpick, projectLine, listBox, addWeb, catLabel, catBox, unusedOnly, countLabel, tableBox, status, qTitle, qCountHint, queueCount, qSceneHint, sceneCount, queueBtn, divider, pTitle, pCountHint, prepCount, pSceneHint, prepScenes, prepBtn, scanBtn, reviewsBtn, openDir, stop, close);
+  // each pair is remembered separately (this session's run-settings); the buttons read only their own boxes
+  fetch("/api/run-settings").then((x) => x.json()).then((s) => {
+    if (s.queueCount) queueCount.value = s.queueCount; if (s.queueScenes) sceneCount.value = s.queueScenes;
+    if (s.prepCount !== undefined) prepCount.value = s.prepCount; if (s.prepScenes) prepScenes.value = s.prepScenes;
+    refreshPrepared();
+  }).catch(() => {});
+  const remember = () => fetch("/api/run-settings", { method: "POST", body: JSON.stringify({ queueCount: queueCount.value, queueScenes: sceneCount.value, prepCount: prepCount.value, prepScenes: prepScenes.value }) }).catch(() => {});
+  queueCount.onchange = remember; prepCount.onchange = remember; prepScenes.onchange = remember;
+  sceneCount.onchange = () => { remember(); refreshPrepared(); }; // the footer counts the prepared rows the queue can use with THIS number of scenes
 
   // Two kinds of run can go at once: the main runner (scan / review count / the Flow run of Bắt đầu) and the LIGHT runner (queue, prep: no browser).
   let projects = [], current = "", data = null, timer = null, runningMain = "", runningLight = "", startedAt = 0, lightStarted = 0, ticks = 0, otherActive = false, otherLight = false, prepText = "", fastNote = "";
@@ -883,7 +898,7 @@ function showProjectsDialog(pick = "") {
     // queue / prep need no browser: only another LIGHT run blocks them, never the main Bắt đầu run
     queueBtn.disabled = lightBusy || otherLight || !has || !data.rows.length;
     prepBtn.disabled = lightBusy || otherLight || !has || !data.rows.length;
-    queueCount.enabled = !lightBusy; sceneCount.enabled = !lightBusy;
+    queueCount.enabled = !lightBusy; sceneCount.enabled = !lightBusy; prepCount.enabled = !lightBusy; prepScenes.enabled = !lightBusy;
     openDir.disabled = !has;
     stop.disabled = !(mainBusy || lightBusy);
   };
@@ -891,9 +906,9 @@ function showProjectsDialog(pick = "") {
   // "Đã chuẩn bị: X sẵn sàng / Y sản phẩm" for the selected project and the category / only-unused filter.
   const refreshPrepared = async () => {
     if (!current) { prepText = ""; return; }
-    const q = new URLSearchParams({ project: current, category: catBox.value, unused_only: unusedOnly.input.checked ? "1" : "0" });
+    const q = new URLSearchParams({ project: current, category: catBox.value, unused_only: unusedOnly.input.checked ? "1" : "0", scenes: String(sceneCount.value) });
     const r = await fetch("/api/project/prepared?" + q).then((x) => x.json()).catch(() => null);
-    prepText = r && !r.error ? `Chuẩn bị trước: ${r.ready} sẵn sàng · ${r.to_prepare} chưa chuẩn bị${r.skipped ? ` · ${r.skipped} bỏ qua (không hợp ảnh)` : ""}${r.in_queue ? ` · ${r.in_queue} đã ở hàng chờ` : ""} (${r.in_filter} sản phẩm${unusedOnly.input.checked ? " chưa dùng" : ""}${catBox.value ? " của danh mục" : ""})` : "";
+    prepText = r && !r.error ? `Chuẩn bị trước: ${r.ready_usable} sẵn sàng (≥ ${sceneCount.value} ảnh)${r.ready > r.ready_usable ? ` + ${r.ready - r.ready_usable} ít ảnh hơn` : ""} · ${r.to_prepare} chưa chuẩn bị${r.skipped ? ` · ${r.skipped} bỏ qua` : ""} · ${r.in_queue} đã ở hàng chờ (${r.in_filter} sản phẩm${unusedOnly.input.checked ? " chưa dùng" : ""}${catBox.value ? " của danh mục" : ""})` : "";
     if (!runningMain && !runningLight && !otherActive && !otherLight && data && prepShowIdle) say(idleText(), "");
   };
   let prepShowIdle = true;
@@ -1077,7 +1092,7 @@ function showProjectsDialog(pick = "") {
     runningLight = "queue"; lightStarted = Date.now(); ticks = 0; refreshButtons(); say(fastNote + "\nĐang bắt đầu…", "var(--accent)"); watch();
   };
   // Chuẩn bị trước: Claude picks the scenes of the not-yet-prepared products and stores them (prepared.csv); the queue is not touched.
-  prepBtn.onclick = () => { if (data) begin("/api/project/prep/run", { project: current, category: catBox.value, unused_only: unusedOnly.input.checked, scenes: sceneCount.value || 2 }, "prep", "Chưa bắt đầu chuẩn bị được."); };
+  prepBtn.onclick = () => { if (data) begin("/api/project/prep/run", { project: current, category: catBox.value, unused_only: unusedOnly.input.checked, limit: prepCount.value, scenes: prepScenes.value }, "prep", "Chưa bắt đầu chuẩn bị được."); };
   stop.onclick = async () => { stop.disabled = true; say("Đang dừng…", "var(--accent)"); await fetch(running === "queue" ? "/api/project/queue/stop" : running === "reviews" ? "/api/project/reviews/stop" : "/api/scan/stop", { method: "POST" }).catch(() => {}); };
   openDir.onclick = () => data && api("openPath", { path: data.project.dir });
   catBox.onchange = () => { renderTable(); refreshPrepared(); };
