@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { randomUUID, createHash } from "node:crypto";
 import { createConfigApi } from "../../core/setup/config-api.mjs";
-import { createAgentRunner, buildPrompt, newRunId, readFlowAccount } from "../../core/setup/agent-run.mjs";
+import { createAgentRunner, buildPrompt, newRunId, readFlowAccount, FEATURE } from "../../core/setup/agent-run.mjs";
 import { readFlowBrowser, saveFlowBrowser, localChromeProfiles } from "../../core/setup/flow-browser.mjs";
 import { currentSession, sessionLabel, sessionWorkspace, sharedWorkspace, registerSession, updateSession, unregisterSession, listSessions, lockHolder, releaseLocks, peekGroup, sessionTitle, profileLabelOf, projectBusyBy, setSessionProject, claimProjectFocus, readSeededJson, updateJsonLocked, SESSION_RE } from "../../core/setup/session.mjs";
 import { createFlowLogin, profileDirOf, profileGoogleAccounts, findChrome, flowOpenUrl } from "../../core/setup/flow-login.mjs";
@@ -132,7 +132,7 @@ async function startRun({ threads = 1, backend = "codex", text = "codex" }) {
   if (existsSync(map)) args.push("-ReferenceMapFile", map);
   // Own process group (macOS), so Dừng stops codex and every other child too.
   const proc = spawn(PWSH, psFile(join(root, "src", "run-images.ps1"), args), { cwd: root, env: toolEnv, detached: process.platform !== "win32", windowsHide: true, stdio: ["ignore", "pipe", "pipe"] });
-  run.proc = proc;
+  run.proc = proc; run.startedAt = Date.now();
   let chain = Promise.resolve();
   for (const [stream, file] of [[proc.stdout, run.logFile], [proc.stderr, run.errFile]]) {
     createInterface({ input: stream }).on("line", (line) => {
@@ -541,6 +541,17 @@ async function handle(req, res) {
     return send(res, r.ok ? 200 : 500, r.ok ? r : { error: r.error });
   }
   // Status of the light runner (queue and prep runs): its own file runs/prep-run.json.
+  // ONE status for the run line of every view: what runs now (main runner, light runner, the Codex Bắt đầu run) and the last finished run.
+  if (path === "/api/runs/status" && req.method === "GET") {
+    const view = (st, kind) => ({ kind, feature: FEATURE[st.mode] || st.mode, mode: st.mode, project: st.project ? projectNameOf(st.project) : "", active: !!st.active, elapsed_s: st.elapsed_s || 0,
+      last_text: st.last_text || "", status: st.status, error: st.error || "", started: st.started || "", updated: st.updated || "" });
+    const m = agent.status(), l = light.status(), running = [];
+    if (run.proc) running.push({ kind: "codex", feature: FEATURE.flow, mode: "flow", project: selfProject() ? projectNameOf(selfProject()) : "", active: true, elapsed_s: Math.round((Date.now() - (run.startedAt || Date.now())) / 1000), last_text: "", status: "running", error: "" });
+    if (m.active) running.push(view(m, "main"));
+    if (l.active) running.push(view(l, "light"));
+    const done = [[m, "main"], [l, "light"]].filter(([s]) => !s.active && s.started && s.status && s.status !== "idle").map(([s, k]) => view(s, k)).sort((a, b) => String(b.updated || b.started).localeCompare(String(a.updated || a.started)));
+    return send(res, 200, { running, last: done[0] || null });
+  }
   if (path === "/api/light/status" && req.method === "GET") return send(res, 200, { ...light.status(), light: true });
   if ((path === "/api/project/queue/stop" || path === "/api/project/prep/stop") && req.method === "POST") {
     const hadOrder = !!(queueOrder && queueOrder.active);

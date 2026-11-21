@@ -17,6 +17,8 @@ export const ALLOWED_TOOLS = ["Bash", "Read", "Write", "Edit", "Glob", "Grep", .
 // queue / prep runs only look at photos and call src/scan.ps1: no browser, no Playwright MCP, no Chrome profile.
 export const LIGHT_TOOLS = ["Bash", "Read", "Write", "Edit", "Glob", "Grep"];
 export const LIGHT_MODES = ["queue", "prep"];
+// The name of each feature as the person knows it: every log line of a run starts with [feature · project].
+export const FEATURE = { flow: "Tạo ảnh & review (Bắt đầu)", scan: "Quét web", reviews: "Cập nhật số review", queue: "Thêm vào hàng chờ", prep: "Chuẩn bị trước" };
 
 const SCRUBS = [
   [/\bBearer\s+\S+/gi, "Bearer [hidden]"],
@@ -68,6 +70,10 @@ export function friendlyTool(name, input = {}, mode = "flow") {
   const cmd = String(input?.command || input?.file_path || "");
   if (n === "Bash") {
     if (/scan\.ps1/i.test(cmd)) {
+      if (/prep-todo/i.test(cmd)) return "Lấy danh sách sản phẩm cần chuẩn bị";
+      if (/prep-add/i.test(cmd)) return "Lưu ảnh bối cảnh đã chọn vào kho chuẩn bị";
+      if (/prep-status/i.test(cmd)) return "Xem số đã chuẩn bị";
+      if (/queue-from-prepared/i.test(cmd)) return "Lấy sản phẩm từ kho chuẩn bị vào hàng chờ";
       if (/queue-todo/i.test(cmd)) return "Lấy danh sách sản phẩm cần thêm vào hàng chờ";
       if (/queue-add/i.test(cmd)) return "Thêm sản phẩm vào hàng chờ (link, ảnh gốc, các ảnh bối cảnh)";
       if (/scene-get/i.test(cmd)) return "Lấy ảnh bối cảnh từ kho ảnh để xem";
@@ -84,7 +90,10 @@ export function friendlyTool(name, input = {}, mode = "flow") {
     }
     if (/register-image/i.test(cmd)) return "Lưu ảnh Flow vừa tạo vào kết quả";
     if (/flow-brief/i.test(cmd)) return "Chuẩn bị nội dung gửi Flow cho sản phẩm";
-    if (/review/i.test(cmd)) return "Ghi review cho sản phẩm";
+    if (/agent\.ps1\s+(review-brief|write-review)/i.test(cmd)) return "Ghi review cho sản phẩm";
+    if (/agent\.ps1\s+finish/i.test(cmd)) return "Hoàn tất sản phẩm (tải kết quả)";
+    if (/flow-pace\.mjs\s+gate/i.test(cmd)) return "Chờ nhịp gửi prompt Flow";
+    if (/flow-pace\.mjs\s+download-lock/i.test(cmd)) return "Khóa / mở khóa tải ảnh";
     return "Chạy lệnh của công cụ";
   }
   if (n === "Read") return /\.(png|jpe?g|webp)$/i.test(cmd) ? "Xem ảnh sản phẩm / ảnh bối cảnh" : "Đọc dữ liệu của lượt chạy";
@@ -194,7 +203,7 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
     // Same step twice in a row: one line with a count, not a wall of repeats.
     if (run.prev === line) { run.repeat = (run.repeat || 1) + 1; run.lines[run.lines.length - 1] = run.stamp + " " + line + ` (×${run.repeat})`; return; }
     run.prev = line; run.repeat = 1; run.stamp = new Date(now()).toTimeString().slice(0, 8);
-    line = run.stamp + " " + line;
+    line = run.stamp + " " + (run.prefix || "") + line;
     run.lines.push(line); if (run.lines.length > LOG_LINES) run.lines.splice(0, run.lines.length - LOG_LINES);
     try { mkdirSync(runsDir, { recursive: true }); if (++run.written % 500 === 0) writeFileSync(logFile, run.lines.join("\n") + "\n"); else appendFileSync(logFile, line + "\n"); } catch {}
   };
@@ -294,6 +303,7 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
     const started = new Date(now()).toISOString();
     const run = { child, cfg, lines: [], buf: "", written: 0, stderr: [], ended: false, forced: "", result: null, timer: null,
       state: { run_id: runId, mode, project, pid: child.pid ?? null, started, updated: started, status: "running", exit_code: null, last_text: "", turns: 0, error: "" } };
+    run.prefix = "[" + (FEATURE[mode] || mode) + (project ? " · " + project : "") + "] ";
     cur = run;
     try { writeFileSync(logFile, ""); } catch {}
     addLine(run, mode === "prep" ? "Bắt đầu: Claude chuẩn bị trước ảnh bối cảnh cho các sản phẩm của dự án " + project + " (mã lượt " + runId + ")"
@@ -341,7 +351,7 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
     return {
       active: !!run, status: shown?.status || "idle", run_id: shown?.run_id || "", mode: shown?.mode || "flow", project: shown?.project || "", started: shown?.started || "",
       elapsed_s: shown?.started ? Math.max(0, Math.round(((run ? now() : Date.parse(shown.updated) || now()) - Date.parse(shown.started)) / 1000)) : 0,
-      last_text: shown?.last_text || "", turns: shown?.turns || 0, error: shown?.error || "", tail: lines.slice(-TAIL_LINES),
+      last_text: shown?.last_text || "", turns: shown?.turns || 0, error: shown?.error || "", updated: shown?.updated || "", tail: lines.slice(-TAIL_LINES),
     };
   }
   return { start, stop, status, shutdown, isActive: () => !!cur };

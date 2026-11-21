@@ -438,7 +438,12 @@ function buildMain() {
 
   // Tiến trình & thông báo (20,508 1060x282, all anchors).
   const cardLog = at(el("div", "card"), 20, 568, null, null, { right: 24, bottom: 10 });
-  cardLog.append(at(label("Tiến trình & thông báo"), 14, 10, null, 20));
+  cardLog.append(at(label("Tiến trình & thông báo"), 14, 10, 150, 20));
+  // always-visible run line: which feature runs (or ran last), for which project, since when, last step
+  ui.runLine = at(label("", "muted"), 170, 10, null, 20, { right: 14 });
+  Object.assign(ui.runLine.style, { whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", fontSize: "12px", lineHeight: "20px" });
+  cardLog.append(ui.runLine);
+  setTimeout(refreshRunLine, 500);
   ui.bar = at(el("div", "progress"), 14, 36, null, 8, { right: 14 });
   ui.bar.append(el("span"));
   ui.lblProgress = at(label("Thêm sản phẩm và ảnh đi kèm để bắt đầu."), 14, 50, null, 24, { right: 14 });
@@ -514,6 +519,25 @@ function renderRows() {
   }));
 }
 
+// ----- The run status line (every window, and the Dự án popup): what runs now, else the last finished run -----
+const mmss = (s) => String(Math.floor(s / 60)).padStart(2, "0") + ":" + String(s % 60).padStart(2, "0");
+const hhmm = (iso) => { const d = new Date(iso); return isNaN(d) ? "" : String(d.getHours()).padStart(2, "0") + ":" + String(d.getMinutes()).padStart(2, "0"); };
+function runLines(rs) {
+  if (!rs) return [];
+  if (rs.running && rs.running.length) return rs.running.map((r) => "Đang chạy: " + r.feature + (r.project ? " · " + r.project : "") + " · " + mmss(r.elapsed_s || 0) + (r.last_text ? " · " + r.last_text.replace(/\s+/g, " ").slice(0, 140) : ""));
+  const l = rs.last;
+  return ["Không có lượt nào đang chạy" + (l ? " · Lượt trước: " + l.feature + (l.project ? " · " + l.project : "") + " · " + (l.status === "done" ? "xong" : l.status === "stopped" ? "đã dừng" : "lỗi") + " lúc " + hhmm(l.updated || l.started) + (l.status !== "done" && l.error ? " (" + l.error.slice(0, 120) + ")" : "") : "")];
+}
+async function refreshRunLine() {
+  const rs = await fetch("/api/runs/status").then((x) => x.json()).catch(() => null);
+  if (!rs || !ui.runLine) return rs;
+  const lines = runLines(rs);
+  ui.runLine.textContent = lines.join("  |  ");
+  ui.runLine.title = lines.join("\n");
+  ui.runLine.style.color = rs.running && rs.running.length ? "var(--accent)" : rs.last && rs.last.status !== "done" ? "var(--error)" : "var(--muted)";
+  return rs;
+}
+setInterval(refreshRunLine, 3000);
 // ----- Sessions: badge, window title, list of the open windows, "Mở cửa sổ mới" -----
 let sessionState = {};
 async function refreshSessionBadge() {
@@ -809,7 +833,10 @@ function showScanDialog() {
     if (!r.ok) return say(body.error || "Chưa bắt đầu quét được.", "var(--error)");
     setBusy(true); say("Đang bắt đầu…", "var(--accent)"); watch();
   };
-  stop.onclick = async () => { stop.disabled = true; say("Đang dừng…", "var(--accent)"); const calls = []; if (runningLight) calls.push("/api/project/queue/stop"); if (runningMain) calls.push(runningMain === "reviews" ? "/api/project/reviews/stop" : "/api/scan/stop"); await Promise.all(calls.map((u) => fetch(u, { method: "POST" }).catch(() => {}))); };
+  const stopMainRun = () => fetch(runningMain === "reviews" ? "/api/project/reviews/stop" : "/api/scan/stop", { method: "POST" }).catch(() => {});
+  // Dừng stops the light run / the queue order when there is one, else the main run; the second button stops the main run when both run
+  stop.onclick = async () => { stop.disabled = true; say("Đang dừng " + stop.textContent.replace(/^Dừng ?/, "") + "…", "var(--accent)"); if (runningLight || orderActive) await fetch("/api/project/queue/stop", { method: "POST" }).catch(() => {}); else if (runningMain) await stopMainRun(); };
+  stopMain.onclick = async () => { stopMain.disabled = true; say("Đang dừng " + stopMain.textContent.replace(/^Dừng ?/, "") + "…", "var(--accent)"); await stopMainRun(); stopMain.disabled = false; };
   openDir.onclick = () => scan?.dir && api("openPath", { path: scan.dir });
   toImport.onclick = () => { if (!scan?.csv) return; view.close(); showBulkDialog({ csv: scan.csv }); };
   // Closing the popup leaves a running scan running; opening it again picks it up.
@@ -823,7 +850,7 @@ function showScanDialog() {
 // seen on each product page. "Quét cập nhật" only adds new products (/api/scan/*); "Cập nhật số review" has Claude read the number every
 // product page shows (READ ONLY, docs/reviews-count-prompt.md, /api/project/reviews/*); "Nhập vào danh sách" imports the used = F rows -----
 function showProjectsDialog(pick = "") {
-  const view = openWindow("Dự án", 900, 600);
+  const view = openWindow("Dự án", 900, 640);
   const fmtStamp = (s) => (s ? `${s.slice(8, 10)}/${s.slice(5, 7)} ${s.slice(11, 16)}` : "chưa có");
   const oneLine = (style = {}) => Object.assign({ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }, style);
   const listTitle = at(label("Dự án của bạn", "muted"), 16, 14, 150, 20);
@@ -872,9 +899,12 @@ function showProjectsDialog(pick = "") {
   const scanBtn = at(button("Quét cập nhật"), 16, 556, 120, 32);
   const reviewsBtn = at(button("Cập nhật số review"), 145, 556, 150, 32);
   const openDir = at(button("Mở thư mục"), 304, 556, 100, 32);
-  const stop = at(button("Dừng"), 413, 556, 70, 32);
+  const stop = at(button("Dừng"), 413, 556, 190, 32);
+  const stopMain = at(button("Dừng"), 612, 556, 180, 32); stopMain.style.display = "none";
+  const runBox = at(label("", "muted"), 16, 596, 868, 38);
+  Object.assign(runBox.style, { whiteSpace: "pre-line", lineHeight: "18px", fontSize: "12px", overflow: "hidden" });
   const close = at(button("Đóng"), 800, 556, 80, 32);
-  view.body.append(listTitle, unpick, projectLine, listBox, addWeb, catLabel, catBox, unusedOnly, countLabel, tableBox, status, qTitle, qCountHint, queueCount, qSceneHint, sceneCount, queueBtn, divider, pTitle, pCountHint, prepCount, pSceneHint, prepScenes, prepBtn, scanBtn, reviewsBtn, openDir, stop, close);
+  view.body.append(listTitle, unpick, projectLine, listBox, addWeb, catLabel, catBox, unusedOnly, countLabel, tableBox, status, qTitle, qCountHint, queueCount, qSceneHint, sceneCount, queueBtn, divider, pTitle, pCountHint, prepCount, pSceneHint, prepScenes, prepBtn, scanBtn, reviewsBtn, openDir, stop, stopMain, close, runBox);
   // each pair is remembered separately (this session's run-settings); the buttons read only their own boxes
   fetch("/api/run-settings").then((x) => x.json()).then((s) => {
     if (s.queueCount) queueCount.value = s.queueCount; if (s.queueScenes) sceneCount.value = s.queueScenes;
@@ -902,7 +932,12 @@ function showProjectsDialog(pick = "") {
     prepBtn.disabled = lightBusy || otherLight || !has || !data.rows.length;
     queueCount.enabled = !lightBusy; sceneCount.enabled = !lightBusy; prepCount.enabled = !lightBusy; prepScenes.enabled = !lightBusy;
     openDir.disabled = !has;
-    stop.disabled = !(mainBusy || lightBusy);
+    stop.disabled = !(mainBusy || lightBusy || orderActive);
+    // each Dừng says what it stops; with two runs at once (main + light) there are two buttons
+    const FEAT = { scan: "Quét web", reviews: "Cập nhật số review", queue: "Thêm vào hàng chờ", prep: "Chuẩn bị trước" };
+    stop.textContent = "Dừng" + (runningLight ? " " + FEAT[runningLight] : orderActive ? " Thêm vào hàng chờ" : mainBusy ? " " + FEAT[runningMain] : "");
+    stopMain.style.display = mainBusy && (lightBusy || orderActive) ? "" : "none";
+    stopMain.textContent = mainBusy ? "Dừng " + FEAT[runningMain] : "Dừng";
   };
   const idleText = () => (data ? `${data.project.products} sản phẩm · đã dùng ${data.project.used} · đã kiểm tra review ${data.project.with_reviews}.` + (prepText ? "\n" + prepText : "") : "");
   // "Đã chuẩn bị: X sẵn sàng / Y sản phẩm" for the selected project and the category / only-unused filter.
@@ -1001,6 +1036,7 @@ function showProjectsDialog(pick = "") {
     const [st, lt, od] = await Promise.all([fetch("/api/agent/status").then((x) => x.json()).catch(() => null), fetch("/api/light/status").then((x) => x.json()).catch(() => null), fetch("/api/project/queue/order").then((x) => x.json()).catch(() => null)]);
     if (!st || !lt) return;
     orderActive = !!(od && od.active);
+    { const rs = await refreshRunLine(); runBox.textContent = runLines(rs).join("\n"); }
     const lightNow = lt.active && (lt.mode === "queue" || lt.mode === "prep");
     const mainNow = st.active && (st.mode === "scan" || st.mode === "reviews");
     otherLight = !!lightNow && !runningLight; otherActive = !!st.active && !mainNow && !runningMain;
@@ -1011,16 +1047,15 @@ function showProjectsDialog(pick = "") {
       const kind = runningLight; runningLight = "";
       let ok = lt.status === "done";
       let text = ok ? "Xong." : `Lượt chạy dừng${lt.error ? ": " + lt.error : ""}.`;
+      const tag = "[" + (kind === "queue" ? "Thêm vào hàng chờ" : "Chuẩn bị trước") + (data ? " · " + data.project.name : "") + "] ";
       if (kind === "queue") {
-        // The queue changed on disk (urls.txt + references.json): reload the main window's list so the person can check every product there.
-        const before = countUrls();
+        // the session's own numbers: the order (links of this project in THIS window's urls.txt) and the run's own last text
         await loadState().catch(() => {});
-        const added = countUrls() - before;
-        const worked = ok && added > 0;
-        if (ok && !worked) ok = false;
-        text = (worked ? `Claude đã chọn thêm ${added} sản phẩm. Xem và kiểm tra danh sách ở cửa sổ chính (mỗi sản phẩm có ảnh gốc và ảnh bối cảnh, bấm Xem / sửa để đổi).\n` : (lt.error ? `Lượt thêm vào hàng chờ dừng: ${lt.error}. ` : "Claude chưa thêm được sản phẩm nào. ") + "Phần đã thêm (nếu có) vẫn nằm trong hàng chờ.\n") + (lt.last_text || "");
-        if (fastNote) text = fastNote + "\n" + text;
+        const od2 = await fetch("/api/project/queue/order").then((x) => x.json()).catch(() => null);
+        if (od2 && od2.line) { text = od2.line + (od2.message ? "\n" + od2.message : ""); ok = od2.state === "done" || (!od2.active && lt.status === "done" && od2.added >= od2.total); }
+        else text = (lt.status === "done" ? "Lượt thêm vào hàng chờ đã xong." : "Lượt thêm vào hàng chờ dừng" + (lt.error ? ": " + lt.error : ".")) + (lt.last_text ? "\n" + lt.last_text : "");
       } else { text = (ok ? "Chuẩn bị xong." : `Chuẩn bị dừng${lt.error ? ": " + lt.error : ""}. Phần đã chuẩn bị vẫn nằm trong kho.`); }
+      text = tag + text;
       fastNote = "";
       await refreshPrepared();
       say((kind === "prep" ? text + (prepText ? "\n" + prepText : "") : text), ok ? "var(--ok)" : "var(--error)");
