@@ -12,7 +12,7 @@ import { fileURLToPath } from "node:url";
 import { randomUUID, createHash } from "node:crypto";
 import { createConfigApi } from "../../core/setup/config-api.mjs";
 import { createAgentRunner, buildPrompt, newRunId, readFlowAccount, FEATURE } from "../../core/setup/agent-run.mjs";
-import { readFlowBrowser, saveFlowBrowser, localChromeProfiles } from "../../core/setup/flow-browser.mjs";
+import { readFlowBrowser, saveFlowBrowser, localChromeProfiles, tokenProfiles, saveExtensionToken } from "../../core/setup/flow-browser.mjs";
 import { currentSession, sessionLabel, sessionWorkspace, sharedWorkspace, registerSession, updateSession, unregisterSession, listSessions, lockHolder, releaseLocks, peekGroup, sessionTitle, profileLabelOf, projectBusyBy, setSessionProject, claimProjectFocus, readSeededJson, updateJsonLocked, SESSION_RE } from "../../core/setup/session.mjs";
 import { createFlowLogin, profileDirOf, profileGoogleAccounts, findChrome, flowOpenUrl } from "../../core/setup/flow-login.mjs";
 import { PWSH, toolEnv, psFile, psCommand, killTree, appWindow, chooseFiles } from "../../core/platform.mjs";
@@ -597,7 +597,10 @@ async function handle(req, res) {
   if (path === "/api/project/queue/status" && req.method === "GET") return send(res, 200, { ...light.status(), light: true });
   // Own Chrome sign-in for Claude (Flow): status (short headless check), open (normal Chrome window for the person to sign in).
   // Which browser Claude (Flow) drives: everyday Chrome (a profile chosen from this machine) or the tool's own Chrome.
-  if (path === "/api/flow-browser" && req.method === "GET") return send(res, 200, { ...readFlowBrowser(workspace, sharedWs), ...localChromeProfiles() });
+  // token_saved per profile (a bool only: the Playwright extension token itself never goes back to the page)
+  if (path === "/api/flow-browser" && req.method === "GET") { const lp = localChromeProfiles(), withTok = new Set(tokenProfiles(sharedWs)); return send(res, 200, { ...readFlowBrowser(workspace, sharedWs), ...lp, profiles: (lp.profiles || []).map((p) => ({ ...p, token_saved: withTok.has(p.folder) })) }); }
+  // Save (token) or clear (token "") the optional Playwright extension token of one Chrome profile: shared workspace/playwright-tokens.json.
+  if (path === "/api/flow-browser/token" && req.method === "POST") { try { const b = JSON.parse((await body(req)).toString("utf8") || "{}"); return send(res, 200, saveExtensionToken(sharedWs, String(b.profile || ""), String(b.token || ""))); } catch (e) { return send(res, 400, { error: e.message }); } }
   // Opens the Chrome Web Store page of the Playwright MCP Bridge in THE CHOSEN profile; the person clicks "Add to Chrome" (nothing is installed for them).
   if (path === "/api/flow-browser/install-extension" && req.method === "POST") {
     try {

@@ -362,7 +362,43 @@ function buildMain() {
   Object.assign(ui.btnInstallExt.style, { fontSize: "11px", padding: "0 4px", lineHeight: "16px", minHeight: "0" });
   ui.btnInstallExt.title = "Cài extension vào profile này: mở trang Playwright MCP Bridge trên Chrome Web Store trong đúng profile đã chọn. Bạn tự bấm Thêm vào Chrome; tool không cài thay.";
   ui.btnInstallExt.hidden = true;
-  const refreshInstallButton = () => { const p = ui.flowBrowserProfiles.find((x) => x.folder === ui.flowBrowser.value); ui.btnInstallExt.hidden = !p || p.playwright_extension; };
+  // Optional Playwright extension token of the chosen profile (extension mode, profile with the extension): saved = runs connect without the Connect click.
+  // It sits in the slot of "Kiểm tra lại" (that button exists only in own-Chrome mode). The token is never read back: the server only says token_saved.
+  ui.lblToken = at(label("Token Playwright (tùy chọn)", "muted"), 14, 145, 196, 14);
+  ui.lblToken.style.fontSize = "11px"; ui.lblToken.style.lineHeight = "14px";
+  ui.tokenInput = at(el("input", "text", { type: "password", autocomplete: "off", placeholder: "Dán token của profile này" }), 14, 160, 126, 24);
+  ui.tokenInput.style.fontSize = "12px";
+  ui.tokenState = at(label("", "muted"), 14, 160, 126, 24);
+  Object.assign(ui.tokenState.style, { whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", fontSize: "12px", lineHeight: "24px" });
+  ui.btnTokenSave = at(button("Lưu"), 146, 160, 64, 24);
+  ui.btnTokenClear = at(button("Xoá token"), 136, 160, 74, 24);
+  for (const b of [ui.btnTokenSave, ui.btnTokenClear]) Object.assign(b.style, { fontSize: "12px", padding: "0 4px", minHeight: "0", lineHeight: "22px" });
+  const refreshTokenRow = () => {
+    const p = ui.flowBrowserProfiles.find((x) => x.folder === ui.flowBrowser.value);
+    const show = !!p && p.playwright_extension && ui.flowBrowser.value !== "own";
+    for (const n of [ui.lblToken, ui.tokenInput, ui.tokenState, ui.btnTokenSave, ui.btnTokenClear]) n.style.display = show ? "" : "none";
+    if (!show) return;
+    const saved = !!p.token_saved;
+    ui.tokenInput.style.display = ui.btnTokenSave.style.display = saved ? "none" : "";
+    ui.tokenState.style.display = ui.btnTokenClear.style.display = saved ? "" : "none";
+    ui.tokenState.textContent = saved ? "Đã gắn token" : "";
+    const text = saved ? "Đã gắn token cho " + p.folder + ": chạy không cần bấm Connect" : "Chưa gắn token: mỗi lượt bấm Connect";
+    ui.lblToken.title = ui.tokenState.title = ui.tokenInput.title = text + ". Token lấy trên trang của extension Playwright MCP Bridge trong đúng profile này (mỗi profile một token riêng).";
+    ui.lblToken.textContent = saved ? "Token Playwright: không cần Connect" : "Token Playwright (tùy chọn)";
+  };
+  const saveToken = async (token) => {
+    const profile = ui.flowBrowser.value;
+    const r = await fetch("/api/flow-browser/token", { method: "POST", body: JSON.stringify({ profile, token }) }).then((x) => x.json()).catch((e) => ({ error: e.message }));
+    ui.tokenInput.value = "";
+    if (r.error) return messageBox(r.error);
+    const p = ui.flowBrowserProfiles.find((x) => x.folder === profile); if (p) p.token_saved = !!r.token_saved;
+    refreshTokenRow();
+    messageBox(r.token_saved ? "Đã gắn token cho " + profile + ": chạy không cần bấm Connect." : "Đã xoá token. Chưa gắn token: mỗi lượt bấm Connect.");
+  };
+  ui.btnTokenSave.onclick = () => { const t = ui.tokenInput.value.trim(); if (t) saveToken(t); };
+  ui.tokenInput.addEventListener("keydown", (e) => { if (e.key === "Enter") ui.btnTokenSave.click(); });
+  ui.btnTokenClear.onclick = () => { if (confirm("Xoá token của " + ui.flowBrowser.value + "? Các lượt sau sẽ cần bấm Connect.")) saveToken(""); };
+  const refreshInstallButton = () => { const p = ui.flowBrowserProfiles.find((x) => x.folder === ui.flowBrowser.value); ui.btnInstallExt.hidden = !p || p.playwright_extension; refreshTokenRow(); };
   const loadFlowBrowser = () => fetch("/api/flow-browser").then((r) => r.json()).then((j) => {
     ui.flowBrowserProfiles = j.profiles || [];
     const items = ["own", ...ui.flowBrowserProfiles.map((p) => p.folder)], labels = ["Chrome riêng của tool", ...ui.flowBrowserProfiles.map((p) => ((p.email || p.name || p.folder).split("@")[0]) + " · " + p.folder + (p.playwright_extension ? "" : " · chưa có extension"))];
@@ -389,7 +425,7 @@ function buildMain() {
   ui.btnFlowOpen.onclick = openFlowLogin;
   ui.btnFlowCheck.onclick = () => checkFlowLogin(true);
   ui.flowLoginBox.style.display = "none";
-  ui.flowLoginBox.append(ui.flowDivider, ui.lblFlowBrowser, ui.flowBrowser, ui.btnInstallExt, ui.lblFlowAccount, ui.flowAccount, ui.btnFlowOpen, ui.btnFlowCheck);
+  ui.flowLoginBox.append(ui.flowDivider, ui.lblFlowBrowser, ui.flowBrowser, ui.btnInstallExt, ui.lblFlowAccount, ui.flowAccount, ui.btnFlowOpen, ui.btnFlowCheck, ui.lblToken, ui.tokenInput, ui.tokenState, ui.btnTokenSave, ui.btnTokenClear);
   cardActions.append(ui.flowLoginBox);
 
   // Run row (20,466 1060x90).

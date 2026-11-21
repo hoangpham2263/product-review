@@ -6,7 +6,7 @@ import { mkdirSync, readFileSync, writeFileSync, appendFileSync, rmSync, existsS
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { platform as osPlatform } from "node:os";
-import { localChromeProfiles } from "./flow-browser.mjs";
+import { localChromeProfiles, extensionToken } from "./flow-browser.mjs";
 import { claimLock, releaseLocks, takeGroup, sessionLabel, readSeededJson } from "./session.mjs";
 
 // 0 = no limit: a run ends when Claude finishes, so a long batch is never cut off half way. Set minutes / maxTurns above 0 to cap a run.
@@ -124,8 +124,12 @@ export function mcpConfig({ plat = osPlatform(), profile, headless = true, exten
 }
 
 // Note put in front of the prompt when the run drives the person's everyday Chrome (extension mode).
-export const extensionNote = ({ groupName = "Product Review", session = "default", downloadsDir = "" } = {}) => `RUN-NOW NOTE: this run uses the person's everyday Chrome through the Playwright extension, so the person is at the computer and will click Connect in Chrome. Your tabs go into the Chrome tab group named "${groupName}" (session "${session}").
-If browser_tabs shows only a Welcome / connect.html tab, or the browser tools fail: the Playwright MCP has ALREADY opened that page, do NOT open a second copy; bring it to the front with browser_run_code_unsafe: async (page) => { await page.bringToFront(); } and tell the person in one line to click Connect. Then wait up to 3 minutes, calling browser_tabs about every 15 seconds, until a real page tab appears. If nothing connects, stop and report that Chrome did not connect (CAUSE:BROWSER).
+// tokenSet: a Playwright extension token is saved for this profile, so the extension connects by itself (no Connect click to wait for).
+export const extensionNote = ({ groupName = "Product Review", session = "default", downloadsDir = "", tokenSet = false } = {}) => (tokenSet
+  ? `RUN-NOW NOTE: this run uses the person's everyday Chrome through the Playwright extension. The extension token of this Chrome profile is set, so the connection is AUTOMATIC: there is no Connect click and nobody needs to click anything. Your tabs go into the Chrome tab group named "${groupName}" (session "${session}").
+If the browser tools fail at the start: the Chrome window of that profile may still be opening; call browser_tabs about every 10 seconds for up to 1 minute. Still nothing: stop and report that Chrome did not connect (CAUSE:BROWSER; the saved token may be outdated: the person can save the current one or clear it in the app).`
+  : `RUN-NOW NOTE: this run uses the person's everyday Chrome through the Playwright extension, so the person is at the computer and will click Connect in Chrome. Your tabs go into the Chrome tab group named "${groupName}" (session "${session}").
+If browser_tabs shows only a Welcome / connect.html tab, or the browser tools fail: the Playwright MCP has ALREADY opened that page, do NOT open a second copy; bring it to the front with browser_run_code_unsafe: async (page) => { await page.bringToFront(); } and tell the person in one line to click Connect. Then wait up to 3 minutes, calling browser_tabs about every 15 seconds, until a real page tab appears. If nothing connects, stop and report that Chrome did not connect (CAUSE:BROWSER).`) + `
 CLEAN UP FIRST (once, at the very start): close only leftover tabs that clearly belong to an OLD Chrome tab group of this same session (a group whose title starts with "Product Review · ${session} ·" but is not "${groupName}"). Never close any other tab, never touch the person's own tabs; if you cannot tell which tabs belong to an old group, close nothing.
 Downloads (the Downloads folder is shared by EVERY window of this machine, so two windows must never download at the same moment): around EACH download hold the machine-wide download lock: "node core/flow-pace.mjs download-lock acquire --tag <item id>" (it blocks until free), click the download button, move the NEW file from the Downloads folder AT ONCE into ${downloadsDir || "your own session folder"} and rename it "<item id>.<ext>", check it is the right picture (expected size, the prompt tile you submitted), then "node core/flow-pace.mjs download-lock release --tag <item id>". Never take a file you did not just download yourself. This mode cannot use download.saveAs.
 HUMAN PACING: before EVERY prompt you submit in Google Flow run: node core/flow-pace.mjs gate --tag <item id> (it waits the human-like time by itself; submit right after it returns; never several prompts behind one gate).
@@ -305,7 +309,9 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
     if (!lightMode) writeFileSync(cfg, JSON.stringify(mcpConfig({ plat, profile: profileDir, headless, extension: ext ? { profile: bc.profile, name: group.name, color: group.color } : null })));
     if (!lightMode && !ext) mkdirSync(profileDir, { recursive: true });
     const args = ["-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "default", ...(maxTurns > 0 ? ["--max-turns", String(maxTurns)] : []), "--allowedTools", (lightMode ? LIGHT_TOOLS : ALLOWED_TOOLS).join(","), "--add-dir", toolRoot, ...(lightMode ? ["--strict-mcp-config"] : ["--mcp-config", cfg])];
-    const env = { ...process.env };
+    // Optional per-profile Playwright extension token (shared workspace/playwright-tokens.json): only through this env, never in the MCP config file or a log.
+    const extToken = ext ? extensionToken(join(toolRoot, "workspace"), bc.profile) : "";
+    const env = { ...process.env, ...(extToken ? { PLAYWRIGHT_MCP_EXTENSION_TOKEN: extToken } : {}) };
     const cmd = plat === "win32" && /\.(cmd|bat)$/i.test(found.path) ? ["cmd", ["/c", found.path, ...args]] : [found.path, args];
     let child;
     try { child = spawnFn(cmd[0], cmd[1], { cwd: toolRoot, env, windowsHide: true, detached: false, stdio: ["pipe", "pipe", "pipe"] }); }
@@ -339,7 +345,7 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
       : mode === "scan"
       ? "RUN-NOW NOTE: this run uses the tool's OWN Chrome (a dedicated profile, no sign-in needed to scan a shop)" + (headless ? ", running in the background (headless)" : "") + ". There is no Connect step and no extension: ignore any instruction to click Connect or wait for the person; start with browser_tabs or browser_navigate. If the site asks for a login or shows a captcha, stop and report it (never sign in for the person)." + "\n\n"
       : "RUN-NOW NOTE: this run uses the tool's OWN Chrome (a dedicated profile the person already signed in to Google Flow with)" + (headless ? ", running in the background (headless)" : "") + ". There is no Connect step and no extension: ignore any instruction to click Connect or wait for the person; start with browser_tabs or browser_navigate. If Flow shows a Google sign-in page, stop and report CAUSE:LOGIN (never sign in for the person)." + "\n\n";
-    try { child.stdin?.end((ext && mode !== "queue" ? extensionNote({ groupName: group.name, session: sessionLabel(session), downloadsDir: join(workspace, "tmp", "flow-downloads") }) : note) + prompt); } catch {}
+    try { child.stdin?.end((ext && mode !== "queue" ? extensionNote({ groupName: group.name, session: sessionLabel(session), downloadsDir: join(workspace, "tmp", "flow-downloads"), tokenSet: !!extToken }) : note) + prompt); } catch {}
     if (minutes > 0) run.timer = setTimeout(() => { if (run.ended) return; run.forced = "timeout"; killTree(child); setTimeout(() => finish(run, null), graceMs).unref?.(); }, minutes * 60000);
     run.timer?.unref?.();
     return { ok: true, status: 200, run_id: runId, started };
