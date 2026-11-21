@@ -14,12 +14,16 @@
 # picks of each product in workspace/projects/<id>/prepared.csv in advance (no queue write); queue-from-prepared takes ready rows into the queue instantly, no agent. Nothing here picks a scene: Claude does. The CLI only CHECKS and
 # INFORMS with a perceptual hash (src/infrastructure/image-phash.ps1): scenes shows used_count / dup_of, queue-add rejects SCENE_DUPLICATE (two scenes of
 # one product look the same) and SCENE_REUSED (a scene already used by another product in the queue or the last 5 runs; -AllowReuse overrides).
+# Speed (few images per decision): scene-index-status | scene-index-todo | scene-index-add keep a tag index of the library (workspace/source-photos/scene-index.json,
+# tags written by Claude once per photo from a contact sheet); scene-candidates lists unused, non-duplicate indexed scenes for a product type with
+# numbered contact sheets; contact-sheet tiles any photos; prep-todo / queue-todo -Grouped [-Sheet] list products by kind with one product sheet per group.
 param(
     [Parameter(Position = 0)][string]$Command = '',
     [string]$Site = '', [int]$Max = 20, [string]$Run = '', [string]$Scan = '', [string]$Project = '', [string]$Id = '',
     [string]$Url = '', [string]$Title = '', [string]$Collection = '', [string]$CollectionUrl = '', [string]$ImageUrl = '', [string]$ImageFile = '', [string]$File = '',
     [int]$Count = -1, [string]$Rating = '', [string]$Source = '', [string]$Used = '', [int]$Limit = 0,
     [string]$Group = '', [string]$Category = '', [string]$SceneNames = '', [int]$SceneCount = 0, [switch]$UnusedOnly, [switch]$AllowReuse, [switch]$Prefetch, [switch]$Skip, [string]$Reason = '', [switch]$TopUp, [switch]$RetrySkipped,
+    [string]$Fits = '', [string]$Setting = '', [int]$Cols = 4, [string]$Out = '', [switch]$Grouped, [switch]$Sheet, [string]$Files = '', [string]$Names = '',
     [Parameter(ValueFromRemainingArguments = $true)]$Rest
 )
 
@@ -199,16 +203,18 @@ function Get-ScanSummary([string]$Dir, $Info, $Session) {
 # ---- Thêm vào hàng chờ: the run queue (workspace/urls.txt + workspace/reference-inputs/references.json) ----
 $QueueMapPath = Join-Path (Get-SessionWorkspaceDir $ProjectRoot) 'reference-inputs/references.json'
 $QueueUrlsPath = Join-Path (Get-SessionWorkspaceDir $ProjectRoot) 'urls.txt'
-$LibraryDir = Join-Path $ProjectRoot 'workspace/source-photos'
+# The photo library cache is shared by every session (literal workspace/); PR_LIBRARY_DIR points a throwaway test at its own copy.
+$LibraryDir = if ($env:PR_LIBRARY_DIR) { [IO.Path]::GetFullPath($env:PR_LIBRARY_DIR) } else { Join-Path $ProjectRoot 'workspace/source-photos' }
 # Dot-sourcing inside a function defines the functions only in that function's scope (they vanish when it returns), so the libraries are
 # loaded here, at script level, for the queue commands. Import-QueueLibs stays as a no-op for the existing callers.
-if ($Command -in @('scenes', 'scene-get', 'queue-add', 'queue-direct', 'queue-todo', 'prep-todo', 'prep-add', 'prep-status', 'queue-from-prepared')) {
+if ($Command -in @('scenes', 'scene-get', 'queue-add', 'queue-direct', 'queue-todo', 'prep-todo', 'prep-add', 'prep-status', 'queue-from-prepared', 'scene-index-status', 'scene-index-todo', 'scene-index-add', 'scene-candidates', 'contact-sheet')) {
     . (Join-Path $PSScriptRoot 'application/image-feedback.ps1')
     . (Join-Path $PSScriptRoot 'infrastructure/source-catalog.ps1')
     . (Join-Path $PSScriptRoot 'infrastructure/source-sync.ps1')
     . (Join-Path $PSScriptRoot 'application/manual-references.ps1')
     . (Join-Path $PSScriptRoot 'infrastructure/image-phash.ps1')
 }
+if ($Command -in @('queue-todo', 'prep-todo', 'scene-index-todo', 'scene-candidates', 'contact-sheet')) { . (Join-Path $PSScriptRoot 'infrastructure/contact-sheet.ps1') }
 function Import-QueueLibs { }
 # The links already waiting (urls.txt) or already holding images (references.json), as url keys.
 function Get-QueuedKeys {
@@ -384,6 +390,93 @@ function Get-ProjectCandidates([string]$Dir) {
         })
 }
 
+# ---- Scene index: workspace/source-photos/scene-index.json (shared by every project and session, written under scene-index.json.lock) ----
+# One entry per library photo, keyed "<group>/<name>": category, md5, sha256, phash (computed here) and the tags CLAUDE wrote after looking at the
+# photo once on a contact sheet: setting, people, light, wall_space, fits (product types it suits), note, usable. An entry whose md5 no longer matches
+# the library manifest counts as not indexed (the photo changed). A photo visually identical to an indexed one is recorded as dup_of (no tags).
+# The index only NARROWS what Claude looks at (scene-candidates); Claude still looks at every candidate sheet and picks the scenes itself.
+$SceneIndexPath = Join-Path $LibraryDir 'scene-index.json'
+$SceneLights = @('day', 'night', 'warm')
+function Get-SceneIndexKey([string]$LibraryGroup, [string]$Name) { return ($LibraryGroup.Normalize([Text.NormalizationForm]::FormC) + '/' + $Name) }
+function Read-SceneIndex {
+    $map = @{}
+    if (-not (Test-Path -LiteralPath $SceneIndexPath)) { return $map }
+    $saved = (Read-TextRetry $SceneIndexPath).TrimStart([char]0xFEFF) | ConvertFrom-Json
+    if ($saved -and $saved.photos) { foreach ($p in $saved.photos.PSObject.Properties) { $map[$p.Name] = $p.Value } }
+    return $map
+}
+# Merges $Entries (key -> entry) into the index under its lock (a fresh read: another session may have added photos meanwhile) and writes it atomically.
+function Save-SceneIndexEntries([hashtable]$Entries) {
+    return (Use-FileLock ($SceneIndexPath + '.lock') {
+            $map = Read-SceneIndex
+            foreach ($k in @($Entries.Keys)) { $map[$k] = $Entries[$k] }
+            $photos = [ordered]@{}
+            foreach ($k in @($map.Keys | Sort-Object)) { $photos[$k] = $map[$k] }
+            Write-FileAtomic $SceneIndexPath (ConvertTo-Json -InputObject ([ordered]@{ schema = 1; updated = (Get-Stamp); photos = $photos }) -Depth 6) ([Text.UTF8Encoding]::new($false))
+            $map.Count
+        })
+}
+# The index entry of a library photo when it is still current (same md5), else $null.
+function Get-SceneIndexEntry([hashtable]$Index, [string]$LibraryGroup, $Photo) {
+    $entry = $Index[(Get-SceneIndexKey $LibraryGroup $Photo.name)]
+    if ($entry -and [string]$entry.md5 -eq [string]$Photo.md5) { return $entry }
+    return $null
+}
+function ConvertTo-SceneBool($Value, [string]$Field) {
+    if ($Value -is [bool]) { return $Value }
+    $t = ([string]$Value).Trim().ToLowerInvariant()
+    if ($t -in @('yes', 'y', 'true', '1', 't')) { return $true }
+    if ($t -in @('no', 'n', 'false', '0', 'f')) { return $false }
+    throw "$Field must be yes or no."
+}
+# Library photos per group, read once per command (the manifest listing + local paths).
+$script:LibraryByGroup = @{}
+function Get-LibraryPhotosCached([string]$LibraryGroup) {
+    $k = $LibraryGroup.Normalize([Text.NormalizationForm]::FormC)
+    if (-not $script:LibraryByGroup.ContainsKey($k)) { $script:LibraryByGroup[$k] = @(Get-LibraryPhotos $k) }
+    return $script:LibraryByGroup[$k]
+}
+# Lower-case words of 3+ letters, without filler words and a plural s (for the tag ranking of scene-candidates).
+function Get-TagWords([string]$Text) {
+    $stop = @('the', 'and', 'for', 'with', 'from', 'that', 'this', 'into', 'onto', 'any', 'all')
+    return @(([string]$Text).ToLowerInvariant() -split '[^a-z0-9]+' | Where-Object { $_.Length -ge 3 -and $stop -notcontains $_ } | ForEach-Object { if ($_.EndsWith('s') -and $_.Length -gt 3) { $_.Substring(0, $_.Length - 1) } else { $_ } } | Sort-Object -Unique)
+}
+
+# ---- Grouped product lists (prep-todo / queue-todo -Grouped): products of one kind together, so Claude decides the type once per group ----
+# The key is the product's collection (category of the shop); rows without one fall back to a type word of the title. Big groups are split in
+# chunks of 20 (one product sheet each). This only GROUPS products: it never chooses a scene.
+function Get-ProductTypeWord([string]$Title) {
+    $t = ([string]$Title).ToLowerInvariant()
+    foreach ($w in @('neon', 'sign', 'polo', 'hoodie', 'jersey', 'jacket', 'shirt', 'tee', 'dress', 'hat', 'cap', 'mug', 'tumbler', 'table', 'chair', 'sofa', 'bed', 'lamp', 'pillow', 'blanket', 'poster', 'canvas', 'frame', 'ornament')) { if ($t -match "\b$w") { return $w } }
+    return 'other'
+}
+function Get-ProductGroups([object[]]$Rows, [string]$Dir, [bool]$MakeSheets, [int]$PerGroup = 20) {
+    $order = New-Object Collections.Generic.List[string]
+    $byKey = @{}
+    foreach ($r in @($Rows)) {
+        $key = if ($r.collection -and $r.collection -ne 'Khác') { [string]$r.collection } else { 'type: ' + (Get-ProductTypeWord $r.title) }
+        if (-not $byKey.ContainsKey($key)) { $byKey[$key] = New-Object Collections.Generic.List[object]; $order.Add($key) }
+        $byKey[$key].Add($r)
+    }
+    $groups = @(); $n = 0
+    foreach ($key in $order) {
+        $all = $byKey[$key].ToArray(); $chunks = [int][math]::Ceiling([double]$all.Count / $PerGroup)
+        for ($c = 0; $c -lt $chunks; $c++) {
+            $part = @($all | Select-Object -Skip ($c * $PerGroup) -First $PerGroup)
+            $i = 0
+            $products = @($part | ForEach-Object { $i++; [ordered]@{ n = $i; url = $_.product_url; title = $_.title; collection = $_.collection; image = (Join-Path (Join-Path $Dir 'images') $_.product_image) } })
+            $g = [ordered]@{ key = $key; part = $(if ($chunks -gt 1) { "$($c + 1)/$chunks" } else { '' }); count = $products.Count; products = $products }
+            if ($MakeSheets) {
+                $n++
+                $made = New-ContactSheet @($products | ForEach-Object { [pscustomobject]@{ number = $_.n; name = $_.url; path = $_.image } }) (Get-ContactSheetPath (Get-SessionWorkspaceDir $ProjectRoot) "products-$ProjectId-$n") $Cols
+                $g['sheet'] = $made.sheet
+            }
+            $groups += $g
+        }
+    }
+    return $groups
+}
+
 function Convert-ToUsedFlag([string]$Value) {
     if ($Value -match '^(t|true|1)$') { return $true }
     if ($Value -match '^(f|false|0)$') { return $false }
@@ -504,11 +597,14 @@ try {
             if ($TopUp) { $todoRows = @($todoRows | Where-Object { $k = Get-ScanUrlKey $_.product_url; $readyRows.ContainsKey($k) -and ($SceneCount -le 0 -or [int]$readyRows[$k].scene_count -lt $SceneCount) }) }
             else { $todoRows = @($todoRows | Where-Object { -not $readyRows.ContainsKey((Get-ScanUrlKey $_.product_url)) }) }
             if ($Limit -gt 0) { $todoRows = @($todoRows | Select-Object -First $Limit) }
-            Write-ScanJson ([ordered]@{ project = $ProjectId; top_up = [bool]$TopUp; count = $todoRows.Count; products = @($todoRows | ForEach-Object {
+            $answer = ([ordered]@{ project = $ProjectId; top_up = [bool]$TopUp; count = $todoRows.Count; products = @($todoRows | ForEach-Object {
                         $item = [ordered]@{ url = $_.product_url; title = $_.title; collection = $_.collection; image = (Join-Path (Join-Path $dir 'images') $_.product_image) }
                         if ($TopUp) { $pr = $readyRows[(Get-ScanUrlKey $_.product_url)]; $have = @(([string]$pr.scenes) -split '\|' | Where-Object { $_ }); $item['group'] = [string]$pr.group; $item['scenes'] = $have; $item['missing'] = [Math]::Max(0, $SceneCount - $have.Count) }
                         $item
                     }) })
+            # -Grouped: the same products by kind (collection / title type word), each group with a product sheet when -Sheet (one Read per group).
+            if ($Grouped -and -not $TopUp) { $answer['groups'] = @(Get-ProductGroups $todoRows $dir ([bool]$Sheet)) }
+            Write-ScanJson $answer
         }
         'queue-direct' {
             # No Claude, no scenes: the first -Limit products in table order (same filters as queue-todo: -Collection, -UnusedOnly, not queued yet) go into
@@ -638,7 +734,9 @@ try {
             foreach ($pr in @(Read-PreparedRows $dir)) { if ($RetrySkipped -and ([string]$pr.status).StartsWith('skipped')) { continue }; [void]$have.Add((Get-ScanUrlKey $pr.product_url)) }
             $todo = @(Get-ProjectCandidates $dir | Where-Object { -not $queued.Contains((Get-ScanUrlKey $_.product_url)) -and -not $have.Contains((Get-ScanUrlKey $_.product_url)) })
             if ($Limit -gt 0) { $todo = @($todo | Select-Object -First $Limit) }
-            Write-ScanJson ([ordered]@{ project = $ProjectId; count = $todo.Count; products = @($todo | ForEach-Object { [ordered]@{ url = $_.product_url; title = $_.title; collection = $_.collection; image = (Join-Path (Join-Path $dir 'images') $_.product_image) } }) })
+            # -Grouped: products by kind (collection, else a type word of the title), chunks of 20, each with a product contact sheet when -Sheet.
+            if ($Grouped) { Write-ScanJson ([ordered]@{ project = $ProjectId; count = $todo.Count; groups = @(Get-ProductGroups $todo $dir ([bool]$Sheet)) }) }
+            else { Write-ScanJson ([ordered]@{ project = $ProjectId; count = $todo.Count; products = @($todo | ForEach-Object { [ordered]@{ url = $_.product_url; title = $_.title; collection = $_.collection; image = (Join-Path (Join-Path $dir 'images') $_.product_image) } }) }) }
         }
         'prep-add' {
             # Stores the scene picks of ONE product in prepared.csv the moment they are made (-Group, -SceneNames a.jpg,b.jpg, -SceneCount S), or notes it as
@@ -739,7 +837,169 @@ try {
             $remainingReady = @(Read-PreparedRows $dir | Where-Object { $_.status -eq 'ready' }).Count
             Write-ScanJson ([ordered]@{ project = $ProjectId; requested = $Limit; queued = @($answer.queued).Count; shortfall = ($Limit - @($answer.queued).Count); urls = @($answer.queued); dropped = @($answer.dropped); ready_left = $remainingReady })
         }
-        default { Fail-Scan "Unknown command '$Command'. Use: start | known | add | add-many | set-menu | status | finish | projects | project | set-used | reviews-todo | set-reviews | queue-direct | queue-todo | scenes | scene-get | queue-add | prep-todo | prep-add | prep-status | queue-from-prepared" 'BAD_COMMAND' }
+        'scene-index-status' {
+            # Counts for the Dự án popup: photos of every enabled library group and how many have a current index entry (same md5).
+            $index = Read-SceneIndex
+            $groups = @()
+            try {
+                foreach ($g in @(@((Get-SourceManifest).groups) | Where-Object { $_.enabled -ne $false })) {
+                    $name = ([string]$g.name).Normalize([Text.NormalizationForm]::FormC)
+                    $groupFiles = @($g.files)
+                    $done = @($groupFiles | Where-Object { $e = $index[(Get-SceneIndexKey $name ([string]$_.name))]; $e -and [string]$e.md5 -eq [string]$_.md5 }).Count
+                    $groups += [ordered]@{ group = $name; photos = $groupFiles.Count; indexed = $done }
+                }
+                $offline = $false
+            } catch { $offline = $true }
+            $photos = 0; $indexed = 0; foreach ($g in $groups) { $photos += $g.photos; $indexed += $g.indexed }
+            if ($offline) { $indexed = $index.Count }
+            Write-ScanJson ([ordered]@{ photos = $photos; indexed = $indexed; entries = $index.Count; offline = $offline; groups = $groups; file = $SceneIndexPath })
+        }
+        'scene-index-todo' {
+            # The next photos of a group that have no current index entry (-Category narrows, -Limit 1-24, default 20), downloaded and hashed, and ONE
+            # contact sheet of them (-Out <png>, default this session's tmp/contact-sheets). A photo visually identical to an indexed photo (or to an earlier
+            # photo of this batch) is recorded at once as dup_of (no tags) and not listed. Claude Reads the sheet once and writes the tags with scene-index-add.
+            if (-not $Group) { Fail-Scan 'Pass -Group <library group> (scenes lists the groups).' 'BAD_GROUP' }
+            $take = if ($Limit -gt 0) { [Math]::Min(24, $Limit) } else { 20 }
+            $index = Read-SceneIndex
+            $all = @(Get-LibraryPhotosCached $Group | Where-Object { -not $Category -or $_.category -eq $Category })
+            if (-not $all.Count) { Fail-Scan "No photos in group $Group." 'UNKNOWN_GROUP' }
+            $todo = @($all | Where-Object { -not (Get-SceneIndexEntry $index $Group $_) } | Sort-Object @{ Expression = { [string]$_.md5 } })
+            $known = @($index.Values | Where-Object { $_.phash -and -not $_.dup_of })
+            $picked = @(); $dups = @{}; $failed = @()
+            foreach ($photo in $todo) {
+                if ($picked.Count -ge $take) { break }
+                try { $local = Get-LibraryPhotoFile $Group $photo } catch { $failed += [ordered]@{ name = $photo.name; error = ($_.Exception.Message -replace '^\[CAUSE:[A-Z_]+\]\s*', '') }; continue }
+                $hash = Get-PHash $local ("lib:$Group/$($photo.name):$($photo.md5)")
+                $same = @($known | Where-Object { (Get-PHashDistance $hash $_.phash) -le $SceneSameDistance } | Select-Object -First 1)
+                if (-not $same.Count) { $same = @($picked | Where-Object { (Get-PHashDistance $hash $_.phash) -le $SceneSameDistance } | Select-Object -First 1) }
+                if ($same.Count) {
+                    $dups[(Get-SceneIndexKey $Group $photo.name)] = [ordered]@{ group = $Group; name = $photo.name; category = $photo.category; md5 = $photo.md5; sha256 = (Get-FileHashText $local 'SHA256'); phash = $hash; dup_of = ([string]$same[0].group + '/' + [string]$same[0].name); usable = $false; indexed_at = (Get-Stamp) }
+                    continue
+                }
+                $picked += [pscustomobject]@{ number = $picked.Count + 1; name = $photo.name; category = $photo.category; path = $local; phash = $hash; group = $Group }
+            }
+            Save-PHashCache
+            if ($dups.Count) { [void](Save-SceneIndexEntries $dups) }
+            $answer = [ordered]@{ group = $Group; left = [Math]::Max(0, $todo.Count - $picked.Count - $dups.Count); count = $picked.Count; dup_recorded = $dups.Count; failed = $failed }
+            if ($picked.Count) {
+                $outPath = if ($Out) { $Out } else { Get-ContactSheetPath (Get-SessionWorkspaceDir $ProjectRoot) 'index' }
+                $made = New-ContactSheet $picked $outPath $Cols
+                $answer['sheet'] = $made.sheet
+            }
+            $answer['photos'] = @($picked | ForEach-Object { [ordered]@{ n = $_.number; name = $_.name; category = $_.category } })
+            Write-ScanJson $answer
+        }
+        'scene-index-add' {
+            # Stores the tags Claude wrote after looking at the photos (one sheet = one call). -File: a JSON array of
+            # { group, name, setting, people yes|no, light day|night|warm, wall_space yes|no, fits ["neon wall sign", ...], note, usable (default yes) }.
+            # Each item is checked (photo in the library and on disk, fields valid); valid items are written at once under the index lock, the others are
+            # listed in `errors` (fix and send only those again). sha256 and phash are computed here, never typed by Claude.
+            if (-not $File -or -not (Test-Path -LiteralPath $File)) { Fail-Scan '-File must be the JSON file of tags.' 'BAD_FILE' }
+            $data = Get-Content -LiteralPath $File -Raw -Encoding UTF8 | ConvertFrom-Json
+            $items = @(foreach ($entry in $data) { $entry })
+            if (-not $items.Count) { Fail-Scan 'The tag file has no items.' 'BAD_FILE' }
+            $entries = @{}; $errors = @()
+            $by = if ($env:PR_SESSION) { $env:PR_SESSION } else { 'default' }
+            foreach ($it in $items) {
+                $get = { param($n) $p = $it.PSObject.Properties[$n]; if ($p) { $p.Value } else { $null } }
+                $g = [string](& $get 'group'); $n = [string](& $get 'name')
+                try {
+                    if (-not $g -or -not $n) { throw 'group and name are required.' }
+                    $photo = @(Get-LibraryPhotosCached $g | Where-Object { $_.name -eq $n })
+                    if (-not $photo.Count) { throw "No photo '$n' in group $g." }
+                    $usable = if ($null -eq (& $get 'usable')) { $true } else { ConvertTo-SceneBool (& $get 'usable') 'usable' }
+                    $setting = ([string](& $get 'setting')).Trim().ToLowerInvariant() -replace '\s+', ' '
+                    if ($setting -notmatch '^[a-z][a-z /-]{1,39}$') { throw 'setting must be a short English place (bedroom, kids room, bar counter, cafe window, wedding backdrop, living room, dining room, office, outdoor, studio ...).' }
+                    $light = ([string](& $get 'light')).Trim().ToLowerInvariant()
+                    if ($SceneLights -notcontains $light) { throw 'light must be day, night or warm.' }
+                    $people = ConvertTo-SceneBool (& $get 'people') 'people'
+                    $wall = ConvertTo-SceneBool (& $get 'wall_space') 'wall_space'
+                    $rawFits = & $get 'fits'
+                    $fitsList = @(@(if ($rawFits -is [array]) { $rawFits } else { ([string]$rawFits) -split '[,;]' }) | ForEach-Object { ([string]$_).Trim().ToLowerInvariant() -replace '\s+', ' ' } | Where-Object { $_ } | Sort-Object -Unique)
+                    if ($usable -and -not $fitsList.Count) { throw 'fits must list at least one product type (or set usable: no).' }
+                    if ($fitsList.Count -gt 12 -or @($fitsList | Where-Object { $_.Length -gt 60 }).Count) { throw 'fits: at most 12 types of 60 characters each.' }
+                    $note = ([string](& $get 'note')).Trim() -replace '\s+', ' '
+                    if ($note.Length -gt 160) { $note = $note.Substring(0, 160) }
+                    $local = Get-LibraryPhotoFile $g $photo[0]
+                    $entries[(Get-SceneIndexKey $g $n)] = [ordered]@{ group = $g.Normalize([Text.NormalizationForm]::FormC); name = $n; category = $photo[0].category; md5 = $photo[0].md5; sha256 = (Get-FileHashText $local 'SHA256')
+                        phash = (Get-PHash $local ("lib:$g/$($n):$($photo[0].md5)")); setting = $setting; people = $people; light = $light; wall_space = $wall; fits = @($fitsList); note = $note; usable = $usable; dup_of = ''; indexed_at = (Get-Stamp); by = $by }
+                } catch { $errors += [ordered]@{ group = $g; name = $n; error = ($_.Exception.Message -replace '^\[CAUSE:[A-Z_]+\]\s*', '') } }
+            }
+            Save-PHashCache
+            $total = if ($entries.Count) { Save-SceneIndexEntries $entries } else { (Read-SceneIndex).Count }
+            Write-ScanJson ([ordered]@{ added = $entries.Count; errors = $errors; index_entries = $total })
+        }
+        'scene-candidates' {
+            # Indexed scenes for one kind of product: usable, not a copy, not used by any product (queue, last 5 runs, prepared rows), ranked by how
+            # well their tags match -Fits "<product type>" (+ -Setting a,b), then in a stable shuffled order. -Group / -Category narrow, -Limit (default 20,
+            # max 60). Contact sheets of the list are always made (20 per sheet, numbers continue across sheets). The ranking
+            # only narrows what Claude looks at; Claude looks at the sheets and decides which scenes fit.
+            if (-not $Fits) { Fail-Scan 'Pass -Fits "<product type>" (for example "neon wall sign").' 'BAD_FITS' }
+            $take = if ($Limit -gt 0) { [Math]::Min(60, $Limit) } else { 20 }
+            $index = Read-SceneIndex
+            $wantWords = @(Get-TagWords $Fits)
+            $wantPhrase = $Fits.Trim().ToLowerInvariant()
+            $settings = @($Setting -split '[,;|]' | ForEach-Object { $_.Trim().ToLowerInvariant() } | Where-Object { $_ })
+            $groupNames = if ($Group) { @($Group.Normalize([Text.NormalizationForm]::FormC)) } else { @($index.Values | ForEach-Object { [string]$_.group } | Sort-Object -Unique) }
+            $pool = @(); $unindexed = 0
+            foreach ($gn in $groupNames) {
+                $photos = @(Get-LibraryPhotosCached $gn | Where-Object { -not $Category -or $_.category -eq $Category })
+                foreach ($photo in $photos) {
+                    $e = Get-SceneIndexEntry $index $gn $photo
+                    if (-not $e) { $unindexed++; continue }
+                    if ($e.dup_of -or $e.usable -eq $false -or -not $e.phash) { continue }
+                    $fitsText = (@($e.fits) -join ' | ').ToLowerInvariant()
+                    $score = 0
+                    if ($wantPhrase -and ($fitsText.Contains($wantPhrase) -or @(@($e.fits) | Where-Object { $wantPhrase.Contains(([string]$_).ToLowerInvariant()) }).Count)) { $score += 5 }
+                    $have = @(Get-TagWords ($fitsText + ' ' + [string]$e.setting + ' ' + [string]$e.note))
+                    $score += @($wantWords | Where-Object { $have -contains $_ }).Count
+                    if ($settings.Count -and $settings -contains [string]$e.setting) { $score += 3 }
+                    $pool += [pscustomobject]@{ group = $gn; photo = $photo; entry = $e; score = $score }
+                }
+            }
+            $pool = @($pool | Sort-Object @{ Expression = { $_.score }; Descending = $true }, @{ Expression = { [string]$_.photo.md5 } })
+            # only the scenes whose tags match the product type, when there are any (matched:false = nothing matched, the whole ranked list follows)
+            $matchedPool = @($pool | Where-Object { $_.score -gt 0 })
+            $matched = [bool]$matchedPool.Count
+            if ($matched) { $pool = $matchedPool }
+            $chosen = @()
+            foreach ($c in $pool) {
+                if ($chosen.Count -ge $take) { break }
+                if (@(Find-UsedScenes ([string]$c.entry.phash)).Count) { continue }
+                if (@($chosen | Where-Object { (Get-PHashDistance ([string]$c.entry.phash) ([string]$_.entry.phash)) -le $SceneSameDistance }).Count) { continue }
+                $chosen += $c
+            }
+            $i = 0
+            $items = @($chosen | ForEach-Object { $i++; $local = if ($_.photo.local) { $_.photo.local } else { Get-LibraryPhotoFile $_.group $_.photo }; [pscustomobject]@{ number = $i; name = $_.photo.name; path = $local; c = $_ } })
+            $sheets = @()
+            if ($items.Count) { $sheets = @(New-ContactSheets $items $(if ($Out) { $Out } else { Get-ContactSheetPath (Get-SessionWorkspaceDir $ProjectRoot) 'candidates' }) $Cols 20) }
+            Write-ScanJson ([ordered]@{ fits = $Fits; matched = $matched; count = $items.Count; unindexed_in_scope = $unindexed; sheets = $sheets; candidates = @($items | ForEach-Object {
+                            $e = $_.c.entry
+                            [ordered]@{ n = $_.number; group = $_.c.group; name = $_.name; category = $_.c.photo.category; setting = $e.setting; people = $e.people; light = $e.light; wall_space = $e.wall_space; fits = @($e.fits); note = $e.note; score = $_.c.score }
+                        }) })
+        }
+        'contact-sheet' {
+            # One sheet (or several of 20) of library photos (-Group g -Names a,b,c; -SceneNames works too) or of any files (-Files p1,p2), numbered in the
+            # given order, with the legend number -> name (also saved as <png>.json). -Cols (default 4), -Out <png>.
+            $list = @(); $i = 0
+            $wanted = @((@($Names, $SceneNames) -join ',') -split '[,|]' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+            if ($wanted.Count) {
+                if (-not $Group) { Fail-Scan 'Pass -Group with -Names (library photos).' 'BAD_GROUP' }
+                foreach ($w in $wanted) {
+                    $photo = @(Get-LibraryPhotosCached $Group | Where-Object { $_.name -eq $w })
+                    if (-not $photo.Count) { Fail-Scan "No photo '$w' in group $Group." 'UNKNOWN_SCENE' }
+                    $i++; $list += [pscustomobject]@{ number = $i; name = $w; path = (Get-LibraryPhotoFile $Group $photo[0]) }
+                }
+            }
+            foreach ($f in @($Files -split '[,|]' | ForEach-Object { $_.Trim() } | Where-Object { $_ })) {
+                if (-not (Test-Path -LiteralPath $f -PathType Leaf)) { Fail-Scan "File not found: $f" 'BAD_FILE' }
+                $i++; $list += [pscustomobject]@{ number = $i; name = $f; path = $f }
+            }
+            if (-not $list.Count) { Fail-Scan 'Pass -Group g -Names a,b,c or -Files p1,p2.' 'BAD_SHEET' }
+            $sheets = @(New-ContactSheets $list $(if ($Out) { $Out } else { Get-ContactSheetPath (Get-SessionWorkspaceDir $ProjectRoot) 'sheet' }) $Cols 20)
+            Write-ScanJson ([ordered]@{ count = $list.Count; sheets = $sheets; legend = @($list | ForEach-Object { [ordered]@{ n = $_.number; name = $_.name } }) })
+        }
+        default { Fail-Scan "Unknown command '$Command'. Use: start | known | add | add-many | set-menu | status | finish | projects | project | set-used | reviews-todo | set-reviews | queue-direct | queue-todo | scenes | scene-get | queue-add | prep-todo | prep-add | prep-status | queue-from-prepared | scene-index-status | scene-index-todo | scene-index-add | scene-candidates | contact-sheet" 'BAD_COMMAND' }
     }
 } catch {
     Fail-Scan $_.Exception.Message 'TOOL_ERROR'

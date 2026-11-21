@@ -833,10 +833,8 @@ function showScanDialog() {
     if (!r.ok) return say(body.error || "Chưa bắt đầu quét được.", "var(--error)");
     setBusy(true); say("Đang bắt đầu…", "var(--accent)"); watch();
   };
-  const stopMainRun = () => fetch(runningMain === "reviews" ? "/api/project/reviews/stop" : "/api/scan/stop", { method: "POST" }).catch(() => {});
-  // Dừng stops the light run / the queue order when there is one, else the main run; the second button stops the main run when both run
-  stop.onclick = async () => { stop.disabled = true; say("Đang dừng " + stop.textContent.replace(/^Dừng ?/, "") + "…", "var(--accent)"); if (runningLight || orderActive) await fetch("/api/project/queue/stop", { method: "POST" }).catch(() => {}); else if (runningMain) await stopMainRun(); };
-  stopMain.onclick = async () => { stopMain.disabled = true; say("Đang dừng " + stopMain.textContent.replace(/^Dừng ?/, "") + "…", "var(--accent)"); await stopMainRun(); stopMain.disabled = false; };
+  // Quét web popup: Dừng stops this scan (the Dự án popup has its own Dừng buttons for the light and main runs)
+  stop.onclick = async () => { stop.disabled = true; say("Đang dừng…", "var(--accent)"); await fetch("/api/scan/stop", { method: "POST" }).catch(() => {}); };
   openDir.onclick = () => scan?.dir && api("openPath", { path: scan.dir });
   toImport.onclick = () => { if (!scan?.csv) return; view.close(); showBulkDialog({ csv: scan.csv }); };
   // Closing the popup leaves a running scan running; opening it again picks it up.
@@ -850,7 +848,7 @@ function showScanDialog() {
 // seen on each product page. "Quét cập nhật" only adds new products (/api/scan/*); "Cập nhật số review" has Claude read the number every
 // product page shows (READ ONLY, docs/reviews-count-prompt.md, /api/project/reviews/*); "Nhập vào danh sách" imports the used = F rows -----
 function showProjectsDialog(pick = "") {
-  const view = openWindow("Dự án", 900, 640);
+  const view = openWindow("Dự án", 900, 684);
   const fmtStamp = (s) => (s ? `${s.slice(8, 10)}/${s.slice(5, 7)} ${s.slice(11, 16)}` : "chưa có");
   const oneLine = (style = {}) => Object.assign({ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }, style);
   const listTitle = at(label("Dự án của bạn", "muted"), 16, 14, 150, 20);
@@ -908,7 +906,12 @@ function showProjectsDialog(pick = "") {
   const runBox = at(label("", "muted"), 16, 596, 868, 38);
   Object.assign(runBox.style, { whiteSpace: "pre-line", lineHeight: "18px", fontSize: "12px", overflow: "hidden" });
   const close = at(button("Đóng"), 800, 556, 80, 32);
-  view.body.append(listTitle, unpick, projectLine, listBox, addWeb, catLabel, catBox, unusedOnly, countLabel, tableBox, status, qTitle, qCountHint, queueCount, qSceneHint, sceneCount, queueBtn, divider, pTitle, retrySkipped, pCountHint, prepCount, pSceneHint, prepScenes, prepBtn, scanBtn, reviewsBtn, openDir, stop, stopMain, close, runBox);
+  // the scene library tag index (shared by every project): state line + its own button on the last row
+  const indexLine = at(label("Kho ảnh: …", "muted"), 16, 646, 680, 20);
+  Object.assign(indexLine.style, oneLine({ fontSize: "12px" }));
+  const indexBtn = at(button("Gắn nhãn kho ảnh"), 720, 640, 160, 32);
+  indexBtn.title = "Claude xem mỗi ảnh trong kho MỘT lần (trên tấm ảnh ghép) và gắn nhãn: nơi chốn, có người, ánh sáng, chỗ tường trống, hợp loại sản phẩm nào. Chuẩn bị trước và Thêm vào hàng chờ dùng nhãn này để chỉ xem ít ảnh hợp nhất. Chỉ gắn ảnh chưa có nhãn; chạy được khi Bắt đầu đang chạy.";
+  view.body.append(listTitle, unpick, projectLine, listBox, addWeb, catLabel, catBox, unusedOnly, countLabel, tableBox, status, qTitle, qCountHint, queueCount, qSceneHint, sceneCount, queueBtn, divider, pTitle, retrySkipped, pCountHint, prepCount, pSceneHint, prepScenes, prepBtn, scanBtn, reviewsBtn, openDir, stop, stopMain, close, runBox, indexLine, indexBtn);
   // each pair is remembered separately (this session's run-settings); the buttons read only their own boxes
   fetch("/api/run-settings").then((x) => x.json()).then((s) => {
     if (s.queueCount) queueCount.value = s.queueCount; if (s.queueScenes) sceneCount.value = s.queueScenes;
@@ -927,7 +930,7 @@ function showProjectsDialog(pick = "") {
   const lockedProject = sessionState.locked ? sessionState.project : "";
   const say = (text, color = "") => { status.style.color = color; status.textContent = text; };
   const clock = () => { const s = Math.max(0, Math.floor((Date.now() - startedAt) / 1000)); return String(Math.floor(s / 60)).padStart(2, "0") + ":" + String(s % 60).padStart(2, "0"); };
-  const KIND = { scan: "Đang quét cập nhật", reviews: "Đang đọc số review trên các trang sản phẩm", queue: "Đang thêm sản phẩm vào hàng chờ (chọn ảnh bối cảnh cho từng sản phẩm)", prep: "Đang chuẩn bị trước ảnh bối cảnh cho các sản phẩm" };
+  const KIND = { scan: "Đang quét cập nhật", reviews: "Đang đọc số review trên các trang sản phẩm", queue: "Đang thêm sản phẩm vào hàng chờ (chọn ảnh bối cảnh cho từng sản phẩm)", prep: "Đang chuẩn bị trước ảnh bối cảnh cho các sản phẩm", index: "Đang gắn nhãn kho ảnh (Claude xem ảnh ghép, mỗi ảnh một lần)" };
   const refreshButtons = () => {
     const has = !!data, mainBusy = !!runningMain, lightBusy = !!runningLight;
     scanBtn.disabled = mainBusy || otherActive || !has;
@@ -935,11 +938,12 @@ function showProjectsDialog(pick = "") {
     // queue / prep need no browser: only another LIGHT run blocks them, never the main Bắt đầu run
     queueBtn.disabled = orderActive || (lightBusy && runningLight === "queue") || !has || !data.rows.length;
     prepBtn.disabled = lightBusy || otherLight || !has || !data.rows.length;
+    indexBtn.disabled = lightBusy || otherLight || orderActive;
     queueCount.enabled = !lightBusy; sceneCount.enabled = !lightBusy; prepCount.enabled = !lightBusy; prepScenes.enabled = !lightBusy;
     openDir.disabled = !has;
     stop.disabled = !(mainBusy || lightBusy || orderActive);
     // each Dừng says what it stops; with two runs at once (main + light) there are two buttons
-    const FEAT = { scan: "Quét web", reviews: "Cập nhật số review", queue: "Thêm vào hàng chờ", prep: "Chuẩn bị trước" };
+    const FEAT = { scan: "Quét web", reviews: "Cập nhật số review", queue: "Thêm vào hàng chờ", prep: "Chuẩn bị trước", index: "Gắn nhãn kho ảnh" };
     stop.textContent = "Dừng" + (runningLight ? " " + FEAT[runningLight] : orderActive ? " Thêm vào hàng chờ" : mainBusy ? " " + FEAT[runningMain] : "");
     stopMain.style.display = mainBusy && (lightBusy || orderActive) ? "" : "none";
     stopMain.textContent = mainBusy ? "Dừng " + FEAT[runningMain] : "Dừng";
@@ -954,6 +958,14 @@ function showProjectsDialog(pick = "") {
     if (!runningMain && !runningLight && !otherActive && !otherLight && data && prepShowIdle) say(idleText(), "");
   };
   let prepShowIdle = true;
+  // "Kho ảnh: N ảnh · M đã gắn nhãn" (src/scan.ps1 scene-index-status through /api/library/index)
+  const refreshIndex = async () => {
+    const r = await fetch("/api/library/index").then((x) => x.json()).catch(() => null);
+    if (!r || r.error) { indexLine.textContent = "Kho ảnh: chưa đọc được số ảnh" + (r && r.error ? " (" + r.error + ")" : ""); return; }
+    const left = Math.max(0, (r.photos || 0) - (r.indexed || 0));
+    indexLine.textContent = r.offline ? `Kho ảnh: ${r.indexed} ảnh đã gắn nhãn (không kết nối được kho để đếm tổng)` : `Kho ảnh: ${r.photos} ảnh · ${r.indexed} đã gắn nhãn` + (left ? ` · ${left} chưa gắn nhãn` : " · đã gắn nhãn hết");
+  };
+  refreshIndex();
 
   const renderList = () => {
     unpick.style.display = current && !lockedProject ? "" : "none";
@@ -1042,7 +1054,7 @@ function showProjectsDialog(pick = "") {
     if (!st || !lt) return;
     orderActive = !!(od && od.active);
     { const rs = await refreshRunLine(); runBox.textContent = runLines(rs).join("\n"); }
-    const lightNow = lt.active && (lt.mode === "queue" || lt.mode === "prep");
+    const lightNow = lt.active && (lt.mode === "queue" || lt.mode === "prep" || lt.mode === "index");
     const mainNow = st.active && (st.mode === "scan" || st.mode === "reviews");
     otherLight = !!lightNow && !runningLight; otherActive = !!st.active && !mainNow && !runningMain;
     // --- the light runner started here (or still running from an earlier popup)
@@ -1052,13 +1064,14 @@ function showProjectsDialog(pick = "") {
       const kind = runningLight; runningLight = "";
       let ok = lt.status === "done";
       let text = ok ? "Xong." : `Lượt chạy dừng${lt.error ? ": " + lt.error : ""}.`;
-      const tag = "[" + (kind === "queue" ? "Thêm vào hàng chờ" : "Chuẩn bị trước") + (data ? " · " + data.project.name : "") + "] ";
+      const tag = "[" + (kind === "queue" ? "Thêm vào hàng chờ" : kind === "index" ? "Gắn nhãn kho ảnh" : "Chuẩn bị trước") + (data && kind !== "index" ? " · " + data.project.name : "") + "] ";
       if (kind === "queue") {
         // the session's own numbers: the order (links of this project in THIS window's urls.txt) and the run's own last text
         await loadState().catch(() => {});
         const od2 = await fetch("/api/project/queue/order").then((x) => x.json()).catch(() => null);
         if (od2 && od2.line) { text = od2.line + (od2.message ? "\n" + od2.message : ""); ok = od2.state === "done" || (!od2.active && lt.status === "done" && od2.added >= od2.total); }
         else text = (lt.status === "done" ? "Lượt thêm vào hàng chờ đã xong." : "Lượt thêm vào hàng chờ dừng" + (lt.error ? ": " + lt.error : ".")) + (lt.last_text ? "\n" + lt.last_text : "");
+      } else if (kind === "index") { await refreshIndex(); text = (ok ? "Gắn nhãn xong. " : `Gắn nhãn dừng${lt.error ? ": " + lt.error : ""}. Ảnh đã gắn vẫn được giữ. `) + indexLine.textContent;
       } else { text = (ok ? "Chuẩn bị xong." : `Chuẩn bị dừng${lt.error ? ": " + lt.error : ""}. Phần đã chuẩn bị vẫn nằm trong kho.`); }
       text = tag + text;
       fastNote = "";
@@ -1085,7 +1098,7 @@ function showProjectsDialog(pick = "") {
     if (runningLight) {
       const secs = Math.max(0, Math.floor((Date.now() - lightStarted) / 1000)), clockText = String(Math.floor(secs / 60)).padStart(2, "0") + ":" + String(secs % 60).padStart(2, "0");
       say(`${KIND[runningLight]}… ${clockText}\n${(runningLight === "prep" ? prepText : lt.last_text) || ""}`.trim(), "var(--accent)");
-      if (++ticks % 3 === 0) { if (runningLight === "prep") refreshPrepared(); else choose(current, true); }
+      if (++ticks % 3 === 0) { if (runningLight === "prep") refreshPrepared(); else if (runningLight === "index") refreshIndex(); else choose(current, true); }
     } else if (runningMain) {
       say(`${KIND[runningMain]}… ${clock()}\n${st.last_text || ""}`.trim(), "var(--accent)");
       if (++ticks % 4 === 0) choose(current, true);
@@ -1098,7 +1111,7 @@ function showProjectsDialog(pick = "") {
   };
   const watch = () => { if (!timer) timer = setInterval(poll, 2000); poll(); };
   const begin = async (url, body, kind, failText) => {
-    const isLight = kind === "queue" || kind === "prep";
+    const isLight = kind === "queue" || kind === "prep" || kind === "index";
     if (!isLight && run.active) return say("Đang có một lượt chạy trong cửa sổ chính. Chờ xong rồi chạy.", "var(--warn)");
     const r = await fetch(url, { method: "POST", body: JSON.stringify(body) });
     const answer = await r.json().catch(() => ({}));
@@ -1139,7 +1152,17 @@ function showProjectsDialog(pick = "") {
   };
   // Chuẩn bị trước: Claude picks the scenes of the not-yet-prepared products and stores them (prepared.csv); the queue is not touched.
   prepBtn.onclick = () => { if (data) begin("/api/project/prep/run", { project: current, category: catBox.value, unused_only: unusedOnly.input.checked, limit: prepCount.value, scenes: prepScenes.value, retry_skipped: retrySkipped.input.checked }, "prep", "Chưa bắt đầu chuẩn bị được."); };
-  stop.onclick = async () => { stop.disabled = true; say("Đang dừng…", "var(--accent)"); await fetch(running === "queue" ? "/api/project/queue/stop" : running === "reviews" ? "/api/project/reviews/stop" : "/api/scan/stop", { method: "POST" }).catch(() => {}); };
+  const stopMainRun = () => fetch(runningMain === "reviews" ? "/api/project/reviews/stop" : "/api/scan/stop", { method: "POST" }).catch(() => {});
+  // Dừng stops the light run (index / prep / queue) or the queue order when there is one, else the main run; the second button stops the main run when both run
+  stop.onclick = async () => {
+    stop.disabled = true; say("Đang dừng " + stop.textContent.replace(/^Dừng ?/, "") + "…", "var(--accent)");
+    if (runningLight === "index") await fetch("/api/library/index/stop", { method: "POST" }).catch(() => {});
+    else if (runningLight || orderActive) await fetch("/api/project/queue/stop", { method: "POST" }).catch(() => {});
+    else if (runningMain) await stopMainRun();
+  };
+  stopMain.onclick = async () => { stopMain.disabled = true; say("Đang dừng " + stopMain.textContent.replace(/^Dừng ?/, "") + "…", "var(--accent)"); await stopMainRun(); stopMain.disabled = false; };
+  // Gắn nhãn kho ảnh: Claude tags the untagged library photos once (light runner, no browser; Bắt đầu keeps running). The index is shared by every project.
+  indexBtn.onclick = () => begin("/api/library/index/run", {}, "index", "Chưa bắt đầu gắn nhãn kho ảnh được.");
   openDir.onclick = () => data && api("openPath", { path: data.project.dir });
   catBox.onchange = () => { renderTable(); refreshPrepared(); };
   unusedOnly.input.onchange = () => { renderTable(); refreshPrepared(); };

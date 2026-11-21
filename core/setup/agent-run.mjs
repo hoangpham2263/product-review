@@ -14,11 +14,11 @@ export const DEFAULT_MINUTES = 0;
 export const MAX_LINE = 300, LOG_LINES = 2000, TAIL_LINES = 30;
 export const PLAYWRIGHT_TOOLS = ["browser_tabs", "browser_navigate", "browser_snapshot", "browser_click", "browser_type", "browser_press_key", "browser_wait_for", "browser_run_code_unsafe", "browser_take_screenshot", "browser_evaluate", "browser_file_upload"].map((n) => "mcp__playwright__" + n);
 export const ALLOWED_TOOLS = ["Bash", "Read", "Write", "Edit", "Glob", "Grep", ...PLAYWRIGHT_TOOLS];
-// queue / prep runs only look at photos and call src/scan.ps1: no browser, no Playwright MCP, no Chrome profile.
+// queue / prep / index runs only look at photos and call src/scan.ps1: no browser, no Playwright MCP, no Chrome profile.
 export const LIGHT_TOOLS = ["Bash", "Read", "Write", "Edit", "Glob", "Grep"];
-export const LIGHT_MODES = ["queue", "prep"];
+export const LIGHT_MODES = ["queue", "prep", "index"];
 // The name of each feature as the person knows it: every log line of a run starts with [feature · project].
-export const FEATURE = { flow: "Tạo ảnh & review (Bắt đầu)", scan: "Quét web", reviews: "Cập nhật số review", queue: "Thêm vào hàng chờ", prep: "Chuẩn bị trước" };
+export const FEATURE = { flow: "Tạo ảnh & review (Bắt đầu)", scan: "Quét web", reviews: "Cập nhật số review", queue: "Thêm vào hàng chờ", prep: "Chuẩn bị trước", index: "Gắn nhãn kho ảnh" };
 
 const SCRUBS = [
   [/\bBearer\s+\S+/gi, "Bearer [hidden]"],
@@ -70,6 +70,11 @@ export function friendlyTool(name, input = {}, mode = "flow") {
   const cmd = String(input?.command || input?.file_path || "");
   if (n === "Bash") {
     if (/scan\.ps1/i.test(cmd)) {
+      if (/scene-index-todo/i.test(cmd)) return "Lấy lô ảnh kho chưa gắn nhãn (một tấm ảnh ghép)";
+      if (/scene-index-add/i.test(cmd)) return "Lưu nhãn ảnh kho vừa xem";
+      if (/scene-index-status/i.test(cmd)) return "Xem số ảnh kho đã gắn nhãn";
+      if (/scene-candidates/i.test(cmd)) return "Lấy ảnh bối cảnh hợp loại sản phẩm (tấm ảnh ghép)";
+      if (/contact-sheet/i.test(cmd)) return "Ghép ảnh thành một tấm để xem";
       if (/prep-todo/i.test(cmd)) return "Lấy danh sách sản phẩm cần chuẩn bị";
       if (/prep-add/i.test(cmd)) return "Lưu ảnh bối cảnh đã chọn vào kho chuẩn bị";
       if (/prep-status/i.test(cmd)) return "Xem số đã chuẩn bị";
@@ -96,7 +101,7 @@ export function friendlyTool(name, input = {}, mode = "flow") {
     if (/flow-pace\.mjs\s+download-lock/i.test(cmd)) return "Khóa / mở khóa tải ảnh";
     return "Chạy lệnh của công cụ";
   }
-  if (n === "Read") return /\.(png|jpe?g|webp)$/i.test(cmd) ? "Xem ảnh sản phẩm / ảnh bối cảnh" : "Đọc dữ liệu của lượt chạy";
+  if (n === "Read") return /contact-sheets/i.test(cmd) ? "Xem tấm ảnh ghép (nhiều ảnh một lần)" : /\.(png|jpe?g|webp)$/i.test(cmd) ? "Xem ảnh sản phẩm / ảnh bối cảnh" : "Đọc dữ liệu của lượt chạy";
   if (n === "Write" || n === "Edit") return "Ghi file tạm của lượt chạy";
   return "Đang xử lý: " + n;
 }
@@ -149,7 +154,7 @@ export function checkExtensionProfile(profile, { profiles = localChromeProfiles(
 export const newRunId = (d = new Date()) => "agent-" + d.toISOString().replace(/\D/g, "").slice(0, 14) + "-" + Math.random().toString(16).slice(2, 6);
 
 // The text block of docs/agent-prompt.md (mode "flow") or docs/scan-prompt.md (mode "scan"), placeholders filled.
-export const PROMPT_FILES = { flow: "agent-prompt.md", scan: "scan-prompt.md", reviews: "reviews-count-prompt.md", queue: "queue-prompt.md", prep: "prep-prompt.md" };
+export const PROMPT_FILES = { flow: "agent-prompt.md", scan: "scan-prompt.md", reviews: "reviews-count-prompt.md", queue: "queue-prompt.md", prep: "prep-prompt.md", index: "index-prompt.md" };
 export function buildPrompt({ toolRoot, run, options = "defaults", mode = "flow", site = "", max = 20, project = "", workspace = "" }) {
   const file = PROMPT_FILES[mode];
   if (!file) throw new Error("Unknown run mode: " + mode);
@@ -291,6 +296,11 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
       const c = claimLock(toolRoot, "project", projectId, session, process.pid, kind);
       if (!c.ok) { releaseLocks(toolRoot, session, process.pid, kind); return { ok: false, status: 409, error: "Dự án " + projectId + " đang được " + holderText(c.holder) + " dùng. Chọn dự án khác hoặc đợi phiên đó xong để khỏi ghi đè dữ liệu của nhau." }; }
     }
+    // Gắn nhãn kho ảnh: the library index is shared by every session, so one index run at a time on this machine (no two windows tagging the same photos).
+    if (mode === "index") {
+      const c = claimLock(toolRoot, "library", "scene-index", session, process.pid, kind);
+      if (!c.ok) { releaseLocks(toolRoot, session, process.pid, kind); return { ok: false, status: 409, error: "Kho ảnh đang được " + holderText(c.holder) + " gắn nhãn. Đợi lượt đó xong." }; }
+    }
     const group = ext ? takeGroup(workspace, session) : null;
     if (!lightMode) writeFileSync(cfg, JSON.stringify(mcpConfig({ plat, profile: profileDir, headless, extension: ext ? { profile: bc.profile, name: group.name, color: group.color } : null })));
     if (!lightMode && !ext) mkdirSync(profileDir, { recursive: true });
@@ -306,7 +316,8 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
     run.prefix = "[" + (FEATURE[mode] || mode) + (project ? " · " + project : "") + "] ";
     cur = run;
     try { writeFileSync(logFile, ""); } catch {}
-    addLine(run, mode === "prep" ? "Bắt đầu: Claude chuẩn bị trước ảnh bối cảnh cho các sản phẩm của dự án " + project + " (mã lượt " + runId + ")"
+    addLine(run, mode === "index" ? "Bắt đầu: Claude gắn nhãn kho ảnh bối cảnh (mã lượt " + runId + ")"
+      : mode === "prep" ? "Bắt đầu: Claude chuẩn bị trước ảnh bối cảnh cho các sản phẩm của dự án " + project + " (mã lượt " + runId + ")"
       : mode === "scan" ? "Bắt đầu: Claude quét " + site + " (mã lượt " + runId + ")"
       : mode === "queue" ? "Bắt đầu: Claude thêm sản phẩm của dự án " + project + " vào hàng chờ (mã lượt " + runId + ")"
       : mode === "reviews" ? "Bắt đầu: Claude đọc số review trên các trang sản phẩm của dự án " + project + " (mã lượt " + runId + ")"
@@ -317,7 +328,9 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
     child.on("error", (e) => finish(run, null, e.message));
     child.on("close", (code) => finish(run, code));
     child.stdin?.on("error", () => {});
-    const note = mode === "prep"
+    const note = mode === "index"
+      ? "RUN-NOW NOTE: this run only TAGS the scene photo library (no browser needed, do not open any page): look at the numbered contact sheets with the Read tool and use the scan.ps1 scene-index commands. It never touches a project, the queue or image creation.\n\n"
+      : mode === "prep"
       ? "RUN-NOW NOTE: this run only PREPARES scene picks in advance (no browser needed, do not open any page): look at photos with the Read tool and use the scan.ps1 prep commands. It never touches the queue, never starts image creation and never writes review text.\n\n"
       : mode === "queue"
       ? "RUN-NOW NOTE: this run only PREPARES the queue (no browser needed, do not open any page): look at photos with the Read tool and use the scan.ps1 queue commands. It never starts image creation and never writes review text.\n\n"

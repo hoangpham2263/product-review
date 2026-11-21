@@ -532,6 +532,25 @@ async function handle(req, res) {
     const r = light.start({ run: "prep-" + newRunId().slice(6), mode: "prep", project: id, options });
     return send(res, r.status, r.ok ? { ok: true, run: r.run_id, started: r.started } : { error: r.error });
   }
+  // "Gắn nhãn kho ảnh": the scene library tag index (workspace/source-photos/scene-index.json, shared by every project and session).
+  // GET = the counts the Dự án popup shows; run = Claude tags the untagged photos on the light runner (docs/index-prompt.md); stop = only an index run.
+  if (path === "/api/library/index" && req.method === "GET") {
+    const r = await runScan(["scene-index-status"], 90000);
+    return send(res, r.ok ? 200 : 500, r.ok ? r : { error: r.error });
+  }
+  if (path === "/api/library/index/run" && req.method === "POST") {
+    const given = JSON.parse((await body(req)).toString("utf8") || "{}");
+    const group = String(given.group || "").replace(/[\r\n"]+/g, " ").trim().slice(0, 80);
+    const limit = Math.min(5000, Math.max(0, Math.round(Number(given.limit)) || 0));
+    if (light.isActive()) return send(res, 409, { error: "Đã có một lượt Claude chuẩn bị / thêm hàng chờ / gắn nhãn đang chạy trong cửa sổ này. Chờ xong hoặc bấm Dừng." });
+    const options = `library group: ${group ? `"${group}"` : "(every group)"}; photos to tag: ${limit || "all"}`;
+    const r = light.start({ run: "index-" + newRunId().slice(6), mode: "index", project: "", options });
+    return send(res, r.status, r.ok ? { ok: true, run: r.run_id, started: r.started } : { error: r.error });
+  }
+  if (path === "/api/library/index/stop" && req.method === "POST") {
+    if (!light.isActive() || light.status().mode !== "index") return send(res, 409, { error: "Không có lượt gắn nhãn kho ảnh nào đang chạy." });
+    const r = light.stop(); return send(res, r.status, r.ok ? { ok: true } : { error: r.error });
+  }
   // "Đã chuẩn bị: X sẵn sàng / Y sản phẩm" for a project (and the category / only-unused filter of the popup).
   if (path === "/api/project/prepared" && req.method === "GET") {
     const id = String(url.searchParams.get("project") || "").trim();
