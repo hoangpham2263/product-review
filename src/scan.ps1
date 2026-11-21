@@ -159,13 +159,21 @@ function Add-ScanProduct([string]$Dir, $Info, $Session, [string]$ProductUrl, [st
         $result.error = ($message -replace '\s*\[CAUSE:[A-Z_]+\]\s*', ' ').Trim()
         return $result
     }
-    $number = $rows.Count + 1
-    $slugSource = if ($ProductTitle) { $ProductTitle } else { ([Uri]$ProductUrl).Segments[-1] }
-    $name = '{0:D3}-{1}.{2}' -f $number, (Get-Slug $slugSource), (Get-ImageKind $bytes)
-    New-Item -ItemType Directory -Force -Path (Join-Path $Dir 'images') | Out-Null
-    [IO.File]::WriteAllBytes((Join-Path (Join-Path $Dir 'images') $name), $bytes)
-    $row = [pscustomobject]@{ product_url = $ProductUrl.Trim(); product_image = $name; review_images = ''; sign_text = ''; title = $ProductTitle; collection = $ProductCollection; used = 'F'; reviews_count = ''; reviews_checked_at = '' }
-    Write-ScanRows $csv (@($rows) + @($row))
+    # Write the row under the project lock on a FRESH read of the table (another session may have changed it while the image downloaded).
+    $added = Use-ProjectLock $Dir {
+        $fresh = @(Read-ScanRows $csv)
+        if (@($fresh | Where-Object { (Get-ScanUrlKey $_.product_url) -eq $key }).Count) { return $null }
+        $number = $fresh.Count + 1
+        $slugSource = if ($ProductTitle) { $ProductTitle } else { ([Uri]$ProductUrl).Segments[-1] }
+        $name = '{0:D3}-{1}.{2}' -f $number, (Get-Slug $slugSource), (Get-ImageKind $bytes)
+        New-Item -ItemType Directory -Force -Path (Join-Path $Dir 'images') | Out-Null
+        Write-BytesAtomic (Join-Path (Join-Path $Dir 'images') $name) $bytes
+        $row = [pscustomobject]@{ product_url = $ProductUrl.Trim(); product_image = $name; review_images = ''; sign_text = ''; title = $ProductTitle; collection = $ProductCollection; used = 'F'; reviews_count = ''; reviews_checked_at = '' }
+        Write-ScanRows $csv (@($fresh) + @($row))
+        return $name
+    }
+    if (-not $added) { $Session.duplicates++; $result.status = 'duplicate'; return $result }
+    $name = $added
     $Session.added[$ProductCollection] = $addedHere + 1
     $result.status = 'added'; $result.image = $name; $result.added_in_collection = $addedHere + 1
     return $result
@@ -317,22 +325,9 @@ function Write-PreparedRows([string]$Dir, $Rows) {
     $out = New-Object System.Collections.Generic.List[string]
     $out.Add($PreparedColumns -join ',')
     foreach ($row in @($Rows)) { $out.Add((@($PreparedColumns | ForEach-Object { $p = $row.PSObject.Properties[$_]; ConvertTo-ScanCell $(if ($p) { [string]$p.Value } else { '' }) }) -join ',')) }
-    $tmp = "$path.$PID.tmp"
-    [IO.File]::WriteAllText($tmp, (($out -join "`r`n") + "`r`n"), [Text.UTF8Encoding]::new($true))
-    Move-Item -LiteralPath $tmp -Destination $path -Force
+    Write-FileAtomic $path (($out -join "`r`n") + "`r`n") ([Text.UTF8Encoding]::new($true))
 }
-# An exclusive file lock around a read-modify-write of prepared.csv (several sessions, the prep run and queue-from-prepared can all write).
-function Use-FileLock([string]$LockPath, [scriptblock]$Body, [int]$TimeoutSec = 30) {
-    $deadline = (Get-Date).AddSeconds($TimeoutSec); $stream = $null
-    while (-not $stream) {
-        try { $stream = [IO.File]::Open($LockPath, [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None) }
-        catch [IO.IOException] {
-            if ((Get-Date) -gt $deadline) { throw "[CAUSE:LOCK_BUSY] $([IO.Path]::GetFileName($LockPath)) is held by another process; try again in a few seconds." }
-            Start-Sleep -Milliseconds 150
-        }
-    }
-    try { return (& $Body) } finally { $stream.Dispose() }
-}
+# Use-FileLock / Write-FileAtomic come from core/setup/atomic-file.ps1 (loaded by scan-store.ps1): prepared.csv is a read-modify-write under its own lock.
 function Use-PreparedLock([string]$Dir, [scriptblock]$Body) { return (Use-FileLock ((Get-PreparedFile $Dir) + '.lock') $Body) }
 # The scenes of the READY rows of every project, as { hash, url, where } like Get-UsedScenes: a prepared scene counts as used.
 function Get-PreparedUsedScenes {

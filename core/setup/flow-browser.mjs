@@ -4,28 +4,29 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { homedir } from "node:os";
+import { readSeededJson, updateJsonLocked } from "./session.mjs";
 
 export const PLAYWRIGHT_EXTENSION_ID = "mmlmfjhmonkocbjadbfplnigmagldckm"; // "Playwright MCP Bridge"
 export const DEFAULT_BROWSER = { mode: "extension", profile: "Profile 1" };
 const PROFILE_RE = /^(Default|Profile \d{1,3})$/;
 const fileOf = (workspace) => join(workspace, "config", "flow-browser.json");
 
-export function readFlowBrowser(workspace) {
-  try {
-    const j = JSON.parse(readFileSync(fileOf(workspace), "utf8"));
-    return { mode: j.mode === "own" ? "own" : "extension", profile: PROFILE_RE.test(String(j.profile || "")) ? j.profile : DEFAULT_BROWSER.profile };
-  } catch { return { ...DEFAULT_BROWSER }; }
+// PER SESSION: every window picks its own browser mode and Chrome profile. workspace = the session's workspace; seedWorkspace = the default
+// session's, whose file seeds a new session the first time it reads.
+export function readFlowBrowser(workspace, seedWorkspace = "") {
+  const j = readSeededJson(fileOf(workspace), seedWorkspace ? fileOf(seedWorkspace) : "", null);
+  if (!j || typeof j !== "object") return { ...DEFAULT_BROWSER };
+  return { mode: j.mode === "own" ? "own" : "extension", profile: PROFILE_RE.test(String(j.profile || "")) ? j.profile : DEFAULT_BROWSER.profile };
 }
 
-export function saveFlowBrowser(workspace, input = {}) {
-  const cur = readFlowBrowser(workspace);
+export function saveFlowBrowser(workspace, input = {}, seedWorkspace = "") {
+  const cur = readFlowBrowser(workspace, seedWorkspace);
   const mode = input.mode === undefined ? cur.mode : input.mode;
   if (mode !== "own" && mode !== "extension") throw new Error("mode must be own or extension.");
   const profile = input.profile === undefined ? cur.profile : String(input.profile);
   if (!PROFILE_RE.test(profile)) throw new Error("profile must be Default or Profile <number>.");
   const out = { mode, profile };
-  mkdirSync(dirname(fileOf(workspace)), { recursive: true });
-  writeFileSync(fileOf(workspace), JSON.stringify(out, null, 2));
+  updateJsonLocked(fileOf(workspace), () => out, {});
   return out;
 }
 

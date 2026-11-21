@@ -7,7 +7,7 @@ import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { platform as osPlatform } from "node:os";
 import { localChromeProfiles } from "./flow-browser.mjs";
-import { claimLock, releaseLocks, takeGroup, sessionLabel } from "./session.mjs";
+import { claimLock, releaseLocks, takeGroup, sessionLabel, readSeededJson } from "./session.mjs";
 
 // 0 = no limit: a run ends when Claude finishes, so a long batch is never cut off half way. Set minutes / maxTurns above 0 to cap a run.
 export const DEFAULT_MINUTES = 0;
@@ -110,18 +110,23 @@ export function mcpConfig({ plat = osPlatform(), profile, headless = true, exten
 }
 
 // Note put in front of the prompt when the run drives the person's everyday Chrome (extension mode).
-export const extensionNote = ({ groupName = "Product Review", session = "default" } = {}) => `RUN-NOW NOTE: this run uses the person's everyday Chrome through the Playwright extension, so the person is at the computer and will click Connect in Chrome. Your tabs go into the Chrome tab group named "${groupName}" (session "${session}").
+export const extensionNote = ({ groupName = "Product Review", session = "default", downloadsDir = "" } = {}) => `RUN-NOW NOTE: this run uses the person's everyday Chrome through the Playwright extension, so the person is at the computer and will click Connect in Chrome. Your tabs go into the Chrome tab group named "${groupName}" (session "${session}").
 If browser_tabs shows only a Welcome / connect.html tab, or the browser tools fail: the Playwright MCP has ALREADY opened that page, do NOT open a second copy; bring it to the front with browser_run_code_unsafe: async (page) => { await page.bringToFront(); } and tell the person in one line to click Connect. Then wait up to 3 minutes, calling browser_tabs about every 15 seconds, until a real page tab appears. If nothing connects, stop and report that Chrome did not connect (CAUSE:BROWSER).
 CLEAN UP FIRST (once, at the very start): close only leftover tabs that clearly belong to an OLD Chrome tab group of this same session (a group whose title starts with "Product Review · ${session} ·" but is not "${groupName}"). Never close any other tab, never touch the person's own tabs; if you cannot tell which tabs belong to an old group, close nothing.
-Downloads: this mode cannot use download.saveAs; click the download button, then take the newest file from the Downloads folder.
+Downloads (the Downloads folder is shared by EVERY window of this machine, so two windows must never download at the same moment): around EACH download hold the machine-wide download lock: "node core/flow-pace.mjs download-lock acquire --tag <item id>" (it blocks until free), click the download button, move the NEW file from the Downloads folder AT ONCE into ${downloadsDir || "your own session folder"} and rename it "<item id>.<ext>", check it is the right picture (expected size, the prompt tile you submitted), then "node core/flow-pace.mjs download-lock release --tag <item id>". Never take a file you did not just download yourself. This mode cannot use download.saveAs.
 HUMAN PACING: before EVERY prompt you submit in Google Flow run: node core/flow-pace.mjs gate --tag <item id> (it waits the human-like time by itself; submit right after it returns; never several prompts behind one gate).
 
 `;
 // Extension mode only works on a profile that HAS the Playwright MCP Bridge extension: otherwise the MCP silently uses "the last used profile that
 // has it". So a chosen profile without the extension (or missing) refuses to start; another profile is never used instead.
 // The Google account chosen for Flow (workspace/config/run-settings.json flowAccount), "" when none.
-export function readFlowAccount(toolRoot) {
-  try { const e = String(JSON.parse(readFileSync(join(toolRoot, "workspace", "config", "run-settings.json"), "utf8").replace(/^\uFEFF/, "")).flowAccount || ""); return /^[^\s@"<>]+@[^\s@"<>]+\.[^\s@"<>]+$/.test(e) ? e : ""; } catch { return ""; }
+// PER SESSION: the Flow account of THIS window (its workspace/config/run-settings.json, seeded from the default session's file).
+export function readFlowAccount(workspaceDir, seedDir = "") {
+  try {
+    const f = (d) => join(d, "config", "run-settings.json");
+    const e = String(readSeededJson(f(workspaceDir), seedDir ? f(seedDir) : "", {}).flowAccount || "");
+    return /^[^\s@"<>]+@[^\s@"<>]+\.[^\s@"<>]+$/.test(e) ? e : "";
+  } catch { return ""; }
 }
 export function checkExtensionProfile(profile, { profiles = localChromeProfiles().profiles, account = "" } = {}) {
   const p = profiles.find((x) => x.folder === profile);
@@ -131,18 +136,19 @@ export function checkExtensionProfile(profile, { profiles = localChromeProfiles(
   if (want && !(p.accounts || []).includes(want)) return { ok: false, error: `Tài khoản ${account} không đăng nhập trong profile ${profile}${p.email ? " (" + p.email + ")" : ""} (có: ${(p.accounts || []).join(", ") || "không có tài khoản nào"}). Chọn tài khoản khác ở ô tài khoản Flow hoặc đăng nhập tài khoản đó vào profile này.` };
   return { ok: true };
 }
-export const newRunId = (d = new Date()) => "agent-" + d.toISOString().replace(/\D/g, "").slice(0, 14);
+// A random suffix: two windows starting in the same second never share a run id (it names output folders, logs and the files copied to Downloads).
+export const newRunId = (d = new Date()) => "agent-" + d.toISOString().replace(/\D/g, "").slice(0, 14) + "-" + Math.random().toString(16).slice(2, 6);
 
 // The text block of docs/agent-prompt.md (mode "flow") or docs/scan-prompt.md (mode "scan"), placeholders filled.
 export const PROMPT_FILES = { flow: "agent-prompt.md", scan: "scan-prompt.md", reviews: "reviews-count-prompt.md", queue: "queue-prompt.md", prep: "prep-prompt.md" };
-export function buildPrompt({ toolRoot, run, options = "defaults", mode = "flow", site = "", max = 20, project = "" }) {
+export function buildPrompt({ toolRoot, run, options = "defaults", mode = "flow", site = "", max = 20, project = "", workspace = "" }) {
   const file = PROMPT_FILES[mode];
   if (!file) throw new Error("Unknown run mode: " + mode);
   const md = readFileSync(join(toolRoot, "docs", file), "utf8");
   const m = md.match(/```text\r?\n([\s\S]*?)\r?\n```/);
   if (!m) throw new Error(`docs/${file} has no text block.`);
   let acct = ""; // the Google account Flow must use (run-settings.json flowAccount, set in the app); only the image (flow) run opens Flow
-  if (mode === "flow") { try { const e = String(JSON.parse(readFileSync(join(toolRoot, "workspace", "config", "run-settings.json"), "utf8").replace(/^\uFEFF/, "")).flowAccount || ""); if (/^[^\s@"<>]+@[^\s@"<>]+\.[^\s@"<>]+$/.test(e)) acct = e; } catch {} }
+  if (mode === "flow") acct = readFlowAccount(workspace || join(toolRoot, "workspace"), join(toolRoot, "workspace"));
   const acctText = acct ? `\nGOOGLE ACCOUNT FOR FLOW: use ONLY the already signed-in Google account ${acct}. The profile may hold several Google accounts and Flow opens the first one. Before creating the project open https://accounts.google.com/AccountChooser?continue=https%3A%2F%2Fflow.google.com%2F and click THAT email (no password is needed for a signed-in account); on Flow check the avatar menu shows the same email. If that email is not in the list, or Flow says the credits are used up on it: STOP and report. Never sign out, never remove or add an account, never use another account.` : "";
   return m[1].replace(/\{\{TOOL\}\}/g, toolRoot).replace(/\{\{RUN\}\}/g, run).replace(/\{\{OPTIONS\}\}/g, options)
     .replace(/\{\{SITE\}\}/g, site).replace(/\{\{MAX\}\}/g, String(max)).replace(/\{\{PROJECT\}\}/g, project) + acctText;
@@ -259,11 +265,11 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
     if (!found?.found) return { ok: false, status: 400, error: "Claude CLI not found: install Claude Code, or set PR_CLAUDE_CLI to its path." };
     if (!lightMode && !npxOk()) return { ok: false, status: 400, error: "npx is not available (it comes with Node.js): the Playwright MCP cannot start." };
     let prompt;
-    try { prompt = buildPrompt({ toolRoot, run: runId, options, mode, site, max, project }); } catch (e) { return { ok: false, status: 500, error: sanitize(e.message) }; }
+    try { prompt = buildPrompt({ toolRoot, run: runId, options, mode, site, max, project, workspace }); } catch (e) { return { ok: false, status: 500, error: sanitize(e.message) }; }
     mkdirSync(tmpDir, { recursive: true }); mkdirSync(runsDir, { recursive: true });
     const cfg = join(tmpDir, `mcp-${runId}-${randomBytes(3).toString("hex")}.json`);
     const bc = lightMode ? {} : (getBrowser() || {}), ext = !lightMode && bc.mode !== "own";
-    if (ext) { const chk = checkProfile(bc.profile, { account: mode === "flow" ? readFlowAccount(toolRoot) : "" }); if (!chk.ok) return { ok: false, status: 409, error: chk.error }; }
+    if (ext) { const chk = checkProfile(bc.profile, { account: mode === "flow" ? readFlowAccount(workspace, join(toolRoot, "workspace")) : "" }); if (!chk.ok) return { ok: false, status: 409, error: chk.error }; }
     // Sessions (several windows): the own Chrome profile and a project are used by one live session at a time.
     const holderText = (h) => "phiên \"" + sessionLabel(h.session) + "\"";
     if (!lightMode && !ext) {
@@ -310,7 +316,7 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
       : mode === "scan"
       ? "RUN-NOW NOTE: this run uses the tool's OWN Chrome (a dedicated profile, no sign-in needed to scan a shop)" + (headless ? ", running in the background (headless)" : "") + ". There is no Connect step and no extension: ignore any instruction to click Connect or wait for the person; start with browser_tabs or browser_navigate. If the site asks for a login or shows a captcha, stop and report it (never sign in for the person)." + "\n\n"
       : "RUN-NOW NOTE: this run uses the tool's OWN Chrome (a dedicated profile the person already signed in to Google Flow with)" + (headless ? ", running in the background (headless)" : "") + ". There is no Connect step and no extension: ignore any instruction to click Connect or wait for the person; start with browser_tabs or browser_navigate. If Flow shows a Google sign-in page, stop and report CAUSE:LOGIN (never sign in for the person)." + "\n\n";
-    try { child.stdin?.end((ext && mode !== "queue" ? extensionNote({ groupName: group.name, session: sessionLabel(session) }) : note) + prompt); } catch {}
+    try { child.stdin?.end((ext && mode !== "queue" ? extensionNote({ groupName: group.name, session: sessionLabel(session), downloadsDir: join(workspace, "tmp", "flow-downloads") }) : note) + prompt); } catch {}
     if (minutes > 0) run.timer = setTimeout(() => { if (run.ended) return; run.forced = "timeout"; killTree(child); setTimeout(() => finish(run, null), graceMs).unref?.(); }, minutes * 60000);
     run.timer?.unref?.();
     return { ok: true, status: 200, run_id: runId, started };

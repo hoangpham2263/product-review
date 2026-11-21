@@ -1,4 +1,5 @@
-﻿# Source library: the public GitHub repo hoangpham2263/product-review-sources, source-photos/<group>/<file>, listed in
+﻿. (Join-Path $PSScriptRoot '../../core/setup/atomic-file.ps1')
+# Source library: the public GitHub repo hoangpham2263/product-review-sources, source-photos/<group>/<file>, listed in
 # source-photos/manifest.json (groups, enabled, files with md5) and described in source-photos/catalog.json. A run
 # downloads only the chosen group into workspace/source-photos/<group>/ and fetches only new or changed files (md5).
 # PR_SOURCES_URL points tests at a local copy.
@@ -30,7 +31,7 @@ function Get-SourceGroupChoices([string]$ProjectRoot) {
     $cache = Join-Path $ProjectRoot 'workspace/source-groups.json'
     $groups = try {
         $fetched = @(Get-RemoteSourceGroups)
-        try { Set-Content -LiteralPath $cache -Value (ConvertTo-Json -InputObject $fetched -Compress) -Encoding UTF8 } catch { Write-Verbose $_ }
+        try { Write-FileAtomic $cache (ConvertTo-Json -InputObject $fetched -Compress) ([Text.UTF8Encoding]::new($true)) } catch { Write-Verbose $_ }
         ,$fetched
     } catch {
         Write-Verbose $_
@@ -92,16 +93,16 @@ function Sync-SourceGroup([string]$SourceDir, [string]$Group, [scriptblock]$OnPr
             $tasks = @($batch | ForEach-Object { $client.GetByteArrayAsync([string]$_.url) })
             [Threading.Tasks.Task]::WaitAll([Threading.Tasks.Task[]]$tasks)
             for ($i = 0; $i -lt $batch.Count; $i++) {
-                [IO.File]::WriteAllBytes((Join-Path $folder $batch[$i].name), $tasks[$i].Result)
+                Write-BytesAtomic (Join-Path $folder $batch[$i].name) $tasks[$i].Result
                 $index[[string]$batch[$i].name] = [string]$batch[$i].md5
             }
             $done += $batch.Count
-            $index | ConvertTo-Json | Set-Content -LiteralPath $indexPath -Encoding UTF8
+            Write-FileAtomic $indexPath ($index | ConvertTo-Json) ([Text.UTF8Encoding]::new($true))
             Write-Host "  [SOURCE] $Group`: $done/$($missing.Count)" -ForegroundColor Cyan
             if ($OnProgress) { & $OnProgress $done $missing.Count }
         }
     } finally { $client.Dispose() }
-    $index | ConvertTo-Json | Set-Content -LiteralPath $indexPath -Encoding UTF8
+    Write-FileAtomic $indexPath ($index | ConvertTo-Json) ([Text.UTF8Encoding]::new($true))
     return [pscustomobject]@{ Group = $Group; Total = $remote.Count; Downloaded = $done; Removed = $removed }
 }
 
@@ -133,7 +134,7 @@ function Get-DefaultSourceGroup([string]$ProjectRoot) {
 
 function Set-DefaultSourceGroup([string]$ProjectRoot, [string]$Group) {
     $path = Join-Path $ProjectRoot 'workspace/source-default.txt'
-    if ($Group) { [IO.File]::WriteAllText($path, $Group.Normalize([Text.NormalizationForm]::FormC), [Text.UTF8Encoding]::new($false)) }
+    if ($Group) { Write-FileAtomic $path $Group.Normalize([Text.NormalizationForm]::FormC) ([Text.UTF8Encoding]::new($false)) }
     else { Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue }
 }
 
@@ -171,9 +172,11 @@ function Save-SourceGroupFiles([string]$SourceDir, [string]$Group, [object[]]$Fi
         if (-not $name) { continue }
         $path = Join-Path $folder $name
         if ($index[$name] -ne $file.md5 -or -not (Test-Path -LiteralPath $path)) {
-            Invoke-WebRequest -Uri (Get-SourceFileUrl $Group $name) -OutFile $path -UseBasicParsing -TimeoutSec 120
+            # download to a part file, then replace atomically: two sessions fetching the same photo never write the same file at once
+            $part = "$path.$PID.part"
+            try { Invoke-WebRequest -Uri (Get-SourceFileUrl $Group $name) -OutFile $part -UseBasicParsing -TimeoutSec 120; Write-BytesAtomic $path ([IO.File]::ReadAllBytes($part)) } finally { Remove-Item -LiteralPath $part -Force -ErrorAction SilentlyContinue }
             $index[$name] = [string]$file.md5
-            $index | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $folder '.sync.json') -Encoding UTF8
+            Write-FileAtomic (Join-Path $folder '.sync.json') ($index | ConvertTo-Json) ([Text.UTF8Encoding]::new($true))
         }
         $path
     }

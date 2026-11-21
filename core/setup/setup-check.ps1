@@ -113,6 +113,7 @@ $steps = @(
 # Each AI's sign-in: signed in, expired (its sign-in is still on this computer but no longer accepted), signed out
 # (it was signed in here before) or never. The last account seen is kept (workspace/config/ai-accounts.json), so an
 # expired or signed-out AI still says whose it was, instead of looking as if it had never been set up.
+. (Join-Path $PSScriptRoot 'atomic-file.ps1')
 $accountsFile = Get-SharedConfigPath (Join-Path (Split-Path (Split-Path $PSScriptRoot -Parent) -Parent) 'workspace') 'ai-accounts.json'
 $known = @{}
 try { (Get-Content -LiteralPath $accountsFile -Raw -Encoding UTF8 | ConvertFrom-Json).PSObject.Properties | ForEach-Object { $known[$_.Name] = [string]$_.Value } } catch {}
@@ -135,7 +136,7 @@ foreach ($step in $steps | Where-Object { $_.Id -in @('login', 'antigravity') })
 }
 if ($stored) {
     New-Item -ItemType Directory -Force -Path (Split-Path $accountsFile -Parent) | Out-Null
-    [IO.File]::WriteAllText($accountsFile, ([pscustomobject]$known | ConvertTo-Json), [Text.UTF8Encoding]::new($false))
+    Write-FileAtomic $accountsFile ([pscustomobject]$known | ConvertTo-Json) ([Text.UTF8Encoding]::new($false))
 }
 $report = [pscustomobject]@{
     Ready = $ready

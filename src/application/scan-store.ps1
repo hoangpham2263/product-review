@@ -34,7 +34,7 @@ function ConvertTo-ScanCell([string]$Value) {
 
 function Read-ScanRows([string]$CsvPath) {
     if (-not (Test-Path -LiteralPath $CsvPath)) { return @() }
-    $text = [IO.File]::ReadAllText($CsvPath) -replace '^﻿', ''
+    $text = (Read-TextRetry $CsvPath) -replace '^﻿', ''
     $lines = @($text -split '\r?\n' | Where-Object { $_.Trim() })
     if ($lines.Count -lt 2) { return @() }
     return @($lines | ConvertFrom-Csv)
@@ -46,7 +46,7 @@ function Write-ScanRows([string]$CsvPath, $Rows) {
     foreach ($row in @($Rows)) {
         $out.Add((@($script:ScanColumns | ForEach-Object { $p = $row.PSObject.Properties[$_]; ConvertTo-ScanCell $(if ($p) { [string]$p.Value } else { '' }) }) -join ','))
     }
-    [IO.File]::WriteAllText($CsvPath, (($out -join "`r`n") + "`r`n"), [Text.UTF8Encoding]::new($true))
+    Write-FileAtomic $CsvPath (($out -join "`r`n") + "`r`n") ([Text.UTF8Encoding]::new($true))
 }
 
 # The same product link for the same page: host in lower case, no #fragment, no trailing slash.
@@ -58,12 +58,16 @@ function Get-ScanUrlKey([string]$Url) {
 }
 
 # ---- project files ----
+# Several sessions can work on the same project folder (scan, review count, prep, queue-from-prepared, a finished link marking its row used): every
+# change of products.csv / reviews.json / menu.json / project.json is a read-modify-write under ONE lock per project (Use-ProjectLock), re-reading the file
+# inside the lock and changing only the touched rows, and every write goes through a temp file + rename (Write-FileAtomic).
+. (Join-Path $PSScriptRoot '../../core/setup/atomic-file.ps1')
 function Read-ProjectJson([string]$Path, $Default = $null) {
     if (-not (Test-Path -LiteralPath $Path)) { return $Default }
-    try { return (Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json) } catch { return $Default }
+    try { return ((Read-TextRetry $Path) | ConvertFrom-Json) } catch { return $Default }
 }
 function Write-ProjectJson([string]$Path, $Value) {
-    [IO.File]::WriteAllText($Path, (ConvertTo-Json -InputObject $Value -Depth 8), [Text.UTF8Encoding]::new($false))
+    Write-FileAtomic $Path (ConvertTo-Json -InputObject $Value -Depth 8) ([Text.UTF8Encoding]::new($false))
 }
 function Get-ProjectSiteHost([string]$Value) {
     $uri = $null
@@ -94,15 +98,21 @@ function Open-Project([string]$Root, [string]$Site, [int]$Max = 20) {
     $isNew = -not (Test-Path -LiteralPath (Join-Path $dir 'project.json'))
     New-Item -ItemType Directory -Force -Path (Join-Path $dir 'images') | Out-Null
     if ($isNew) {
-        $info = [ordered]@{ id = $id; name = $siteHost; site = $Site.Trim(); host = $siteHost; created = (Get-Stamp); updated = (Get-Stamp); last_scan = ''; last_reviews_check = ''; max_per_collection = $Max }
-        Write-ProjectJson (Join-Path $dir 'project.json') $info
-        Write-ScanRows (Join-Path $dir 'products.csv') @()
-        Write-ProjectJson (Join-Path $dir 'menu.json') @()
+        # two sessions opening the same new site at once: only the first creates the files (re-checked inside the lock)
+        [void](Use-ProjectLock $dir {
+            if (Test-Path -LiteralPath (Join-Path $dir 'project.json')) { return $false }
+            $info = [ordered]@{ id = $id; name = $siteHost; site = $Site.Trim(); host = $siteHost; created = (Get-Stamp); updated = (Get-Stamp); last_scan = ''; last_reviews_check = ''; max_per_collection = $Max }
+            Write-ScanRows (Join-Path $dir 'products.csv') @()
+            Write-ProjectJson (Join-Path $dir 'menu.json') @()
+            Write-ProjectJson (Join-Path $dir 'project.json') $info
+            return $true
+        })
     }
     return @{ Dir = $dir; Info = (Read-ProjectJson (Join-Path $dir 'project.json')); New = $isNew }
 }
 function Save-ProjectInfo([string]$Dir, $Info) { Write-ProjectJson (Join-Path $Dir 'project.json') $Info }
-function Set-ProjectField([string]$Dir, [string]$Name, $Value) {
+function Set-ProjectField([string]$Dir, [string]$Name, $Value) { [void](Use-ProjectLock $Dir { Set-ProjectFieldCore $Dir $Name $Value }) }
+function Set-ProjectFieldCore([string]$Dir, [string]$Name, $Value) {
     $info = Read-ProjectJson (Join-Path $Dir 'project.json')
     if (-not $info) { return }
     $info | Add-Member NoteProperty $Name $Value -Force
@@ -112,7 +122,8 @@ function Set-ProjectField([string]$Dir, [string]$Name, $Value) {
 
 # ---- menu ----
 # Remembers a category (and its link when known).
-function Update-ProjectMenu([string]$Dir, [string]$Name, [string]$Url) {
+function Update-ProjectMenu([string]$Dir, [string]$Name, [string]$Url) { [void](Use-ProjectLock $Dir { Update-ProjectMenuCore $Dir $Name $Url }) }
+function Update-ProjectMenuCore([string]$Dir, [string]$Name, [string]$Url) {
     if (-not $Name) { return }
     $path = Join-Path $Dir 'menu.json'
     $menu = @(foreach ($m in @(Read-ProjectJson $path @())) { $m })
@@ -122,7 +133,8 @@ function Update-ProjectMenu([string]$Dir, [string]$Name, [string]$Url) {
     Write-ProjectJson $path $menu
 }
 # menu.json with the product count of every category (categories that only appear in the table are added).
-function Save-ProjectMenu([string]$Dir) {
+function Save-ProjectMenu([string]$Dir) { return (Use-ProjectLock $Dir { Save-ProjectMenuCore $Dir }) }
+function Save-ProjectMenuCore([string]$Dir) {
     $rows = @(Read-ScanRows (Join-Path $Dir 'products.csv'))
     $menu = @(foreach ($m in @(Read-ProjectJson (Join-Path $Dir 'menu.json') @())) { $m })
     $out = New-Object System.Collections.Generic.List[object]
@@ -155,7 +167,8 @@ function Get-ProjectList([string]$Root) {
 
 # ---- used flag ----
 # Sets used for a link in one table; returns how many rows changed.
-function Set-ProjectUsed([string]$Dir, [string]$Url, [bool]$Used) {
+function Set-ProjectUsed([string]$Dir, [string]$Url, [bool]$Used) { return (Use-ProjectLock $Dir { Set-ProjectUsedCore $Dir $Url $Used }) }
+function Set-ProjectUsedCore([string]$Dir, [string]$Url, [bool]$Used) {
     $csv = Join-Path $Dir 'products.csv'
     $rows = @(Read-ScanRows $csv)
     if (-not $rows.Count) { return 0 }
@@ -187,7 +200,8 @@ function Set-ScanUsed([string]$Url, [string]$ScanRoot = '') {
 
 # ---- review numbers: only what Claude reports is stored; nothing here reads or parses a page ----
 # Stores the number Claude saw on the product page. Returns $false when the link is not in the project.
-function Set-ProjectReviews([string]$Dir, [string]$Url, [int]$Count, [string]$Rating = '', [string]$Source = '') {
+function Set-ProjectReviews([string]$Dir, [string]$Url, [int]$Count, [string]$Rating = '', [string]$Source = '') { return (Use-ProjectLock $Dir { Set-ProjectReviewsCore $Dir $Url $Count $Rating $Source }) }
+function Set-ProjectReviewsCore([string]$Dir, [string]$Url, [int]$Count, [string]$Rating = '', [string]$Source = '') {
     $csv = Join-Path $Dir 'products.csv'
     $rows = @(Read-ScanRows $csv)
     $key = Get-ScanUrlKey $Url; $stamp = Get-Stamp; $hit = 0

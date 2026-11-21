@@ -34,10 +34,10 @@ function writeJson(file, data) {
   renameSync(tmp, file);
 }
 // Small cross-process lock around a read-modify-write (wx file, stale after 5 s).
-function withLock(file, fn) {
+export function withLock(file, fn) {
   const lock = `${file}.lock`;
   mkdirSync(join(file, ".."), { recursive: true });
-  const until = Date.now() + 3000;
+  const until = Date.now() + 8000;
   for (;;) {
     try { writeFileSync(lock, String(process.pid), { flag: "wx" }); break; }
     catch {
@@ -47,6 +47,29 @@ function withLock(file, fn) {
     }
   }
   try { return fn(); } finally { try { rmSync(lock, { force: true }); } catch {} }
+}
+
+// ----- shared JSON files: lock + read-modify-write + atomic write (temp file + rename) -----
+export const readJsonFile = readJson;
+export const writeJsonAtomic = writeJson;
+// fn(current) returns the new value (undefined = leave the file as it is); the read, the change and the write happen under ONE lock.
+export function updateJsonLocked(file, fn, fallback = {}) {
+  return withLock(file, () => {
+    const next = fn(readJson(file, fallback));
+    if (next !== undefined) writeJson(file, next);
+    return next;
+  });
+}
+// Per-session config (each window has its own copy): the file of THIS session's workspace; the first time it does not exist yet it is created
+// from the default session's file (seedFile), so a new window starts with the same choices and then goes its own way.
+export function readSeededJson(file, seedFile, fallback = {}) {
+  const cur = readJson(file, null);
+  if (cur !== null) return cur;
+  if (seedFile && resolve(seedFile) !== resolve(file)) {
+    const seed = readJson(seedFile, null);
+    if (seed !== null) { try { withLock(file, () => { if (!existsSync(file)) writeJson(file, seed); }); } catch {} return seed; }
+  }
+  return fallback;
 }
 
 // ----- registry -----

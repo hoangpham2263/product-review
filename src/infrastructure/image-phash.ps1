@@ -1,6 +1,7 @@
 # Perceptual hash of a picture (16x16 dHash = 256 bits, hex), robust to resize and recompress. Used only to CHECK scenes (same picture saved twice,
 # a scene already used by another product); it never chooses anything. Cache: workspace/source-photos/phash.json (key = path|size|mtime or lib:name:md5).
 Add-Type -AssemblyName System.Drawing -ErrorAction SilentlyContinue
+. (Join-Path $PSScriptRoot '../../core/setup/atomic-file.ps1')
 $script:PHashCache = $null
 $script:PHashCacheDirty = $false
 function Get-PHashCachePath { return (Join-Path $LibraryDir 'phash.json') }
@@ -19,7 +20,15 @@ function Save-PHashCache {
     if (-not $script:PHashCacheDirty) { return }
     $path = Get-PHashCachePath
     New-Item -ItemType Directory -Force -Path (Split-Path $path) | Out-Null
-    $script:PHashCache | ConvertTo-Json | Set-Content -LiteralPath $path -Encoding UTF8
+    # The cache file is shared by every session: merge what another session saved meanwhile (our entries win), then replace the file atomically.
+    [void](Use-FileLock ($path + '.lock') {
+        $merged = @{}
+        if (Test-Path -LiteralPath $path) { try { foreach ($prop in (Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json).PSObject.Properties) { $merged[$prop.Name] = [string]$prop.Value } } catch { } }
+        foreach ($key in @($script:PHashCache.Keys)) { $merged[$key] = $script:PHashCache[$key] }
+        $script:PHashCache = $merged
+        Write-FileAtomic $path ($merged | ConvertTo-Json) ([Text.UTF8Encoding]::new($true))
+        $true
+    })
     $script:PHashCacheDirty = $false
 }
 function Compute-PHash([string]$Path) {

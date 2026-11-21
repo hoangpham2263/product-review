@@ -3,6 +3,7 @@
 # (~/.codex/config.toml). ProjectRoot is the install folder.
 # A lighter model or a lower reasoning level uses fewer tokens.
 . (Join-Path $PSScriptRoot 'config.ps1')
+. (Join-Path $PSScriptRoot 'atomic-file.ps1')
 $script:AiEfforts = @('low', 'medium', 'high', 'xhigh', 'max', 'ultra')
 
 function Get-AiSettings([string]$ProjectRoot) {
@@ -20,7 +21,7 @@ function Set-AiSettings([string]$ProjectRoot, [string]$Model, [string]$Effort) {
     if ($Effort -and $script:AiEfforts -notcontains $Effort) { throw 'Mức suy nghĩ không hợp lệ.' }
     $path = Get-SharedConfigPath (Join-Path $ProjectRoot 'workspace') 'ai-model.json'
     New-Item -ItemType Directory -Force -Path (Split-Path $path -Parent) | Out-Null
-    [IO.File]::WriteAllText($path, (ConvertTo-Json -InputObject ([ordered]@{ model = $Model; effort = $Effort })), [Text.UTF8Encoding]::new($false))
+    Write-FileAtomic $path (ConvertTo-Json -InputObject ([ordered]@{ model = $Model; effort = $Effort })) ([Text.UTF8Encoding]::new($false))
 }
 
 # The models Codex offers (codex debug models), in its own order, each with the reasoning levels it supports.

@@ -13,7 +13,7 @@ import { randomUUID, createHash } from "node:crypto";
 import { createConfigApi } from "../../core/setup/config-api.mjs";
 import { createAgentRunner, buildPrompt, newRunId, readFlowAccount } from "../../core/setup/agent-run.mjs";
 import { readFlowBrowser, saveFlowBrowser, localChromeProfiles } from "../../core/setup/flow-browser.mjs";
-import { currentSession, sessionLabel, sessionWorkspace, sharedWorkspace, registerSession, updateSession, unregisterSession, listSessions, lockHolder, releaseLocks, peekGroup, sessionTitle, profileLabelOf, projectBusyBy, setSessionProject, SESSION_RE } from "../../core/setup/session.mjs";
+import { currentSession, sessionLabel, sessionWorkspace, sharedWorkspace, registerSession, updateSession, unregisterSession, listSessions, lockHolder, releaseLocks, peekGroup, sessionTitle, profileLabelOf, projectBusyBy, setSessionProject, readSeededJson, updateJsonLocked, SESSION_RE } from "../../core/setup/session.mjs";
 import { createFlowLogin, profileDirOf, profileGoogleAccounts, findChrome, flowOpenUrl } from "../../core/setup/flow-login.mjs";
 import { PWSH, toolEnv, psFile, psCommand, killTree, appWindow, chooseFiles } from "../../core/platform.mjs";
 
@@ -31,7 +31,7 @@ const logs = join(workspace, "logs");
 const uploads = join(workspace, "temp", "mac-uploads");
 const configApi = createConfigApi({ hubRoot: root, pwsh: PWSH, env: toolEnv });
 // Agent mode: Claude Code drives Google Flow and writes the reviews (core/setup/agent-run.mjs, docs/agent-prompt.md).
-const agent = createAgentRunner({ toolRoot: root, workspace, profileDir: profileDirOf(sharedWs), getBrowser: () => readFlowBrowser(sharedWs), session, kind: "main" });
+const agent = createAgentRunner({ toolRoot: root, workspace, profileDir: profileDirOf(sharedWs), getBrowser: () => readFlowBrowser(workspace, sharedWs), session, kind: "main" });
 // The light runner: queue and prep runs (no browser, no Chrome profile, own state files runs/prep-run.*): they go on while Bắt đầu runs.
 const light = createAgentRunner({ toolRoot: root, workspace, profileDir: profileDirOf(sharedWs), session, kind: "light" });
 // Quét web: the project of a run is the one whose session.json names the run (src/scan.ps1 start -Run); older scans keep a scan.json.
@@ -320,17 +320,28 @@ async function handle(req, res) {
   // What the run pickers hold (Luồng, Viết review, Tạo ảnh), kept in workspace/config/run-settings.json so it survives a restart,
   // another window or port and a cleared browser.
   if (path === "/api/run-settings") {
-    const file = join(sharedWs, "config", "run-settings.json");
-    if (req.method === "GET") { try { const s = JSON.parse((await readFile(file, "utf8")).replace(/^﻿/, "")); if (s.imageBackend && !["codex", "agent"].includes(s.imageBackend)) s.imageBackend = "codex"; if (s.textBackend && !["codex", "antigravity", "claude"].includes(s.textBackend)) s.textBackend = "codex"; delete s.runMode; s.flowAccounts = flowAccountsFor(readFlowBrowser(sharedWs)); return send(res, 200, s); } catch { return send(res, 200, { flowAccounts: flowAccountsFor(readFlowBrowser(sharedWs)) }); } }
+    // PER SESSION (each window has its own pickers, Luồng and Flow account): this session's workspace/config/run-settings.json, created from the default
+    // session's file the first time. Written under a lock through a temp file + rename.
+    const file = join(workspace, "config", "run-settings.json"), seedFile = join(sharedWs, "config", "run-settings.json");
+    if (req.method === "GET") {
+      const s2 = readSeededJson(file, seedFile, {});
+      if (s2.imageBackend && !["codex", "agent"].includes(s2.imageBackend)) s2.imageBackend = "codex";
+      if (s2.textBackend && !["codex", "antigravity", "claude"].includes(s2.textBackend)) s2.textBackend = "codex";
+      delete s2.runMode;
+      s2.flowAccounts = flowAccountsFor(readFlowBrowser(workspace, sharedWs));
+      return send(res, 200, s2);
+    }
     if (req.method === "POST") {
-      const given = JSON.parse((await body(req)).toString("utf8") || "{}"), saved = {};
-      try { Object.assign(saved, JSON.parse((await readFile(file, "utf8")).replace(/^﻿/, ""))); } catch {}
-      if (Number.isInteger(given.threads) && given.threads >= 1 && given.threads <= 4) saved.threads = given.threads;
-      if (["codex", "antigravity", "claude"].includes(given.textBackend)) saved.textBackend = given.textBackend;
-      if (["codex", "agent"].includes(given.imageBackend)) saved.imageBackend = given.imageBackend;
-      if (typeof given.flowAccount === "string") { const v = given.flowAccount.trim(); if (!v) delete saved.flowAccount; else if (v.length <= 120 && /^[^\s@"<>]+@[^\s@"<>]+\.[^\s@"<>]+$/.test(v)) saved.flowAccount = v; }
-      delete saved.runMode;
-      await mkdir(dirname(file), { recursive: true }); await writeFile(file, JSON.stringify(saved, null, 2));
+      const given = JSON.parse((await body(req)).toString("utf8") || "{}");
+      readSeededJson(file, seedFile, {}); // make sure the seeded copy exists before the update
+      const saved = updateJsonLocked(file, (cur) => {
+        if (Number.isInteger(given.threads) && given.threads >= 1 && given.threads <= 4) cur.threads = given.threads;
+        if (["codex", "antigravity", "claude"].includes(given.textBackend)) cur.textBackend = given.textBackend;
+        if (["codex", "agent"].includes(given.imageBackend)) cur.imageBackend = given.imageBackend;
+        if (typeof given.flowAccount === "string") { const v = given.flowAccount.trim(); if (!v) delete cur.flowAccount; else if (v.length <= 120 && /^[^\s@"<>]+@[^\s@"<>]+\.[^\s@"<>]+$/.test(v)) cur.flowAccount = v; }
+        delete cur.runMode;
+        return cur;
+      }, {});
       return send(res, 200, saved);
     }
   }
@@ -338,14 +349,14 @@ async function handle(req, res) {
   if (path === "/api/stop" && req.method === "POST") { stopRun(); return send(res, 200, { ok: true }); }
   // Agent mode: prompt (filled), start, status (short sanitized progress), stop.
   if (path === "/api/agent/prompt" && req.method === "GET") {
-    try { const runId = url.searchParams.get("run") || newRunId(); return send(res, 200, { run: runId, prompt: buildPrompt({ toolRoot: root, run: runId }) }); }
+    try { const runId = url.searchParams.get("run") || newRunId(); return send(res, 200, { run: runId, prompt: buildPrompt({ toolRoot: root, run: runId, workspace }) }); }
     catch (e) { return send(res, 500, { error: e.message }); }
   }
   if (path === "/api/agent/run" && req.method === "POST") {
     if (run.proc) return send(res, 409, { error: "Đang chạy." });
     const given = JSON.parse((await body(req)).toString("utf8") || "{}");
     if (agent.isActive()) return send(res, 409, { error: "Đã có một lượt Claude đang chạy." });
-    const login = readFlowBrowser(sharedWs).mode === "own" ? await flowLogin.status() : { state: "logged_in" };
+    const login = readFlowBrowser(workspace, sharedWs).mode === "own" ? await flowLogin.status() : { state: "logged_in" };
     if (login.state !== "logged_in") return send(res, 409, { error: login.state === "logged_out" ? "Chưa đăng nhập Google Flow trong Chrome riêng: bấm Mở Chrome để đăng nhập, đăng nhập xong đóng cửa sổ đó rồi Kiểm tra lại." : "Chưa chạy được Claude: " + login.detail });
     const r = agent.start({ run: given.run || undefined });
     return send(res, r.status, r.ok ? { ok: true, run: r.run_id, started: r.started } : { error: r.error });
@@ -460,7 +471,7 @@ async function handle(req, res) {
   if (path === "/api/project/queue/status" && req.method === "GET") return send(res, 200, { ...light.status(), light: true });
   // Own Chrome sign-in for Claude (Flow): status (short headless check), open (normal Chrome window for the person to sign in).
   // Which browser Claude (Flow) drives: everyday Chrome (a profile chosen from this machine) or the tool's own Chrome.
-  if (path === "/api/flow-browser" && req.method === "GET") return send(res, 200, { ...readFlowBrowser(sharedWs), ...localChromeProfiles() });
+  if (path === "/api/flow-browser" && req.method === "GET") return send(res, 200, { ...readFlowBrowser(workspace, sharedWs), ...localChromeProfiles() });
   // Opens the Chrome Web Store page of the Playwright MCP Bridge in THE CHOSEN profile; the person clicks "Add to Chrome" (nothing is installed for them).
   if (path === "/api/flow-browser/install-extension" && req.method === "POST") {
     try {
@@ -474,10 +485,10 @@ async function handle(req, res) {
       return send(res, 200, { ok: true, profile: folder });
     } catch (e) { return send(res, 400, { error: e.message }); }
   }
-  if (path === "/api/flow-browser" && req.method === "POST") { try { const b = JSON.parse((await body(req)).toString("utf8") || "{}"); const saved = saveFlowBrowser(sharedWs, b); alignFlowAccount(saved); return send(res, 200, saved); } catch (e) { return send(res, 400, { error: e.message }); } }
+  if (path === "/api/flow-browser" && req.method === "POST") { try { const b = JSON.parse((await body(req)).toString("utf8") || "{}"); const saved = saveFlowBrowser(workspace, b, sharedWs); alignFlowAccount(saved); return send(res, 200, saved); } catch (e) { return send(res, 400, { error: e.message }); } }
   // Everyday-Chrome (extension) mode: nothing to probe in the tool's own profile; the button opens Flow in the CHOSEN profile instead.
-  if (path === "/api/flow-login/status" && req.method === "GET") return send(res, 200, readFlowBrowser(sharedWs).mode === "own" ? await flowLogin.status({ fresh: url.searchParams.get("fresh") === "1" }) : { state: "extension", detail: "Chrome thật: không kiểm tra đăng nhập ở đây" });
-  if (path === "/api/flow-login/open" && req.method === "POST" && readFlowBrowser(sharedWs).mode !== "own") return send(res, ...openEverydayChrome(readFlowBrowser(sharedWs)));
+  if (path === "/api/flow-login/status" && req.method === "GET") return send(res, 200, readFlowBrowser(workspace, sharedWs).mode === "own" ? await flowLogin.status({ fresh: url.searchParams.get("fresh") === "1" }) : { state: "extension", detail: "Chrome thật: không kiểm tra đăng nhập ở đây" });
+  if (path === "/api/flow-login/open" && req.method === "POST" && readFlowBrowser(workspace, sharedWs).mode !== "own") return send(res, ...openEverydayChrome(readFlowBrowser(workspace, sharedWs)));
   if (path === "/api/flow-login/open" && req.method === "POST") { const h = lockHolder(root, "chrome", "own", session); if (h) return send(res, 409, { error: "Chrome riêng của tool đang được phiên \"" + sessionLabel(h.session) + "\" dùng: đóng nó trước." }); const r = flowLogin.open(); return send(res, r.status, r.ok ? { ok: true } : { error: r.error }); }
   if (path === "/api/agent/stop" && req.method === "POST") { const r = agent.stop(); return send(res, r.status, r.ok ? { ok: true } : { error: r.error }); }
   // Cấu hình (core/setup/config-api.mjs).
@@ -548,32 +559,19 @@ function flowAccountsFor(browser) {
 // After the Chrome profile changed: the saved Flow account must belong to it; else it becomes the profile's primary account (or none).
 function alignFlowAccount(browser) {
   if (!browser || browser.mode === "own") return;
-  const file = join(sharedWs, "config", "run-settings.json");
-  let saved = {}; try { saved = JSON.parse(readFileSync(file, "utf8").replace(/^\uFEFF/, "")); } catch {}
-  const accounts = flowAccountsFor(browser), cur = String(saved.flowAccount || "").toLowerCase();
-  if (cur && accounts.includes(cur)) return;
-  if (accounts[0]) saved.flowAccount = accounts[0]; else delete saved.flowAccount;
-  mkdirSync(join(file, ".."), { recursive: true });
-  writeFileSync(file, JSON.stringify(saved, null, 2));
-}
-// Adds a tab to the chosen everyday Chrome profile: Flow through Google's account chooser, pre-selecting the chosen Flow account.
-// No --user-data-dir, no run or lock checks (that Chrome is normally open already); only the profile must exist.
-let everydayOpened = 0;
-function openEverydayChrome(browser) {
-  const p = localChromeProfiles().profiles.find((x) => x.folder === browser.profile);
-  if (!p) return [400, { error: "Profile Chrome \"" + browser.profile + "\" không có trên máy này. Chọn profile khác ở ô trình duyệt." }];
-  const chrome = findChrome();
-  if (!chrome) return [400, { error: "Không tìm thấy Google Chrome (đặt PR_CHROME_PATH nếu cài ở chỗ khác)." }];
-  if (Date.now() - everydayOpened < 5000) return [429, { error: "Vừa mở xong, chờ vài giây." }];
-  try {
-    const child = spawn(chrome, ["--profile-directory=" + p.folder, flowOpenUrl(readFlowAccount(root))], { detached: true, stdio: "ignore" });
-    child.on("error", () => {}); child.unref(); everydayOpened = Date.now();
-    return [200, { ok: true, profile: p.folder }];
-  } catch (e) { return [500, { error: String(e.message || e).slice(0, 200) }]; }
+  const file = join(workspace, "config", "run-settings.json");
+  readSeededJson(file, join(sharedWs, "config", "run-settings.json"), {});
+  const accounts = flowAccountsFor(browser);
+  updateJsonLocked(file, (saved) => {
+    const cur = String(saved.flowAccount || "").toLowerCase();
+    if (cur && accounts.includes(cur)) return undefined;
+    if (accounts[0]) saved.flowAccount = accounts[0]; else delete saved.flowAccount;
+    return saved;
+  }, {});
 }
 // ----- Sessions (several windows from one source) -----
 let self = null; // this window's registry entry, once the server listens
-function profileLabel() { try { const b = readFlowBrowser(sharedWs); return profileLabelOf(b, localChromeProfiles().profiles); } catch { return ""; } }
+function profileLabel() { try { const b = readFlowBrowser(workspace, sharedWs); return profileLabelOf(b, localChromeProfiles().profiles); } catch { return ""; } }
 function selfProject() { try { return listSessions(root).find((e) => e.pid === process.pid)?.project || ""; } catch { return ""; } }
 function sessionInfo() {
   const label = profileLabel();
@@ -607,7 +605,7 @@ function csvCounts(text) {
 // Which project was used last (a window opened for it or selected it): config/recent-projects.json, for the "recently used first" order.
 const recentFile = join(sharedWs, "config", "recent-projects.json");
 function readRecent() { try { return JSON.parse(readFileSync(recentFile, "utf8")); } catch { return {}; } }
-function touchRecent(id) { try { const all = readRecent(); all[id] = new Date().toISOString(); mkdirSync(join(recentFile, ".."), { recursive: true }); writeFileSync(recentFile, JSON.stringify(all, null, 2)); } catch {} }
+function touchRecent(id) { try { updateJsonLocked(recentFile, (all) => { all[id] = new Date().toISOString(); return all; }, {}); } catch {} }
 function projectChoices() {
   const base = join(sharedWs, "projects");
   let names = []; try { names = readdirSync(base); } catch { return []; }
