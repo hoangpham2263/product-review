@@ -242,7 +242,9 @@ function buildMain() {
   ui.newNameBox.append(nameLabel, ui.sessionName, ui.nameHint);
   ui.btnSessionOpen = button("Mở cửa sổ", true);
   Object.assign(ui.btnSessionOpen.style, { position: "static", display: "block", width: "100%", height: "32px" });
-  ui.sessionsPanel.append(pickLabel, ui.sessionPick, ui.newNameBox, ui.btnSessionOpen);
+  // what is open right now (read-only, from live data): shown above the combo
+  ui.openLine = el("div", "muted"); Object.assign(ui.openLine.style, { fontSize: "11px", marginBottom: "8px", display: "none", lineHeight: "1.35" });
+  ui.sessionsPanel.append(ui.openLine, pickLabel, ui.sessionPick, ui.newNameBox, ui.btnSessionOpen);
   ui.openNames = new Set(); // names of the windows open now (sessions and projects), for the live check of a typed name
   ui.projectIds = new Set();
   const NAME_RE = /^[a-z0-9][a-z0-9-]{0,29}$/;
@@ -522,29 +524,31 @@ async function refreshSessionBadge() {
 }
 async function loadSessionPicker() {
   const [pr, ss] = await Promise.all([fetch("/api/sessions/projects").then((x) => x.json()).catch(() => ({ projects: [] })), fetch("/api/sessions").then((x) => x.json()).catch(() => ({ sessions: [] }))]);
-  const projects = pr.projects || [], sessions = ss.sessions || [], def = sessions.find((e) => e.session === "");
+  const projects = pr.projects || [], sessions = (ss.sessions || []).slice().sort((a, b) => a.stt - b.stt);
   ui.openNames = new Set(sessions.map((e) => e.session).filter(Boolean));
   ui.projectIds = new Set(projects.map((p) => p.id));
-  // value = the session / project id, never parsed from the label. disabled = already open (this window too) or used by another session: greyed, not selectable.
+  // read-only line: the windows that are really alive now
+  ui.openLine.textContent = sessions.length ? "Đang mở: " + sessions.map((e) => "#" + e.stt + " " + (e.session ? e.session : "mặc định") + (e.current ? " (cửa sổ này)" : "")).join(" · ") : "";
+  ui.openLine.style.display = sessions.length ? "" : "none";
+  // the dropdown lists ONLY what can be opened: free projects (most unused products first), the used-up ones last, then "＋ Phiên mới (đặt tên)…".
+  // value = the project id, never parsed from the label. Projects that are open or used by another session are not listed.
   const entry = (value, label, extra = {}) => ({ value, label, disabled: false, ...extra });
-  const free = [], usedUp = [], taken = [];
+  const free = [], usedUp = [];
   for (const p of projects) {
+    if (p.window_open || p.busy) continue;
     const name = p.name || p.id, count = p.scanned ? p.unused + "/" + p.products + " chưa dùng" : "chưa quét";
-    if (p.window_open) taken.push(entry(p.id, name + " · đang mở #" + p.window_stt, { disabled: true, reason: p.current ? "Đây là cửa sổ này" : "Đã có cửa sổ #" + p.window_stt }));
-    else if (p.busy) taken.push(entry(p.id, name + " · đang dùng bởi " + p.busy, { disabled: true, reason: "Đang được phiên " + p.busy + " dùng" }));
-    else if (p.scanned && p.unused === 0) usedUp.push(entry(p.id, name + " · hết (" + count + ")"));
-    else free.push(entry(p.id, name + " · " + count));
+    if (p.scanned && p.unused === 0) usedUp.push(entry(p.id, name + " · hết (" + count + ")"));
+    else free.push(entry(p.id, name + " · " + count, { unused: p.scanned ? p.unused : -1 }));
   }
-  const defaultItem = def ? entry("__default", "Phiên mặc định · đang mở #" + def.stt, { disabled: true, reason: def.current ? "Đây là cửa sổ này" : "Đã có cửa sổ #" + def.stt }) : entry("__default", "Phiên mặc định");
+  free.sort((a, b) => b.unused - a.unused); // stable: equal ones keep the server's recently-used order
   const selectable = [...free, ...usedUp];
   const placeholder = selectable.length ? [] : [entry("", "Không còn dự án rảnh", { disabled: true, placeholder: true })];
-  const items = [...placeholder, defaultItem, ...free, ...usedUp, ...taken, entry("__new", "＋ Phiên mới (đặt tên)…")];
+  const items = [...placeholder, ...selectable, entry("__new", "＋ Phiên mới (đặt tên)…")];
   ui.sessionPick.replaceChildren(...items.map((it) => { const o = new Option(it.label, it.value); o._info = it; o.disabled = it.disabled; o.title = it.label; return o; }));
-  // the project picked last time while it is still selectable, else the first selectable free project; nothing selectable = the placeholder
+  // the project picked last time while it is still listed, else the first free project; nothing free = the placeholder
   let last = ""; try { last = localStorage.getItem("pr.sessions.last") || ""; } catch {}
   const wanted = selectable.find((it) => it.value === last) || free[0] || selectable[0] || items.find((it) => it.placeholder);
-  ui.sessionPick.value = wanted ? wanted.value : "";
-  if (wanted && wanted.placeholder) ui.sessionPick.selectedIndex = items.indexOf(wanted);
+  ui.sessionPick.selectedIndex = Math.max(0, items.indexOf(wanted));
   refreshPickButton();
 }
 setInterval(refreshSessionBadge, 5000);

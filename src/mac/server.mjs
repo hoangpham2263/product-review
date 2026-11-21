@@ -224,7 +224,7 @@ async function handle(req, res) {
   if (path === "/api/root") return send(res, 200, { root, service: "product-review", protocol: 1, pid: process.pid, session, stt: self?.stt || 0 });
   // Sessions: this window (number, session, Chrome profile, next Chrome tab group) and the other open windows.
   if (path === "/api/session" && req.method === "GET") return send(res, 200, sessionInfo());
-  if (path === "/api/sessions" && req.method === "GET") return send(res, 200, { current: session, sessions: sessionRows() });
+  if (path === "/api/sessions" && req.method === "GET") return send(res, 200, { current: session, sessions: sessionRows(await liveSessions()) });
   if (path === "/api/sessions/open" && req.method === "POST") {
     const b = JSON.parse((await body(req)).toString("utf8") || "{}");
     const name = String(b.name ?? "").trim().toLowerCase();
@@ -240,7 +240,7 @@ async function handle(req, res) {
     }
     return send(res, 200, openSessionWindow(name));
   }
-  if (path === "/api/sessions/projects" && req.method === "GET") return send(res, 200, { projects: projectChoices() });
+  if (path === "/api/sessions/projects" && req.method === "GET") return send(res, 200, { projects: projectChoices(await liveSessions()) });
   // The project selected in this window's Dự án popup is the one this window uses: another live session cannot take it.
   if (path === "/api/session/project" && req.method === "POST") {
     const b = JSON.parse((await body(req)).toString("utf8") || "{}");
@@ -580,8 +580,20 @@ function sessionInfo() {
   return { session, label: sessionLabel(session), stt: self?.stt || 0, port: PORT, pid: process.pid, profile_label: label, running: agent.isActive() || light.isActive(), project,
     next_group: group, title: sessionTitle({ stt: self?.stt, session, profileLabel: label, project }) };
 }
-function sessionRows() {
-  return listSessions(root).map((e) => ({ stt: e.stt, session: e.session, label: sessionLabel(e.session), port: e.port, pid: e.pid, profile_label: e.profile_label || "", running: !!e.running, project: e.project || "", current: e.pid === process.pid }));
+// Live data each time: the registry entries whose pid is alive AND whose port answers /api/root with that pid within ~1 s (a stale entry never shows).
+async function liveSessions() {
+  const alive = await Promise.all(listSessions(root).map(async (e) => {
+    if (e.pid === process.pid) return e;
+    try {
+      const r = await fetch("http://127.0.0.1:" + e.port + "/api/root", { signal: AbortSignal.timeout(1000) });
+      const j = await r.json();
+      return j && j.service === "product-review" && j.pid === e.pid ? e : null;
+    } catch { return null; }
+  }));
+  return alive.filter(Boolean);
+}
+function sessionRows(live) {
+  return live.map((e) => ({ stt: e.stt, session: e.session, label: sessionLabel(e.session), port: e.port, pid: e.pid, profile_label: e.profile_label || "", running: !!e.running, project: e.project || "", current: e.pid === process.pid }));
 }
 // The projects a new window can be opened for: every folder of workspace/projects with a project.json, and who uses it right now.
 // products.csv: how many rows and how many are still unused (column "used" is not T / true / 1 / x / y / yes). Quoted cells may hold commas.
@@ -606,17 +618,18 @@ function csvCounts(text) {
 const recentFile = join(sharedWs, "config", "recent-projects.json");
 function readRecent() { try { return JSON.parse(readFileSync(recentFile, "utf8")); } catch { return {}; } }
 function touchRecent(id) { try { updateJsonLocked(recentFile, (all) => { all[id] = new Date().toISOString(); return all; }, {}); } catch {} }
-function projectChoices() {
+function projectChoices(live) {
   const base = join(sharedWs, "projects");
   let names = []; try { names = readdirSync(base); } catch { return []; }
-  const open = new Set(listSessions(root).map((e) => e.session));
+  const open = new Set(live.map((e) => e.session));
   return names.filter((n) => /^[a-z0-9][a-z0-9-]{1,60}$/.test(n) && existsSync(join(base, n, "project.json"))).map((n) => {
     let info = {}; try { info = JSON.parse(readFileSync(join(base, n, "project.json"), "utf8").replace(/^\uFEFF/, "")); } catch {}
-    const busy = projectBusyBy(root, n, session);
+    const other = live.find((e) => e.project === n && e.pid !== process.pid), holder = other ? null : lockHolder(root, "project", n, session);
+    const busy = other ? { session: other.session, via: "window" } : holder ? { session: holder.session, via: "run" } : null;
     let products = 0, unused = 0, scanned = false;
     try { const t = csvCounts(readFileSync(join(base, n, "products.csv"), "utf8")); products = t.products; unused = t.unused; scanned = true; } catch {}
     const recent = readRecent()[n] || info.updated || info.last_scan || "";
-    const window = listSessions(root).find((e) => e.session === n);
+    const window = live.find((e) => e.session === n);
     return { id: n, name: info.name || n, site: info.site || "", products, unused, scanned, recent, busy: busy ? busy.session : "", busy_via: busy ? busy.via : "", window_open: open.has(n), window_stt: window ? window.stt : 0, current: window ? window.pid === process.pid : false };
   }).sort((a, b) => String(b.recent).localeCompare(String(a.recent)) || a.id.localeCompare(b.id));
 }
