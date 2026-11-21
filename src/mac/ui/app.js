@@ -840,6 +840,8 @@ function showProjectsDialog(pick = "") {
   const catLabel = at(label("Danh mục"), 282, 44, 70, 22);
   const catBox = at(combo(), 356, 40, 230, 25);
   const unusedOnly = at(checkbox("Chỉ chưa dùng"), 610, 42, 140, 22);
+  // Default ON (user 2026-11-21): the table, Thêm vào hàng chờ and Chuẩn bị trước start with only the unused products; untick to see all.
+  unusedOnly.input.checked = true;
   const countLabel = at(label("", "muted"), 760, 44, 124, 22);
   countLabel.style.textAlign = "right";
   const COLS = "1fr 140px 44px 62px 96px";
@@ -884,7 +886,7 @@ function showProjectsDialog(pick = "") {
   sceneCount.onchange = () => { remember(); refreshPrepared(); }; // the footer counts the prepared rows the queue can use with THIS number of scenes
 
   // Two kinds of run can go at once: the main runner (scan / review count / the Flow run of Bắt đầu) and the LIGHT runner (queue, prep: no browser).
-  let projects = [], current = "", data = null, timer = null, runningMain = "", runningLight = "", startedAt = 0, lightStarted = 0, ticks = 0, otherActive = false, otherLight = false, prepText = "", fastNote = "";
+  let projects = [], current = "", data = null, timer = null, runningMain = "", runningLight = "", startedAt = 0, lightStarted = 0, ticks = 0, otherActive = false, otherLight = false, prepText = "", fastNote = "", orderActive = false, orderWasActive = false;
   // A window opened for a project (session named after it) shows only that project.
   // A window opened for a project stays on it; otherwise the popup opens on the FOCUSED project (or "Lẻ") and changing it is a change of the window's focus.
   const lockedProject = sessionState.locked ? sessionState.project : "";
@@ -896,7 +898,7 @@ function showProjectsDialog(pick = "") {
     scanBtn.disabled = mainBusy || otherActive || !has;
     reviewsBtn.disabled = mainBusy || otherActive || !has || !data.rows.length;
     // queue / prep need no browser: only another LIGHT run blocks them, never the main Bắt đầu run
-    queueBtn.disabled = lightBusy || otherLight || !has || !data.rows.length;
+    queueBtn.disabled = orderActive || (lightBusy && runningLight === "queue") || !has || !data.rows.length;
     prepBtn.disabled = lightBusy || otherLight || !has || !data.rows.length;
     queueCount.enabled = !lightBusy; sceneCount.enabled = !lightBusy; prepCount.enabled = !lightBusy; prepScenes.enabled = !lightBusy;
     openDir.disabled = !has;
@@ -996,8 +998,9 @@ function showProjectsDialog(pick = "") {
 
   // One poll for the two runners: /api/agent/status (scan, review count, the Flow run) and /api/light/status (queue, prep).
   const poll = async () => {
-    const [st, lt] = await Promise.all([fetch("/api/agent/status").then((x) => x.json()).catch(() => null), fetch("/api/light/status").then((x) => x.json()).catch(() => null)]);
+    const [st, lt, od] = await Promise.all([fetch("/api/agent/status").then((x) => x.json()).catch(() => null), fetch("/api/light/status").then((x) => x.json()).catch(() => null), fetch("/api/project/queue/order").then((x) => x.json()).catch(() => null)]);
     if (!st || !lt) return;
+    orderActive = !!(od && od.active);
     const lightNow = lt.active && (lt.mode === "queue" || lt.mode === "prep");
     const mainNow = st.active && (st.mode === "scan" || st.mode === "reviews");
     otherLight = !!lightNow && !runningLight; otherActive = !!st.active && !mainNow && !runningMain;
@@ -1047,8 +1050,11 @@ function showProjectsDialog(pick = "") {
       say(`${KIND[runningMain]}… ${clock()}\n${st.last_text || ""}`.trim(), "var(--accent)");
       if (++ticks % 4 === 0) choose(current, true);
     } else if (st.active && !mainNow) say("Đang có một lượt Claude khác chạy (tạo ảnh Flow). Quét và cập nhật review chờ xong; Chuẩn bị trước và Thêm vào hàng chờ vẫn dùng được.", "var(--warn)");
+    // Thêm vào hàng chờ order: its live line wins over the run text; when it ends, the main list is reloaded and the result shown once
+    if (od && od.active) { say(od.line + (runningLight ? "\n" + (lt.last_text || "") : ""), "var(--accent)"); orderWasActive = true; }
+    else if (orderWasActive && od) { orderWasActive = false; await loadState().catch(() => {}); refreshPrepared(); say((od.line || "") + (od.message ? "\n" + od.message : ""), od.state === "done" ? "var(--ok)" : "var(--warn)"); }
     refreshButtons();
-    if (!st.active && !lt.active && !runningMain && !runningLight && timer) { clearInterval(timer); timer = null; }
+    if (!st.active && !lt.active && !runningMain && !runningLight && !orderActive && timer) { clearInterval(timer); timer = null; }
   };
   const watch = () => { if (!timer) timer = setInterval(poll, 2000); poll(); };
   const begin = async (url, body, kind, failText) => {
@@ -1087,9 +1093,9 @@ function showProjectsDialog(pick = "") {
     const got = a.from_prepared || 0, need = a.needs_claude || 0, dropNote = (a.dropped || []).length ? ` (${a.dropped.length} dòng đã chuẩn bị không còn hợp lệ, đã trả về "chưa chuẩn bị")` : "";
     fastNote = `Đã lấy ${got} từ kho đã chuẩn bị, ${need} cần Claude chọn thêm${dropNote}.`;
     refreshPrepared();
-    if (need <= 0) { refreshButtons(); say(`Đã lấy ${got} sản phẩm từ kho đã chuẩn bị, không cần Claude${dropNote}. Xem danh sách ở cửa sổ chính.`, "var(--ok)"); return; }
-    if (!a.started) { refreshButtons(); say(fastNote + "\n" + (a.message || ""), "var(--warn)"); return; }
-    runningLight = "queue"; lightStarted = Date.now(); ticks = 0; refreshButtons(); say(fastNote + "\nĐang bắt đầu…", "var(--accent)"); watch();
+    if (need <= 0 || a.finished) { refreshButtons(); say(a.message ? (got ? `Đã lấy ${got} sản phẩm từ kho đã chuẩn bị${dropNote}. ` : "") + a.message : `Đã lấy ${got} sản phẩm từ kho đã chuẩn bị, không cần Claude${dropNote}. Xem danh sách ở cửa sổ chính.`, got ? "var(--ok)" : "var(--warn)"); return; }
+    // the rest is an order of this window: it fills from the stock while Chuẩn bị trước runs, then Claude picks the remainder by itself
+    orderActive = true; orderWasActive = true; ticks = 0; refreshButtons(); say((a.order && a.order.line) || fastNote, "var(--accent)"); watch();
   };
   // Chuẩn bị trước: Claude picks the scenes of the not-yet-prepared products and stores them (prepared.csv); the queue is not touched.
   prepBtn.onclick = () => { if (data) begin("/api/project/prep/run", { project: current, category: catBox.value, unused_only: unusedOnly.input.checked, limit: prepCount.value, scenes: prepScenes.value }, "prep", "Chưa bắt đầu chuẩn bị được."); };

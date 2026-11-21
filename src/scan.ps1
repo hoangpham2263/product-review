@@ -19,7 +19,7 @@ param(
     [string]$Site = '', [int]$Max = 20, [string]$Run = '', [string]$Scan = '', [string]$Project = '', [string]$Id = '',
     [string]$Url = '', [string]$Title = '', [string]$Collection = '', [string]$CollectionUrl = '', [string]$ImageUrl = '', [string]$ImageFile = '', [string]$File = '',
     [int]$Count = -1, [string]$Rating = '', [string]$Source = '', [string]$Used = '', [int]$Limit = 0,
-    [string]$Group = '', [string]$Category = '', [string]$SceneNames = '', [int]$SceneCount = 0, [switch]$UnusedOnly, [switch]$AllowReuse, [switch]$Prefetch, [switch]$Skip, [string]$Reason = '',
+    [string]$Group = '', [string]$Category = '', [string]$SceneNames = '', [int]$SceneCount = 0, [switch]$UnusedOnly, [switch]$AllowReuse, [switch]$Prefetch, [switch]$Skip, [string]$Reason = '', [switch]$TopUp,
     [Parameter(ValueFromRemainingArguments = $true)]$Rest
 )
 
@@ -491,14 +491,24 @@ try {
         }
         'queue-todo' {
             # The products to queue: the project's own rows, in table order, not queued yet; -Collection (a category) and -UnusedOnly narrow it, -Limit caps it.
+            # Products that already have a READY prepared row are left out (Thêm vào hàng chờ takes them from the stock); -TopUp -SceneCount S lists instead the
+            # ready rows prepared with FEWER than S scenes, with their scenes: the queue run keeps those and picks only the missing ones (queue-add with all of them).
             $dir = Get-ScanDir $ProjectId
             $queued = Get-QueuedKeys
+            $readyRows = @{}
+            foreach ($pr in @(Read-PreparedRows $dir | Where-Object { $_.status -eq 'ready' })) { $readyRows[(Get-ScanUrlKey $pr.product_url)] = $pr }
             $todoRows = @(Read-ScanRows (Join-Path $dir 'products.csv') | Where-Object {
                     (-not $Collection -or $_.collection -eq $Collection) -and (-not $UnusedOnly -or -not (Test-UsedFlag $_.used)) -and -not $queued.Contains((Get-ScanUrlKey $_.product_url)) -and
                     $_.product_image -and (Test-Path -LiteralPath (Join-Path (Join-Path $dir 'images') $_.product_image))
                 })
+            if ($TopUp) { $todoRows = @($todoRows | Where-Object { $k = Get-ScanUrlKey $_.product_url; $readyRows.ContainsKey($k) -and ($SceneCount -le 0 -or [int]$readyRows[$k].scene_count -lt $SceneCount) }) }
+            else { $todoRows = @($todoRows | Where-Object { -not $readyRows.ContainsKey((Get-ScanUrlKey $_.product_url)) }) }
             if ($Limit -gt 0) { $todoRows = @($todoRows | Select-Object -First $Limit) }
-            Write-ScanJson ([ordered]@{ project = $ProjectId; count = $todoRows.Count; products = @($todoRows | ForEach-Object { [ordered]@{ url = $_.product_url; title = $_.title; collection = $_.collection; image = (Join-Path (Join-Path $dir 'images') $_.product_image) } }) })
+            Write-ScanJson ([ordered]@{ project = $ProjectId; top_up = [bool]$TopUp; count = $todoRows.Count; products = @($todoRows | ForEach-Object {
+                        $item = [ordered]@{ url = $_.product_url; title = $_.title; collection = $_.collection; image = (Join-Path (Join-Path $dir 'images') $_.product_image) }
+                        if ($TopUp) { $pr = $readyRows[(Get-ScanUrlKey $_.product_url)]; $have = @(([string]$pr.scenes) -split '\|' | Where-Object { $_ }); $item['group'] = [string]$pr.group; $item['scenes'] = $have; $item['missing'] = [Math]::Max(0, $SceneCount - $have.Count) }
+                        $item
+                    }) })
         }
         'queue-direct' {
             # No Claude, no scenes: the first -Limit products in table order (same filters as queue-todo: -Collection, -UnusedOnly, not queued yet) go into
@@ -608,6 +618,15 @@ try {
             }
             [void](Add-QueueEntry $dir $row[0] $picked)
             Save-PHashCache
+            # Keep the stock coherent: the product's prepared row (a top-up, or none yet) becomes consumed with the scenes really queued.
+            $consumedBy = if ($env:PR_SESSION) { $env:PR_SESSION } else { 'default' }
+            [void](Use-PreparedLock $dir {
+                $rows = @(Read-PreparedRows $dir)
+                $mineRow = @($rows | Where-Object { (Get-ScanUrlKey $_.product_url) -eq $key })
+                $record = [pscustomobject]@{ product_url = $row[0].product_url; group = $Group; scenes = ($wanted -join '|'); scene_sha256 = (@($picked | ForEach-Object { $_.sha256 }) -join '|'); scene_count = [string]$wanted.Count; prepared_at = $(if ($mineRow.Count) { [string]$mineRow[0].prepared_at } else { Get-Stamp }); status = 'consumed'; consumed_at = (Get-Stamp); consumed_by = $consumedBy }
+                Write-PreparedRows $dir (@($rows | Where-Object { (Get-ScanUrlKey $_.product_url) -ne $key }) + @($record))
+                $true
+            })
             Write-ScanJson ([ordered]@{ project = $ProjectId; url = $row[0].product_url; product_file = $productFile; scenes = @($picked | ForEach-Object { $_.file }) })
         }
         'prep-todo' {

@@ -209,6 +209,78 @@ const allowedFile = (p) => {
 const body = async (req) => { const chunks = []; for await (const c of req) chunks.push(c); return Buffer.concat(chunks); };
 const send = (res, status, data) => { res.writeHead(status, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" }); res.end(JSON.stringify(data)); };
 
+// ----- Thêm vào hàng chờ order (ONE per session): the products still missing after the prepared stock are never dropped. While a prep run is
+// active the order pulls the new prepared rows (each time prepared.csv changes, at least every 15 s); when the light runner is free it starts the
+// Claude queue run for exactly the remaining count. Dừng cancels it.
+let queueOrder = null, queueOrderTimer = null;
+const urlKey = (u) => { try { const x = new URL(String(u).trim()); return x.protocol + "//" + x.host.toLowerCase() + x.pathname.replace(/\/+$/, "") + x.search; } catch { return String(u).trim(); } };
+// links of project id in THIS session's queue (urls.txt)
+function queuedCountOf(id) {
+  const inQueue = new Set();
+  try { for (const l of readFileSync(join(workspace, "urls.txt"), "utf8").replace(/^\uFEFF/, "").split(/\r?\n/)) { const t = l.trim(); if (t && !t.startsWith("#")) inQueue.add(urlKey(t)); } } catch {}
+  let n = 0;
+  try { const lines = readFileSync(join(sharedWs, "projects", id, "products.csv"), "utf8").replace(/^\uFEFF/, "").split(/\r?\n/).filter((l) => l.trim()).slice(1); for (const l of lines) if (inQueue.has(urlKey(csvCells(l)[0]))) n++; } catch {}
+  return n;
+}
+async function productsLeft(id, scenes, filters) {
+  const a = await runScan(["queue-todo", "-Project", id, "-Limit", "1", ...filters], 60000);
+  if (a.ok && a.count > 0) return true;
+  const b = await runScan(["queue-todo", "-Project", id, "-TopUp", "-SceneCount", String(scenes), "-Limit", "1", ...filters], 60000);
+  return !!(b.ok && b.count > 0);
+}
+function orderAdded() { return queueOrder ? Math.max(0, queuedCountOf(queueOrder.project) - queueOrder.base) : 0; }
+function orderStatus() {
+  if (!queueOrder) return { active: false };
+  const added = orderAdded(), o2 = queueOrder;
+  return { active: o2.active, project: o2.project, total: o2.total, added, from_prepared: o2.fromPrepared, claude_choosing: o2.active && o2.state === "claude" ? Math.max(0, o2.total - added) : 0,
+    waiting: o2.active && o2.state === "waiting", state: o2.state, message: o2.message, line: orderLine() };
+}
+function orderLine() {
+  if (!queueOrder) return "";
+  const added = orderAdded(), o2 = queueOrder, rest = Math.max(0, o2.total - added);
+  return "Hàng chờ: đã thêm " + added + "/" + o2.total + " (" + o2.fromPrepared + " từ kho chuẩn bị" + (o2.state === "claude" ? ", " + rest + " Claude đang chọn thêm" : o2.state === "waiting" ? ", " + rest + " đợi lượt Chuẩn bị trước thêm vào kho" : "") + ")";
+}
+function finishOrder(state, message = "") {
+  if (!queueOrder) return;
+  queueOrder.state = state; queueOrder.active = false; queueOrder.message = message || (state === "done" ? "Đã thêm đủ." : "");
+  if (queueOrderTimer) { clearInterval(queueOrderTimer); queueOrderTimer = null; }
+}
+function startOrderClaude(need) {
+  const o2 = queueOrder;
+  const options = `category: ${o2.category ? `"${o2.category}"` : "(all categories)"}; only unused (used = F): ${o2.unused_only ? "T" : "F"}; products to queue: ${need}; scenes per product: ${o2.scenes}`;
+  const r = light.start({ run: "queue-" + newRunId().slice(6), mode: "queue", project: o2.project, options });
+  if (r.ok) { o2.state = "claude"; o2.claudeNeed = need; }
+  return r;
+}
+async function orderTick() {
+  const o2 = queueOrder;
+  if (!o2 || !o2.active || o2.busy) return;
+  o2.busy = true;
+  try {
+    if (orderAdded() >= o2.total) return finishOrder("done");
+    if (o2.state === "waiting") {
+      // a prep run is adding rows: take them as they come
+      let mtime = 0; try { mtime = statSync(join(sharedWs, "projects", o2.project, "prepared.csv")).mtimeMs; } catch {}
+      if (mtime !== o2.lastMtime || Date.now() - o2.lastPull > 15000) {
+        o2.lastMtime = mtime; o2.lastPull = Date.now();
+        const rest = o2.total - orderAdded();
+        const r = await runScan(["queue-from-prepared", "-Project", o2.project, "-Limit", String(rest), "-SceneCount", String(o2.scenes), ...o2.filters]);
+        if (r.ok) o2.fromPrepared += Number(r.queued) || 0;
+      }
+      if (orderAdded() >= o2.total) return finishOrder("done");
+      if (!light.isActive()) {
+        // the prep run ended: whatever is still missing goes to Claude now (or the order ends when nothing is left to queue)
+        const rest = o2.total - orderAdded();
+        if (!(await productsLeft(o2.project, o2.scenes, o2.filters))) return finishOrder("done", "Không còn sản phẩm nào để thêm: đã thêm " + orderAdded() + "/" + o2.total + ".");
+        const r = startOrderClaude(rest);
+        if (!r.ok) return finishOrder("stopped", r.error || "Chưa chạy được Claude.");
+      }
+    } else if (o2.state === "claude" && !light.isActive()) {
+      return finishOrder(orderAdded() >= o2.total ? "done" : "stopped", orderAdded() >= o2.total ? "" : "Lượt Claude kết thúc khi còn thiếu " + (o2.total - orderAdded()) + " sản phẩm.");
+    }
+  } finally { o2.busy = false; }
+}
+
 // Runs src/scan.ps1 in this session (PR_WORKSPACE) and returns its one JSON line.
 function runScan(args, timeout = 180000) {
   return new Promise((resolveScan) => execFile(PWSH, psFile(join(root, "src", "scan.ps1"), args), { cwd: root, env: toolEnv, timeout, windowsHide: true, encoding: "utf8" }, (err, out) => {
@@ -423,18 +495,28 @@ async function handle(req, res) {
     const id = String(given.project || "").trim();
     if (!/^[a-z0-9][a-z0-9-]{1,60}$/.test(id) || !existsSync(join(sharedWs, "projects", id, "project.json"))) return send(res, 400, { error: "Chọn một dự án có sẵn." });
     { const fp = focusMismatch(id); if (fp) return send(res, 409, { error: fp }); }
+    if (queueOrder && queueOrder.active) return send(res, 409, { error: "Đang có một lệnh Thêm vào hàng chờ chưa xong (" + orderLine() + "). Chờ xong hoặc bấm Dừng." });
     const count = Math.min(200, Math.max(1, Math.round(Number(given.count)) || 10));
     const scenes = Math.min(4, Math.max(1, Math.round(Number(given.scenes)) || 2));
     const category = String(given.category || "").replace(/[\r\n"]+/g, " ").trim().slice(0, 120);
-    const fast = await runScan(["queue-from-prepared", "-Project", id, "-Limit", String(count), "-SceneCount", String(scenes), ...projectArgs({ ...given, category })]);
+    const filters = projectArgs({ ...given, category });
+    const base = queuedCountOf(id);
+    // 1. the prepared stock first, instantly
+    const fast = await runScan(["queue-from-prepared", "-Project", id, "-Limit", String(count), "-SceneCount", String(scenes), ...filters]);
     if (!fast.ok) return send(res, 500, { error: fast.error || "Chưa lấy được từ kho đã chuẩn bị." });
     const got = Number(fast.queued) || 0, need = count - got, dropped = fast.dropped || [];
     if (need <= 0) return send(res, 200, { ok: true, from_prepared: got, needs_claude: 0, dropped, finished: true });
-    if (light.isActive()) return send(res, 200, { ok: true, from_prepared: got, needs_claude: need, started: false, dropped, message: "Đang có một lượt Claude chuẩn bị / thêm hàng chờ chạy: chờ xong hoặc bấm Dừng rồi thêm tiếp phần còn thiếu." });
-    const options = `category: ${category ? `"${category}"` : "(all categories)"}; only unused (used = F): ${given.unused_only ? "T" : "F"}; products to queue: ${need}; scenes per product: ${scenes}`;
-    const r = light.start({ run: "queue-" + newRunId().slice(6), mode: "queue", project: id, options });
-    return send(res, r.ok ? 200 : r.status, r.ok ? { ok: true, from_prepared: got, needs_claude: need, started: true, run: r.run_id, dropped } : { error: r.error, from_prepared: got, needs_claude: need });
+    // 2. nothing left that Claude could queue: say so instead of starting it
+    if (!(await productsLeft(id, scenes, filters))) return send(res, 200, { ok: true, from_prepared: got, needs_claude: 0, dropped, finished: true, message: got ? "Chỉ còn " + got + " sản phẩm để thêm: đã thêm hết (các sản phẩm khác đã dùng hoặc đã ở hàng chờ)." : "Không còn sản phẩm nào để thêm vào hàng chờ (đã dùng hoặc đã ở hàng chờ)." });
+    // 3. the shortfall is NEVER dropped: an order of this session fills it (from the stock while a prep run adds rows, then Claude for the rest)
+    queueOrder = { active: true, project: id, total: count, scenes, category, unused_only: !!given.unused_only, filters, base, fromPrepared: got, state: "", message: "", lastMtime: 0, lastPull: 0, claudeNeed: 0, dropped };
+    if (light.isActive()) queueOrder.state = "waiting";
+    else { const r = startOrderClaude(need); if (!r.ok) { queueOrder.active = false; return send(res, r.status || 500, { error: r.error, from_prepared: got, needs_claude: need }); } }
+    queueOrderTimer = queueOrderTimer || setInterval(() => { orderTick().catch(() => {}); }, 3000);
+    return send(res, 200, { ok: true, from_prepared: got, needs_claude: need, started: queueOrder.state === "claude", waiting: queueOrder.state === "waiting", order: orderStatus(), dropped });
   }
+  // The live state of this session's Thêm vào hàng chờ order (the popup shows it).
+  if (path === "/api/project/queue/order" && req.method === "GET") return send(res, 200, orderStatus());
   // "Chuẩn bị trước": Claude picks the scenes of every not-yet-prepared product and stores them in prepared.csv (docs/prep-prompt.md); no queue write.
   if (path === "/api/project/prep/run" && req.method === "POST") {
     const given = JSON.parse((await body(req)).toString("utf8") || "{}");
@@ -461,7 +543,9 @@ async function handle(req, res) {
   // Status of the light runner (queue and prep runs): its own file runs/prep-run.json.
   if (path === "/api/light/status" && req.method === "GET") return send(res, 200, { ...light.status(), light: true });
   if ((path === "/api/project/queue/stop" || path === "/api/project/prep/stop") && req.method === "POST") {
-    if (!light.isActive()) return send(res, 409, { error: "Không có lượt chuẩn bị / thêm vào hàng chờ nào đang chạy." });
+    const hadOrder = !!(queueOrder && queueOrder.active);
+    if (hadOrder) finishOrder("cancelled", "Đã dừng lệnh Thêm vào hàng chờ.");
+    if (!light.isActive()) return send(res, hadOrder ? 200 : 409, hadOrder ? { ok: true } : { error: "Không có lượt chuẩn bị / thêm vào hàng chờ nào đang chạy." });
     const r = light.stop(); return send(res, r.status, r.ok ? { ok: true } : { error: r.error });
   }
   // Scenes box = 0: no Claude run. The first N products in table order (category / only-unused filter) go into the queue with only their link and
@@ -709,9 +793,10 @@ function listen(attempt = 0) {
     // Already running (or the old server is still closing after an update).
     if (e.code === "EADDRINUSE" && process.env.PR_WAIT_PORT && attempt < 50) return setTimeout(() => listen(attempt + 1), 200);
     if (e.code === "EADDRINUSE") {
-      // Already running for this folder: just show its window. Another program on the port: try the next one.
+      // Already running for this folder AND this session: just show its window. Another program, or ANOTHER session of this folder whose port
+      // hashes to the same number (two session names can collide), on the port: try the next one.
       return fetch(`http://127.0.0.1:${PORT}/api/root`).then((r) => r.json()).then((body) => {
-        if (body.root !== root) throw new Error("other");
+        if (body.root !== root || String(body.session || "") !== session) throw new Error("other");
         if (!process.argv.includes("--no-open")) openWindow();
         process.exit(0);
       }).catch(() => {
