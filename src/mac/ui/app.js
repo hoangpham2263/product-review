@@ -890,6 +890,10 @@ function showProjectsDialog(pick = "") {
   const queueBtn = at(button("Thêm vào hàng chờ"), 270, 506, 160, 32);
   const divider = at(el("div", "abs"), 448, 470, 1, 68); divider.style.background = "var(--line)";
   const pTitle = group("Chuẩn bị trước", 466);
+  // retry the products skipped earlier because no scene fitted (their skipped row is replaced); off by default, remembered per session
+  const retrySkipped = at(checkbox("Thử lại sản phẩm đã bỏ qua"), 640, 470, 240, 18);
+  retrySkipped.style.fontSize = "12px";
+  retrySkipped.title = "Chuẩn bị lại cả các sản phẩm lần trước Claude bỏ qua vì không có ảnh bối cảnh hợp (dòng bỏ qua được thay bằng dòng mới).";
   const pCountHint = small("Số sản phẩm (0 = tất cả)", 466, 140), prepCount = at(numeric(0, 500, 50), 466, 508, 64, 28);
   prepCount.title = "Số sản phẩm Claude chuẩn bị trước lần này, 0 = tất cả sản phẩm còn lại (theo danh mục và ô Chỉ chưa dùng)";
   const pSceneHint = small("Ảnh ngữ cảnh / sản phẩm", 616, 150), prepScenes = at(numeric(1, 4, 4), 616, 508, 64, 28);
@@ -904,15 +908,16 @@ function showProjectsDialog(pick = "") {
   const runBox = at(label("", "muted"), 16, 596, 868, 38);
   Object.assign(runBox.style, { whiteSpace: "pre-line", lineHeight: "18px", fontSize: "12px", overflow: "hidden" });
   const close = at(button("Đóng"), 800, 556, 80, 32);
-  view.body.append(listTitle, unpick, projectLine, listBox, addWeb, catLabel, catBox, unusedOnly, countLabel, tableBox, status, qTitle, qCountHint, queueCount, qSceneHint, sceneCount, queueBtn, divider, pTitle, pCountHint, prepCount, pSceneHint, prepScenes, prepBtn, scanBtn, reviewsBtn, openDir, stop, stopMain, close, runBox);
+  view.body.append(listTitle, unpick, projectLine, listBox, addWeb, catLabel, catBox, unusedOnly, countLabel, tableBox, status, qTitle, qCountHint, queueCount, qSceneHint, sceneCount, queueBtn, divider, pTitle, retrySkipped, pCountHint, prepCount, pSceneHint, prepScenes, prepBtn, scanBtn, reviewsBtn, openDir, stop, stopMain, close, runBox);
   // each pair is remembered separately (this session's run-settings); the buttons read only their own boxes
   fetch("/api/run-settings").then((x) => x.json()).then((s) => {
     if (s.queueCount) queueCount.value = s.queueCount; if (s.queueScenes) sceneCount.value = s.queueScenes;
     if (s.prepCount !== undefined) prepCount.value = s.prepCount; if (s.prepScenes) prepScenes.value = s.prepScenes;
+    retrySkipped.input.checked = s.prepRetrySkipped === true;
     refreshPrepared();
   }).catch(() => {});
-  const remember = () => fetch("/api/run-settings", { method: "POST", body: JSON.stringify({ queueCount: queueCount.value, queueScenes: sceneCount.value, prepCount: prepCount.value, prepScenes: prepScenes.value }) }).catch(() => {});
-  queueCount.onchange = remember; prepCount.onchange = remember; prepScenes.onchange = remember;
+  const remember = () => fetch("/api/run-settings", { method: "POST", body: JSON.stringify({ queueCount: queueCount.value, queueScenes: sceneCount.value, prepCount: prepCount.value, prepScenes: prepScenes.value, prepRetrySkipped: retrySkipped.input.checked }) }).catch(() => {});
+  queueCount.onchange = remember; prepCount.onchange = remember; prepScenes.onchange = remember; retrySkipped.input.onchange = remember;
   sceneCount.onchange = () => { remember(); refreshPrepared(); }; // the footer counts the prepared rows the queue can use with THIS number of scenes
 
   // Two kinds of run can go at once: the main runner (scan / review count / the Flow run of Bắt đầu) and the LIGHT runner (queue, prep: no browser).
@@ -945,7 +950,7 @@ function showProjectsDialog(pick = "") {
     if (!current) { prepText = ""; return; }
     const q = new URLSearchParams({ project: current, category: catBox.value, unused_only: unusedOnly.input.checked ? "1" : "0", scenes: String(sceneCount.value) });
     const r = await fetch("/api/project/prepared?" + q).then((x) => x.json()).catch(() => null);
-    prepText = r && !r.error ? `Chuẩn bị trước: ${r.ready_usable} sẵn sàng (≥ ${sceneCount.value} ảnh)${r.ready > r.ready_usable ? ` + ${r.ready - r.ready_usable} ít ảnh hơn` : ""} · ${r.to_prepare} chưa chuẩn bị${r.skipped ? ` · ${r.skipped} bỏ qua` : ""} · ${r.in_queue} đã ở hàng chờ (${r.in_filter} sản phẩm${unusedOnly.input.checked ? " chưa dùng" : ""}${catBox.value ? " của danh mục" : ""})` : "";
+    prepText = r && !r.error ? `Chuẩn bị trước: ${r.ready_usable} sẵn sàng (≥ ${sceneCount.value} ảnh)${r.ready > r.ready_usable ? ` + ${r.ready - r.ready_usable} ít ảnh hơn` : ""} · ${r.to_prepare} chưa chuẩn bị${r.skipped ? ` · ${r.skipped} đã bỏ qua` : ""} · ${r.in_queue} đã ở hàng chờ (${r.in_filter} sản phẩm${unusedOnly.input.checked ? " chưa dùng" : ""}${catBox.value ? " của danh mục" : ""})` : "";
     if (!runningMain && !runningLight && !otherActive && !otherLight && data && prepShowIdle) say(idleText(), "");
   };
   let prepShowIdle = true;
@@ -1133,7 +1138,7 @@ function showProjectsDialog(pick = "") {
     orderActive = true; orderWasActive = true; ticks = 0; refreshButtons(); say((a.order && a.order.line) || fastNote, "var(--accent)"); watch();
   };
   // Chuẩn bị trước: Claude picks the scenes of the not-yet-prepared products and stores them (prepared.csv); the queue is not touched.
-  prepBtn.onclick = () => { if (data) begin("/api/project/prep/run", { project: current, category: catBox.value, unused_only: unusedOnly.input.checked, limit: prepCount.value, scenes: prepScenes.value }, "prep", "Chưa bắt đầu chuẩn bị được."); };
+  prepBtn.onclick = () => { if (data) begin("/api/project/prep/run", { project: current, category: catBox.value, unused_only: unusedOnly.input.checked, limit: prepCount.value, scenes: prepScenes.value, retry_skipped: retrySkipped.input.checked }, "prep", "Chưa bắt đầu chuẩn bị được."); };
   stop.onclick = async () => { stop.disabled = true; say("Đang dừng…", "var(--accent)"); await fetch(running === "queue" ? "/api/project/queue/stop" : running === "reviews" ? "/api/project/reviews/stop" : "/api/scan/stop", { method: "POST" }).catch(() => {}); };
   openDir.onclick = () => data && api("openPath", { path: data.project.dir });
   catBox.onchange = () => { renderTable(); refreshPrepared(); };

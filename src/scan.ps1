@@ -19,7 +19,7 @@ param(
     [string]$Site = '', [int]$Max = 20, [string]$Run = '', [string]$Scan = '', [string]$Project = '', [string]$Id = '',
     [string]$Url = '', [string]$Title = '', [string]$Collection = '', [string]$CollectionUrl = '', [string]$ImageUrl = '', [string]$ImageFile = '', [string]$File = '',
     [int]$Count = -1, [string]$Rating = '', [string]$Source = '', [string]$Used = '', [int]$Limit = 0,
-    [string]$Group = '', [string]$Category = '', [string]$SceneNames = '', [int]$SceneCount = 0, [switch]$UnusedOnly, [switch]$AllowReuse, [switch]$Prefetch, [switch]$Skip, [string]$Reason = '', [switch]$TopUp,
+    [string]$Group = '', [string]$Category = '', [string]$SceneNames = '', [int]$SceneCount = 0, [switch]$UnusedOnly, [switch]$AllowReuse, [switch]$Prefetch, [switch]$Skip, [string]$Reason = '', [switch]$TopUp, [switch]$RetrySkipped,
     [Parameter(ValueFromRemainingArguments = $true)]$Rest
 )
 
@@ -631,10 +631,11 @@ try {
         }
         'prep-todo' {
             # The products still to prepare: the project's rows (same filters as queue-todo), not queued, with no row in prepared.csv yet; -Limit caps it.
+            # -RetrySkipped also lists the products whose row is skipped:no-fit (prep-add then replaces that row); ready / consumed rows are never listed.
             $dir = Get-ScanDir $ProjectId
             $queued = Get-QueuedKeys
             $have = New-Object System.Collections.Generic.HashSet[string]
-            foreach ($pr in @(Read-PreparedRows $dir)) { [void]$have.Add((Get-ScanUrlKey $pr.product_url)) }
+            foreach ($pr in @(Read-PreparedRows $dir)) { if ($RetrySkipped -and ([string]$pr.status).StartsWith('skipped')) { continue }; [void]$have.Add((Get-ScanUrlKey $pr.product_url)) }
             $todo = @(Get-ProjectCandidates $dir | Where-Object { -not $queued.Contains((Get-ScanUrlKey $_.product_url)) -and -not $have.Contains((Get-ScanUrlKey $_.product_url)) })
             if ($Limit -gt 0) { $todo = @($todo | Select-Object -First $Limit) }
             Write-ScanJson ([ordered]@{ project = $ProjectId; count = $todo.Count; products = @($todo | ForEach-Object { [ordered]@{ url = $_.product_url; title = $_.title; collection = $_.collection; image = (Join-Path (Join-Path $dir 'images') $_.product_image) } }) })

@@ -416,6 +416,7 @@ async function handle(req, res) {
         // the two separate pairs of the Dự án popup: Thêm vào hàng chờ (count 1-200, scenes 1-4) and Chuẩn bị trước (count 0-500, 0 = all; scenes 1-4)
         const int = (v, lo, hi) => (Number.isInteger(v) && v >= lo && v <= hi ? v : undefined);
         for (const [k, lo, hi] of [["queueCount", 1, 200], ["queueScenes", 1, 4], ["prepCount", 0, 500], ["prepScenes", 1, 4]]) { const v = int(given[k], lo, hi); if (v !== undefined) cur[k] = v; }
+        if (typeof given.prepRetrySkipped === "boolean") cur.prepRetrySkipped = given.prepRetrySkipped;
         delete cur.runMode;
         return cur;
       }, {});
@@ -527,7 +528,7 @@ async function handle(req, res) {
     const category = String(given.category || "").replace(/[\r\n"]+/g, " ").trim().slice(0, 120);
     const limit = Math.min(500, Math.max(0, Math.round(Number(given.limit)) || 0));
     if (light.isActive()) return send(res, 409, { error: "Đã có một lượt Claude chuẩn bị / thêm hàng chờ đang chạy. Chờ xong hoặc bấm Dừng." });
-    const options = `category: ${category ? `"${category}"` : "(all categories)"}; only unused (used = F): ${given.unused_only ? "T" : "F"}; products to prepare: ${limit || "all"}; scenes per product: ${scenes}`;
+    const options = `category: ${category ? `"${category}"` : "(all categories)"}; only unused (used = F): ${given.unused_only ? "T" : "F"}; products to prepare: ${limit || "all"}; scenes per product: ${scenes}; retry skipped (no-fit) products: ${given.retry_skipped ? "T" : "F"}`;
     const r = light.start({ run: "prep-" + newRunId().slice(6), mode: "prep", project: id, options });
     return send(res, r.status, r.ok ? { ok: true, run: r.run_id, started: r.started } : { error: r.error });
   }
