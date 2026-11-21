@@ -290,18 +290,17 @@ function buildMain() {
   // No text lines: the sign-in state is a dot inside the "Mở Chrome để đăng nhập" button (green = signed in, red = signed out, grey = checking / busy / unknown);
   // the message is its tooltip. Both buttons always stay.
   // Same 37 px step as the buttons above (36 + 4 * 37): the gap between all buttons is equal.
-  ui.flowLoginBox = at(el("div", "abs"), 0, 36 + names.length * 37, 224, 184);
-  ui.btnFlowOpen = at(button("Mở Chrome để đăng nhập"), 14, 0, 196, 32);
-  ui.btnFlowCheck = at(button("Kiểm tra lại"), 14, 37, 96, 32);
-  // Copy prompt (Claude (Google Flow) only): the fixed prompt of docs/agent-prompt.md, to paste by hand into Claude Code.
-  ui.btnCopyPrompt = at(button("Copy prompt"), 114, 37, 96, 32);
-  ui.btnCopyPrompt.onclick = copyAgentPrompt;
+  // Second group of the card, a thin divider away from the result buttons: Chrome profile, Tài khoản Flow, then the sign-in button (and Kiểm tra lại in own-Chrome mode).
+  ui.flowLoginBox = at(el("div", "abs"), 0, 36 + names.length * 37, 224, 182);
+  { const divider = at(el("div", "abs"), 14, 0, 196, 1); divider.style.background = "var(--line)"; ui.flowDivider = divider; }
+  ui.btnFlowOpen = at(button("Mở Chrome để đăng nhập"), 14, 110, 196, 32);
+  ui.btnFlowCheck = at(button("Kiểm tra lại"), 14, 147, 196, 32);
   ui.flowDot = el("span", "", { style: { display: "inline-block", width: "7px", height: "7px", borderRadius: "50%", marginRight: "6px", verticalAlign: "middle", background: "var(--muted)" } });
   ui.btnFlowOpen.prepend(ui.flowDot);
   // Which signed-in Google account Flow uses (the profile may hold several; Flow opens the first, which can be the one out of credits).
-  ui.lblFlowAccount = at(label("Tài khoản Flow", "muted"), 14, 76, 196, 14);
+  ui.lblFlowAccount = at(label("Tài khoản Flow", "muted"), 14, 58, 196, 14);
   ui.lblFlowAccount.style.fontSize = "11px"; ui.lblFlowAccount.style.lineHeight = "14px";
-  ui.flowAccount = at(combo(), 14, 92, 196, 32);
+  ui.flowAccount = at(combo(), 14, 72, 196, 32);
   ui.flowAccount.title = "Để trống = Flow tự chọn. Danh sách là các tài khoản Google đã đăng nhập trong profile Chrome đang chọn (hoặc Chrome riêng); Claude sẽ chọn đúng tài khoản đó, không đăng xuất, không đổi tài khoản khác. Đổi profile thì tài khoản tự về tài khoản chính của profile.";
   ui.flowAccount.setItems([""], ["Tự chọn tài khoản Flow"]);
   // The account list is read from the server: the accounts of the chosen Chrome profile (or of the own Chrome).
@@ -315,16 +314,16 @@ function buildMain() {
   ui.flowAccountSaved = "";
   ui.flowAccount.onchange = () => { const v = ui.flowAccount.value.trim(); ui.flowAccount.title = v || "Tự chọn tài khoản Flow"; if (v === ui.flowAccountSaved) return; ui.flowAccountSaved = v; fetch("/api/run-settings", { method: "POST", body: JSON.stringify({ flowAccount: v }) }).catch(() => {}); };
   // Which browser Claude (Flow) drives: "own" = the tool's own Chrome, or a Chrome profile installed on this machine (everyday Chrome through the Playwright extension).
-  ui.lblFlowBrowser = at(label("Chrome profile", "muted"), 14, 130, 100, 14);
+  ui.lblFlowBrowser = at(label("Chrome profile", "muted"), 14, 8, 100, 14);
   ui.lblFlowBrowser.style.fontSize = "11px"; ui.lblFlowBrowser.style.lineHeight = "14px";
-  ui.flowBrowser = at(combo(), 14, 146, 196, 32);
+  ui.flowBrowser = at(combo(), 14, 22, 196, 32);
   ui.flowBrowser.title = "Trình duyệt cho Claude (Flow): Chrome thật của bạn (chọn profile có sẵn trên máy, cần extension Playwright, bấm Connect mỗi lượt) hoặc Chrome riêng của tool.";
   ui.flowBrowser.setItems([""], ["Đang đọc profile…"]);
   // Only an explicit change that really differs from the SAVED value is saved (a mouse wheel on a focused list must never change it);
   // after every load the list shows the saved choice. Profiles without the extension can be given it from the button below.
   ui.flowBrowserSaved = ""; ui.flowBrowserProfiles = [];
   ui.flowBrowser.addEventListener("wheel", (e) => { if (document.activeElement === ui.flowBrowser) e.preventDefault(); }, { passive: false });
-  ui.btnInstallExt = at(button("Cài extension"), 112, 127, 98, 18);
+  ui.btnInstallExt = at(button("Cài extension"), 112, 6, 98, 18);
   Object.assign(ui.btnInstallExt.style, { fontSize: "11px", padding: "0 4px", lineHeight: "16px", minHeight: "0" });
   ui.btnInstallExt.title = "Cài extension vào profile này: mở trang Playwright MCP Bridge trên Chrome Web Store trong đúng profile đã chọn. Bạn tự bấm Thêm vào Chrome; tool không cài thay.";
   ui.btnInstallExt.hidden = true;
@@ -355,7 +354,7 @@ function buildMain() {
   ui.btnFlowOpen.onclick = openFlowLogin;
   ui.btnFlowCheck.onclick = () => checkFlowLogin(true);
   ui.flowLoginBox.style.display = "none";
-  ui.flowLoginBox.append(ui.btnFlowOpen, ui.btnFlowCheck, ui.btnCopyPrompt, ui.lblFlowAccount, ui.flowAccount, ui.lblFlowBrowser, ui.flowBrowser, ui.btnInstallExt);
+  ui.flowLoginBox.append(ui.flowDivider, ui.lblFlowBrowser, ui.flowBrowser, ui.btnInstallExt, ui.lblFlowAccount, ui.flowAccount, ui.btnFlowOpen, ui.btnFlowCheck);
   cardActions.append(ui.flowLoginBox);
 
   // Run row (20,466 1060x90).
@@ -400,7 +399,6 @@ function buildMain() {
   ui.lblTokens = at(label("", "muted"), 460, 25, null, 20, { right: 400 });
   ui.lblQuota = at(label("", "muted"), 460, 45, null, 20, { right: 400 });
   for (const l of [ui.lblTokens, ui.lblQuota]) Object.assign(l.style, { fontSize: "12px", lineHeight: "20px" });
-  // Copy prompt lives in the Claude (Flow) group of the Thao tác column (next to the sign-in buttons), see ui.flowLoginBox.
   cardRun.append(ui.btnRun, ui.btnStop, ui.lblStatus, ui.lblTokens, ui.lblQuota, ui.lblText, ui.cmbText, ui.lblBackend, ui.cmbBackend, ui.lblThr, ui.numThr);
 
   // Tiến trình & thông báo (20,508 1060x282, all anchors).
@@ -1641,7 +1639,6 @@ function applyFlowBrowserMode() {
   const ext = flowExtensionMode();
   ui.flowDot.style.display = ext ? "none" : "inline-block";
   ui.btnFlowCheck.style.display = ext ? "none" : "";
-  ui.btnCopyPrompt.style.left = ext ? "14px" : "114px"; ui.btnCopyPrompt.style.width = ext ? "196px" : "96px";
   if (ext) {
     flowLogin.state = "extension";
     ui.btnFlowOpen.title = "Mở Flow trong profile Chrome đã chọn (" + (ui.flowBrowser.selectedOptions[0]?.text || "") + "), đúng tài khoản Flow đã chọn: thêm một tab vào Chrome đang mở, bạn đăng nhập hoặc kiểm tra ở đó. Tool không kiểm tra đăng nhập ở chế độ này.";
@@ -1682,20 +1679,11 @@ async function openFlowLogin() {
 }
 function updateAgentControls() {
   const on = ui.cmbBackend?.value === "agent";
-  if (!ui.btnCopyPrompt) return;
+  if (!ui.flowLoginBox) return;
   ui.flowLoginBox.style.display = on ? "" : "none";
   if (on && !flowLogin.state && !flowLogin.checking && !flowExtensionMode()) checkFlowLogin();
   updateActionAvailability();
-  ui.btnCopyPrompt.style.display = on ? "" : "none";
   ui.lblTokens.style.display = ui.lblQuota.style.display = on ? "none" : "";
-}
-async function copyAgentPrompt() {
-  const r = await fetch("/api/agent/prompt").then((x) => x.json()).catch(() => null);
-  if (!r?.prompt) return appendLog("Chưa lấy được prompt: " + (r?.error || "máy chủ không trả lời."));
-  try { await navigator.clipboard.writeText(r.prompt); } catch { const t = el("textarea"); t.value = r.prompt; document.body.append(t); t.select(); document.execCommand("copy"); t.remove(); }
-  ui.btnCopyPrompt.textContent = "Đã copy";
-  setTimeout(() => { ui.btnCopyPrompt.textContent = "Copy prompt"; }, 2000);
-  appendLog("Đã copy prompt (run " + r.run + "). Dán vào Claude Code mở trong thư mục Product Review.");
 }
 async function startAgent() {
   try { await saveQueue(true); } catch (e) { return appendLog(e.message); }
