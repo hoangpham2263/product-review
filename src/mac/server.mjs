@@ -627,7 +627,8 @@ function openSessionWindow(name, project = "") {
     const windows = process.platform === "win32";
     const cmd = windows ? "powershell.exe" : "bash";
     const args = windows ? ["-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File", join(root, "core", "launch.ps1"), "-Session", name, "-Project", project] : [join(root, "start-app.command"), name, project];
-    const child = spawn(cmd, args, { cwd: root, detached: true, stdio: "ignore", windowsHide: true });
+    // Windows: detached:true makes powershell.exe exit at once without running launch.ps1 (verified), so the launcher is a normal hidden child; unref() lets this server exit independently.
+    const child = spawn(cmd, args, { cwd: root, detached: !windows, stdio: "ignore", windowsHide: true });
     child.on("error", () => {});
     child.unref();
     return { ok: true, session: name, label: sessionLabel(name) };
