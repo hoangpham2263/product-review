@@ -867,7 +867,8 @@ function showProjectsDialog(pick = "") {
   // Two kinds of run can go at once: the main runner (scan / review count / the Flow run of Bắt đầu) and the LIGHT runner (queue, prep: no browser).
   let projects = [], current = "", data = null, timer = null, runningMain = "", runningLight = "", startedAt = 0, lightStarted = 0, ticks = 0, otherActive = false, otherLight = false, prepText = "", fastNote = "";
   // A window opened for a project (session named after it) shows only that project.
-  const lockedProject = sessionState.project && sessionState.project === sessionState.session ? sessionState.project : "";
+  // A window opened for a project stays on it; otherwise the popup opens on the FOCUSED project (or "Lẻ") and changing it is a change of the window's focus.
+  const lockedProject = sessionState.locked ? sessionState.project : "";
   const say = (text, color = "") => { status.style.color = color; status.textContent = text; };
   const clock = () => { const s = Math.max(0, Math.floor((Date.now() - startedAt) / 1000)); return String(Math.floor(s / 60)).padStart(2, "0") + ":" + String(s % 60).padStart(2, "0"); };
   const KIND = { scan: "Đang quét cập nhật", reviews: "Đang đọc số review trên các trang sản phẩm", queue: "Đang thêm sản phẩm vào hàng chờ (chọn ảnh bối cảnh cho từng sản phẩm)", prep: "Đang chuẩn bị trước ảnh bối cảnh cho các sản phẩm" };
@@ -894,7 +895,14 @@ function showProjectsDialog(pick = "") {
   let prepShowIdle = true;
 
   const renderList = () => {
-    listBox.replaceChildren(...(projects.length ? projects.map((p) => {
+    const loose = lockedProject ? [] : [(() => {
+      const item = el("div", "", { style: { padding: "8px 10px", borderBottom: "1px solid var(--line)", cursor: "pointer" } });
+      if (!current) item.style.background = "var(--hover)";
+      item.append(el("div", "", { text: "Lẻ (không thuộc dự án)", style: oneLine({ fontSize: "13px" }) }), el("div", "label muted", { text: "Sản phẩm gõ tay, không gắn dự án", style: oneLine({ position: "static", fontSize: "12px" }) }));
+      item.onclick = () => selectProject("");
+      return item;
+    })()];
+    listBox.replaceChildren(...loose, ...(projects.length ? projects.map((p) => {
       const item = el("div", "", { style: { padding: "8px 10px", borderBottom: "1px solid var(--line)", cursor: "pointer" } });
       if (p.id === current) item.style.background = "var(--hover)";
       item.append(
@@ -954,14 +962,16 @@ function showProjectsDialog(pick = "") {
   // The project of a window is the one selected here: another live window cannot take it (409 with the Vietnamese message).
   const selectProject = async (id) => {
     if (id === current) return;
-    const r = await fetch("/api/session/project", { method: "POST", body: JSON.stringify({ project: id }) }).then(async (x) => ({ ok: x.ok, ...(await x.json().catch(() => ({}))) })).catch(() => ({ ok: true }));
+    const r = await fetch("/api/session/project", { method: "POST", body: JSON.stringify({ project: id || "__loose" }) }).then(async (x) => ({ ok: x.ok, ...(await x.json().catch(() => ({}))) })).catch(() => ({ ok: true }));
     if (!r.ok) return say(r.error || "Dự án đang được phiên khác dùng.", "var(--error)");
     sessionState.project = id;
+    await refreshSessionBadge(); // the window title follows the focus
     await choose(id);
   };
   async function loadProjects(select = "", quiet = false) {
     try { projects = list(await api("projects")).filter((p) => !lockedProject || p.id === lockedProject); } catch (e) { projects = []; say(e.message, "var(--error)"); }
-    const want = projects.some((p) => p.id === select) ? select : (projects.some((p) => p.id === current) ? current : projects[0]?.id || "");
+    // the focus decides: "Lẻ" stays Lẻ, a project stays itself (never the first of the list by accident)
+    const want = !select && !sessionState.project ? "" : (projects.some((p) => p.id === select) ? select : (projects.some((p) => p.id === current) ? current : ""));
     if (quiet && want === current) { renderList(); return; }
     await choose(want, quiet);
   }
@@ -975,7 +985,7 @@ function showProjectsDialog(pick = "") {
     otherLight = !!lightNow && !runningLight; otherActive = !!st.active && !mainNow && !runningMain;
     // --- the light runner started here (or still running from an earlier popup)
     if (lightNow) {
-      if (!runningLight) { runningLight = lt.mode; otherLight = false; lightStarted = Date.now() - (lt.elapsed_s || 0) * 1000; if (lt.project && lt.project !== current && !lockedProject) choose(lt.project, true); }
+      if (!runningLight) { runningLight = lt.mode; otherLight = false; lightStarted = Date.now() - (lt.elapsed_s || 0) * 1000; }
     } else if (runningLight) {
       const kind = runningLight; runningLight = "";
       let ok = lt.status === "done";
@@ -997,7 +1007,7 @@ function showProjectsDialog(pick = "") {
     }
     // --- the main runner (scan / review count); a Flow run only blocks scan and review count
     if (mainNow) {
-      if (!runningMain) { runningMain = st.mode; startedAt = Date.now() - (st.elapsed_s || 0) * 1000; otherActive = false; if (st.project && st.mode !== "scan" && st.project !== current && !lockedProject) choose(st.project, true); }
+      if (!runningMain) { runningMain = st.mode; startedAt = Date.now() - (st.elapsed_s || 0) * 1000; otherActive = false; }
     } else if (runningMain) {
       const kind = runningMain; runningMain = "";
       const ok = st.status === "done";

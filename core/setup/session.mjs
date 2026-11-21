@@ -136,6 +136,24 @@ export function projectBusyBy(root, project, session, pid = process.pid) {
   const h = lockHolder(root, "project", project, session, pid);
   return h ? { session: h.session, via: "run" } : null;
 }
+// The focus of a window = its project in the registry. Check-and-set under the registry lock, so two windows can never take the same project:
+// ok:false + holder when another live window has it as its focus or a run of another session holds its lock. project "" = loose (no project).
+export function claimProjectFocus(root, session, pid, project) {
+  return withLock(registryFile(root), () => {
+    const list = listSessions(root);
+    if (project) {
+      const other = list.find((e) => e.project === project && !(e.session === session && e.pid === pid));
+      if (other) return { ok: false, holder: other.session };
+      const h = lockHolder(root, "project", project, session, pid);
+      if (h) return { ok: false, holder: h.session };
+    }
+    const me = list.find((e) => e.session === session && e.pid === pid);
+    if (!me) return { ok: false, holder: "", notRegistered: true };
+    me.project = project || "";
+    writeJson(registryFile(root), list);
+    return { ok: true };
+  });
+}
 export function setSessionProject(root, session, pid, project) { return updateSession(root, session, pid, { project: project || "" }); }
 
 // ----- Chrome tab group of a run: "Product Review · <session> · #<n> · HH:mm" -----
@@ -152,7 +170,8 @@ export function takeGroup(workspace, session, now = new Date()) {
 }
 
 // Text of the window title and header badge.
-export const sessionTitle = ({ stt, session, profileLabel, project = "" }) => `Product Review · #${stt || "?"} · ${sessionLabel(session)} · ${profileLabel || ""}`.replace(/ · $/, "") + (project && project !== session ? ` · ${project}` : "");
+// Window title: the project in focus (its name) or, for loose products, the session.
+export const sessionTitle = ({ stt, session, profileLabel, projectName = "" }) => `Product Review · #${stt || "?"} · ${projectName || sessionLabel(session)} · ${profileLabel || ""}`.replace(/ · $/, "");
 export const profileLabelOf = (browser, profiles = []) => {
   if (!browser || browser.mode === "own") return "Chrome riêng";
   const p = profiles.find((x) => x.folder === browser.profile);

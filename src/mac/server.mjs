@@ -13,7 +13,7 @@ import { randomUUID, createHash } from "node:crypto";
 import { createConfigApi } from "../../core/setup/config-api.mjs";
 import { createAgentRunner, buildPrompt, newRunId, readFlowAccount } from "../../core/setup/agent-run.mjs";
 import { readFlowBrowser, saveFlowBrowser, localChromeProfiles } from "../../core/setup/flow-browser.mjs";
-import { currentSession, sessionLabel, sessionWorkspace, sharedWorkspace, registerSession, updateSession, unregisterSession, listSessions, lockHolder, releaseLocks, peekGroup, sessionTitle, profileLabelOf, projectBusyBy, setSessionProject, readSeededJson, updateJsonLocked, SESSION_RE } from "../../core/setup/session.mjs";
+import { currentSession, sessionLabel, sessionWorkspace, sharedWorkspace, registerSession, updateSession, unregisterSession, listSessions, lockHolder, releaseLocks, peekGroup, sessionTitle, profileLabelOf, projectBusyBy, setSessionProject, claimProjectFocus, readSeededJson, updateJsonLocked, SESSION_RE } from "../../core/setup/session.mjs";
 import { createFlowLogin, profileDirOf, profileGoogleAccounts, findChrome, flowOpenUrl } from "../../core/setup/flow-login.mjs";
 import { PWSH, toolEnv, psFile, psCommand, killTree, appWindow, chooseFiles } from "../../core/platform.mjs";
 
@@ -244,16 +244,19 @@ async function handle(req, res) {
   // The project selected in this window's Dự án popup is the one this window uses: another live session cannot take it.
   if (path === "/api/session/project" && req.method === "POST") {
     const b = JSON.parse((await body(req)).toString("utf8") || "{}");
-    const project = String(b.project || "").trim().toLowerCase();
-    if (project) {
-      if (!/^[a-z0-9][a-z0-9-]{1,60}$/.test(project) || !existsSync(join(sharedWs, "projects", project, "project.json"))) return send(res, 400, { error: "Chọn một dự án có sẵn." });
-      const busy = projectBusyBy(root, project, session);
-      if (busy) return send(res, 409, { error: "Dự án " + project + " đang được phiên \"" + sessionLabel(busy.session) + "\" dùng. Chọn dự án khác hoặc đóng phiên đó trước." });
-    }
-    setSessionProject(root, session, process.pid, project);
+    let project = String(b.project || "").trim().toLowerCase();
+    if (project === LOOSE) project = "";
+    if (agent.isActive() || light.isActive()) return send(res, 409, { error: "Đang có một lượt chạy trong cửa sổ này: chờ xong hoặc bấm Dừng rồi đổi dự án." });
+    if (lockedProject && project !== lockedProject) return send(res, 409, { error: "Cửa sổ này dành riêng cho dự án " + lockedProject + ". Mở cửa sổ khác từ Các phiên để làm dự án khác." });
+    if (project && !projectExists(project)) return send(res, 400, { error: "Chọn một dự án có sẵn." });
+    // one atomic step under the registry lock: the old focus is released and the new one taken, or nothing changes
+    const claimed = claimProjectFocus(root, session, process.pid, project);
+    if (!claimed.ok) return send(res, 409, { error: claimed.notRegistered ? "Cửa sổ chưa đăng ký xong, thử lại sau vài giây." : "Dự án " + project + " đang được phiên \"" + sessionLabel(claimed.holder) + "\" dùng. Chọn dự án khác hoặc đóng phiên đó trước." });
+    persistFocus(project);
     if (project) touchRecent(project);
-    return send(res, 200, { ok: true, project });
+    return send(res, 200, { ok: true, project, name: project ? projectNameOf(project) : "", title: sessionInfo().title });
   }
+
   // Errors in the window (app.js), kept like the Windows window's.
   if (path === "/api/client-error" && req.method === "POST") {
     const { message = "", stack = "" } = JSON.parse((await body(req)).toString("utf8") || "{}");
@@ -394,6 +397,7 @@ async function handle(req, res) {
     const given = JSON.parse((await body(req)).toString("utf8") || "{}");
     const id = String(given.project || "").trim();
     if (!/^[a-z0-9][a-z0-9-]{1,60}$/.test(id) || !existsSync(join(sharedWs, "projects", id, "project.json"))) return send(res, 400, { error: "Chọn một dự án có sẵn." });
+    { const fp = focusMismatch(id); if (fp) return send(res, 409, { error: fp }); }
     if (run.proc) return send(res, 409, { error: "Đang chạy." });
     if (agent.isActive()) return send(res, 409, { error: "Đã có một lượt Claude đang chạy (Flow, quét hoặc cập nhật review). Chờ xong hoặc bấm Dừng." });
     const r = agent.start({ run: "reviews-" + newRunId().slice(6), mode: "reviews", project: id });
@@ -416,6 +420,7 @@ async function handle(req, res) {
     const given = JSON.parse((await body(req)).toString("utf8") || "{}");
     const id = String(given.project || "").trim();
     if (!/^[a-z0-9][a-z0-9-]{1,60}$/.test(id) || !existsSync(join(sharedWs, "projects", id, "project.json"))) return send(res, 400, { error: "Chọn một dự án có sẵn." });
+    { const fp = focusMismatch(id); if (fp) return send(res, 409, { error: fp }); }
     const count = Math.min(200, Math.max(1, Math.round(Number(given.count)) || 10));
     const scenes = Math.min(4, Math.max(1, Math.round(Number(given.scenes)) || 2));
     const category = String(given.category || "").replace(/[\r\n"]+/g, " ").trim().slice(0, 120);
@@ -433,6 +438,7 @@ async function handle(req, res) {
     const given = JSON.parse((await body(req)).toString("utf8") || "{}");
     const id = String(given.project || "").trim();
     if (!/^[a-z0-9][a-z0-9-]{1,60}$/.test(id) || !existsSync(join(sharedWs, "projects", id, "project.json"))) return send(res, 400, { error: "Chọn một dự án có sẵn." });
+    { const fp = focusMismatch(id); if (fp) return send(res, 409, { error: fp }); }
     const scenes = Math.min(4, Math.max(1, Math.round(Number(given.scenes)) || 2));
     const category = String(given.category || "").replace(/[\r\n"]+/g, " ").trim().slice(0, 120);
     const limit = Math.min(500, Math.max(0, Math.round(Number(given.limit)) || 0));
@@ -445,6 +451,7 @@ async function handle(req, res) {
   if (path === "/api/project/prepared" && req.method === "GET") {
     const id = String(url.searchParams.get("project") || "").trim();
     if (!/^[a-z0-9][a-z0-9-]{1,60}$/.test(id) || !existsSync(join(sharedWs, "projects", id, "project.json"))) return send(res, 400, { error: "Chọn một dự án có sẵn." });
+    { const fp = focusMismatch(id); if (fp) return send(res, 409, { error: fp }); }
     const r = await runScan(["prep-status", "-Project", id, ...projectArgs({ category: url.searchParams.get("category"), unused_only: url.searchParams.get("unused_only") === "1" })], 60000);
     return send(res, r.ok ? 200 : 500, r.ok ? r : { error: r.error });
   }
@@ -460,6 +467,7 @@ async function handle(req, res) {
     const given = JSON.parse((await body(req)).toString("utf8") || "{}");
     const id = String(given.project || "").trim();
     if (!/^[a-z0-9][a-z0-9-]{1,60}$/.test(id) || !existsSync(join(sharedWs, "projects", id, "project.json"))) return send(res, 400, { error: "Chọn một dự án có sẵn." });
+    { const fp = focusMismatch(id); if (fp) return send(res, 409, { error: fp }); }
     const count = Math.min(200, Math.max(1, Math.round(Number(given.count)) || 10));
     const args = ["queue-direct", "-Project", id, "-Limit", String(count), ...(String(given.category || "").trim() ? ["-Collection", String(given.category).trim()] : []), ...(given.unused_only ? ["-UnusedOnly"] : [])];
     return execFile(PWSH, psFile(join(root, "src", "scan.ps1"), args), { cwd: root, env: toolEnv, timeout: 120000, windowsHide: true, encoding: "utf8" }, (err, out) => {
@@ -572,13 +580,38 @@ function alignFlowAccount(browser) {
 // ----- Sessions (several windows from one source) -----
 let self = null; // this window's registry entry, once the server listens
 function profileLabel() { try { const b = readFlowBrowser(workspace, sharedWs); return profileLabelOf(b, localChromeProfiles().profiles); } catch { return ""; } }
+// ----- the focus of this window: ALWAYS one project (default: the project used most recently that is free, else the first free one in the sessions-combo order),
+// or "Lẻ" (loose products typed by hand, project ""). A window opened for a project (session named after it) stays locked to it.
+const FOCUS_FILE = join(workspace, "config", "focus.json");
+const LOOSE = "__loose";
+const lockedProject = /^[a-z0-9][a-z0-9-]{1,60}$/.test(process.env.PR_PROJECT || "") && process.env.PR_PROJECT === session ? process.env.PR_PROJECT : "";
+const projectExists = (id) => /^[a-z0-9][a-z0-9-]{1,60}$/.test(id) && existsSync(join(sharedWs, "projects", id, "project.json"));
+function projectNameOf(id) { try { return JSON.parse(readFileSync(join(sharedWs, "projects", id, "project.json"), "utf8").replace(/^\uFEFF/, "")).name || id; } catch { return id; } }
+function persistFocus(project) { try { updateJsonLocked(FOCUS_FILE, () => ({ project: project || LOOSE }), {}); } catch {} }
+function initFocus() {
+  const choices = projectChoices(listSessions(root)); // sorted by recent use; busy = used by another live window or a run of another session
+  const free = choices.filter((c) => !c.busy);
+  const take = (id) => { const r = claimProjectFocus(root, session, process.pid, id); if (r.ok) { persistFocus(id); return true; } return false; };
+  if (lockedProject) { take(lockedProject); return; } // a window opened for a project keeps it
+  let saved = ""; try { saved = String(JSON.parse(readFileSync(FOCUS_FILE, "utf8")).project || ""); } catch {}
+  if (saved === LOOSE) { claimProjectFocus(root, session, process.pid, ""); return; } // the person chose "Lẻ" last time
+  if (saved && projectExists(saved) && free.some((c) => c.id === saved) && take(saved)) return;
+  // automatic: the project used most recently (recent-projects.json) that is free, else the first free one (most unused products first, as in the combo)
+  const recent = readRecent();
+  const byRecent = free.filter((c) => recent[c.id]).sort((a, b) => String(recent[b.id]).localeCompare(String(recent[a.id])));
+  const byUnused = free.slice().sort((a, b) => (b.scanned ? b.unused : -1) - (a.scanned ? a.unused : -1));
+  for (const c of [...byRecent, ...byUnused]) if (take(c.id)) return;
+  persistFocus(""); claimProjectFocus(root, session, process.pid, ""); // no project exists (or none is free): Lẻ
+}
+// every project action of this window acts on the focused project: a request for another one is refused (no stale selection)
+const focusMismatch = (id) => { const f = selfProject(); return f === id ? "" : f ? "Dự án đang chọn của cửa sổ này là " + f + ", không phải " + id + ". Chọn lại dự án trong cửa sổ Dự án." : "Cửa sổ này đang ở chế độ Lẻ (không thuộc dự án). Chọn một dự án trong cửa sổ Dự án trước."; };
 function selfProject() { try { return listSessions(root).find((e) => e.pid === process.pid)?.project || ""; } catch { return ""; } }
 function sessionInfo() {
   const label = profileLabel();
   const group = peekGroup(workspace, session);
   const project = selfProject();
   return { session, label: sessionLabel(session), stt: self?.stt || 0, port: PORT, pid: process.pid, profile_label: label, running: agent.isActive() || light.isActive(), project,
-    next_group: group, title: sessionTitle({ stt: self?.stt, session, profileLabel: label, project }) };
+    next_group: group, project_name: project ? projectNameOf(project) : "", loose: !project, locked: !!lockedProject, title: sessionTitle({ stt: self?.stt, session, profileLabel: label, projectName: project ? projectNameOf(project) : "" }) };
 }
 // Live data each time: the registry entries whose pid is alive AND whose port answers /api/root with that pid within ~1 s (a stale entry never shows).
 async function liveSessions() {
@@ -671,7 +704,7 @@ function listen(attempt = 0) {
     }
     throw e;
   });
-  server.listen(PORT, "127.0.0.1", () => { try { self = registerSession(root, { session, port: PORT, extra: { profile_label: profileLabel(), running: false, project: /^[a-z0-9][a-z0-9-]{1,60}$/.test(process.env.PR_PROJECT || "") ? process.env.PR_PROJECT : "" } }); setInterval(syncRegistry, 5000).unref(); } catch (e) { logError("Sessions", e.message); } startMenuBar(); if (!process.argv.includes("--no-open")) openWindow(); });
+  server.listen(PORT, "127.0.0.1", () => { try { self = registerSession(root, { session, port: PORT, extra: { profile_label: profileLabel(), running: false, project: /^[a-z0-9][a-z0-9-]{1,60}$/.test(process.env.PR_PROJECT || "") ? process.env.PR_PROJECT : "" } }); setInterval(syncRegistry, 5000).unref(); initFocus(); } catch (e) { logError("Sessions", e.message); } startMenuBar(); if (!process.argv.includes("--no-open")) openWindow(); });
 }
 startRpc();
 listen();
