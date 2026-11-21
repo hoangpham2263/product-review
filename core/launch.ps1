@@ -1,20 +1,44 @@
 ﻿# Opens Product Review. macOS and Windows show the same web page from the same Node server (src/mac/server.mjs):
 # start-app.command gets the entry to start printed (-Mac); on Windows this script starts it and shows it in one app
 # window (WinForms with WebView2, core/webview2): no browser or address bar.
-param([switch]$Mac)
+param([switch]$Mac, [string]$Session = '')
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
 $entry = [IO.Path]::GetFullPath((Join-Path $root 'src/mac/server.mjs'))
 if ($Mac) { return $entry }
 
+# Sessions: several windows from this one source, each with its own workspace (queue, runs, logs, output), port and agent.
+# The default session ('') is the existing workspace/. Shared state (config, projects, source photos, Chrome profile) stays in workspace/.
+$Session = ([string]$Session).Trim().ToLowerInvariant()
+if ($Session -and $Session -notmatch '^[a-z0-9][a-z0-9-]{0,29}$') { $Session = '' }
+$sessionLabel = if ($Session) { $Session } else { 'default' }
+$sessionWs = if ($Session) { Join-Path $root "workspace-sessions/$Session" } else { Join-Path $root 'workspace' }
+$env:PR_SESSION = $Session
+$env:PR_WORKSPACE = $sessionWs
+
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing
 [Windows.Forms.Application]::EnableVisualStyles()
-$logs = Join-Path $root 'workspace/logs'
+$logs = Join-Path $sessionWs 'logs'
 New-Item -ItemType Directory -Force -Path $logs | Out-Null
 function Write-HubError([string]$Text) {
     try { Add-Content -LiteralPath (Join-Path $logs 'app-errors.log') -Encoding UTF8 -Value ("[{0:o}] Product Review`r`n  {1}`r`n" -f (Get-Date), $Text) } catch { }
 }
 function Show-HubMessage([string]$Text) { [void][Windows.Forms.MessageBox]::Show($Text, 'Product Review', 'OK', 'Warning') }
+
+# One window per session: launching the same session again only brings its window forward (found by the title "Product Review · #n · <session> · ...").
+$sha1 = [Security.Cryptography.SHA1]::Create()
+try { $mutexKey = ([BitConverter]::ToString($sha1.ComputeHash([Text.Encoding]::UTF8.GetBytes($root.ToLowerInvariant() + '|' + $Session))) -replace '-', '').Substring(0, 16) } finally { $sha1.Dispose() }
+$windowMutex = New-Object Threading.Mutex($false, "Local\ProductReview-$mutexKey")
+$ownsWindow = $false
+try { $ownsWindow = $windowMutex.WaitOne(0) } catch [Threading.AbandonedMutexException] { $ownsWindow = $true }
+if (-not $ownsWindow) {
+    try {
+        Add-Type -Namespace PR -Name Win -MemberDefinition '[DllImport("user32.dll")] public static extern bool ShowWindowAsync(IntPtr h, int c); [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr h);'
+        $existing = Get-Process | Where-Object { $_.MainWindowHandle -ne 0 -and $_.MainWindowTitle -like "Product Review*· $sessionLabel ·*" } | Select-Object -First 1
+        if ($existing) { [void][PR.Win]::ShowWindowAsync($existing.MainWindowHandle, 9); [void][PR.Win]::SetForegroundWindow($existing.MainWindowHandle) }
+    } catch { Write-HubError "Focus: $($_.Exception.Message)" }
+    return
+}
 
 # Node runs the pages' servers; without it, the installer from Cấu hình (Node.js, Codex, sign-in) runs first.
 function Find-Node {
@@ -38,7 +62,7 @@ function Get-HubPort([string]$Dir, [int]$Base) {
     return $Base + ([Convert]::ToInt32($hex.Substring(0, 6), 16) % 1000)
 }
 $serverService = 'product-review'
-$serverRoot = $root; $port = Get-HubPort $root 47000
+$serverRoot = $root; $serverSession = $Session; $port = Get-HubPort ($root + $(if ($Session) { "|$Session" } else { '' })) 47000
 $serverLogs = $logs; $arguments = @(('"' + $entry + '"'), '--no-open')
 . (Join-Path $PSScriptRoot 'server-health.ps1')
 $basePort = $port
@@ -69,7 +93,7 @@ for ($attempt = 0; $attempt -lt 3 -and -not $serverReady; $attempt++) {
 }
 if (-not $serverReady) { Show-HubMessage 'Không mở được Product Review. Xem workspace/logs/app-errors.log để biết tiến trình/cổng lỗi.'; return }
 $addressTemp = "$addressFile.$PID.tmp"
-@{root=$serverRoot;service=$serverService;port=$port} | ConvertTo-Json -Compress | Set-Content -LiteralPath $addressTemp -Encoding UTF8
+@{root=$serverRoot;service=$serverService;session=$Session;port=$port} | ConvertTo-Json -Compress | Set-Content -LiteralPath $addressTemp -Encoding UTF8
 Move-Item -LiteralPath $addressTemp -Destination $addressFile -Force
 $startUrl = "http://127.0.0.1:$port/"
 
@@ -94,14 +118,14 @@ try {
     [Microsoft.Web.WebView2.Core.CoreWebView2Environment]::SetLoaderDllFolderPath((Join-Path $sdk $arch))
     [void][Microsoft.Web.WebView2.Core.CoreWebView2Environment]::GetAvailableBrowserVersionString([NullString]::Value)
     $webView = New-Object Microsoft.Web.WebView2.WinForms.WebView2 -Property @{ Dock = 'Fill' }
-    $webView.CreationProperties = New-Object Microsoft.Web.WebView2.WinForms.CoreWebView2CreationProperties -Property @{ UserDataFolder = (Join-Path $root 'workspace/webview2/data') }
+    $webView.CreationProperties = New-Object Microsoft.Web.WebView2.WinForms.CoreWebView2CreationProperties -Property @{ UserDataFolder = (Join-Path $sessionWs 'webview2/data') }
 } catch {
     Write-HubError "WebView2: $($_.Exception.Message)"
     Start-Process $startUrl
     return
 }
 
-$form = New-Object Windows.Forms.Form -Property @{ Text = 'Product Review'; Size = '1120,840'; MinimumSize = '640,480'; StartPosition = 'CenterScreen'; BackColor = [Drawing.Color]::FromArgb(240, 240, 240) }
+$form = New-Object Windows.Forms.Form -Property @{ Text = $(if ($Session) { "Product Review · $Session" } else { 'Product Review' }); Size = '1120,840'; MinimumSize = '640,480'; StartPosition = 'CenterScreen'; BackColor = [Drawing.Color]::FromArgb(240, 240, 240) }
 $hubIcon = Join-Path $root 'icon.png'
 # Read into memory, so the file stays free for Cập nhật to replace while the window is open.
 if (Test-Path -LiteralPath $hubIcon) { $form.Icon = [Drawing.Icon]::FromHandle((New-Object Drawing.Bitmap((New-Object IO.MemoryStream(, [IO.File]::ReadAllBytes($hubIcon))))).GetHicon()) }

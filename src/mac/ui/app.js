@@ -216,14 +216,24 @@ function buildMain() {
   // Cấu hình (core/setup), left of Cập nhật.
   ui.btnSetup = at(button("Cấu hình"), null, 16, 100, 32, { right: 132, left: false });
   // Tải về máy runs in the background (src/sync-source.ps1); its progress shows here, in the header, so work goes on.
-  ui.syncLabel = at(label("", "muted"), 260, 14, null, 22, { right: 342 });
+  ui.syncLabel = at(label("", "muted"), 260, 14, null, 22, { right: 442 });
   ui.syncLabel.style.textAlign = "right";
-  ui.syncBar = at(el("div", "progress"), null, 40, 200, 4, { right: 342, left: false });
+  ui.syncBar = at(el("div", "progress"), null, 40, 200, 4, { right: 442, left: false });
   ui.syncBar.append(el("span"));
   ui.syncLabel.hidden = ui.syncBar.hidden = true;
   // Tải lại: this tool's server starts again on the files as they are now and the page loads afresh.
   ui.btnReload = at(button("Tải lại"), null, 16, 90, 32, { right: 240, left: false });
-  header.append(ui.btnReload, ui.btnSetup, ui.btnUpdate, ui.syncLabel, ui.syncBar);
+  // Sessions (several windows from one source, core/setup/session.mjs): the badge tells which window this is (number, session, Chrome profile)
+  // and which Chrome tab group the next run will open, so a window can be matched to its tab group.
+  ui.sessionBadge = at(label("", ""), 170, 21, null, 22, { right: 450 });
+  ui.sessionBadge.style.fontWeight = "600"; ui.sessionBadge.style.whiteSpace = "nowrap"; ui.sessionBadge.style.overflow = "hidden"; ui.sessionBadge.style.textOverflow = "ellipsis";
+  ui.groupLabel = at(label("", "muted"), 20, 44, null, 18, { right: 450 });
+  ui.groupLabel.style.fontSize = "11.5px"; ui.groupLabel.style.whiteSpace = "nowrap"; ui.groupLabel.style.overflow = "hidden"; ui.groupLabel.style.textOverflow = "ellipsis";
+  ui.btnSessions = at(button("Các phiên"), null, 16, 100, 32, { right: 340, left: false });
+  ui.sessionsPanel = at(el("div", "card"), null, 52, 480, null, { right: 24, left: false });
+  ui.sessionsPanel.style.zIndex = "30"; ui.sessionsPanel.style.display = "none"; ui.sessionsPanel.style.padding = "8px"; ui.sessionsPanel.style.background = "var(--surface)";
+  ui.btnSessions.onclick = () => { const open = ui.sessionsPanel.style.display !== "none"; ui.sessionsPanel.style.display = open ? "none" : ""; if (!open) renderSessions(); };
+  header.append(ui.btnReload, ui.btnSetup, ui.btnUpdate, ui.syncLabel, ui.syncBar, ui.sessionBadge, ui.groupLabel, ui.btnSessions, ui.sessionsPanel);
 
   // Link sản phẩm & ảnh (20,78 820x344, Top/Left/Right).
   const cardList = at(el("div", "card"), 20, 78, null, 344, { right: 264 });
@@ -248,7 +258,7 @@ function buildMain() {
   // No text lines: the sign-in state is a dot inside the "Mở Chrome để đăng nhập" button (green = signed in, red = signed out, grey = checking / busy / unknown);
   // the message is its tooltip. Both buttons always stay.
   // Same 37 px step as the buttons above (36 + 4 * 37): the gap between all buttons is equal.
-  ui.flowLoginBox = at(el("div", "abs"), 0, 36 + names.length * 37, 224, 180);
+  ui.flowLoginBox = at(el("div", "abs"), 0, 36 + names.length * 37, 224, 217);
   ui.btnFlowOpen = at(button("Mở Chrome để đăng nhập"), 14, 0, 196, 32);
   ui.btnFlowCheck = at(button("Kiểm tra lại"), 14, 37, 196, 32);
   // Copy prompt (Claude (Google Flow) only): the fixed prompt of docs/agent-prompt.md, to paste by hand into Claude Code.
@@ -265,16 +275,38 @@ function buildMain() {
   ui.flowBrowser = at(combo(), 14, 148, 196, 32);
   ui.flowBrowser.title = "Trình duyệt cho Claude (Flow): Chrome thật của bạn (chọn profile có sẵn trên máy, cần extension Playwright, bấm Connect mỗi lượt) hoặc Chrome riêng của tool.";
   ui.flowBrowser.setItems([""], ["Đang đọc profile…"]);
-  ui.flowBrowser.onchange = () => { const v = ui.flowBrowser.value; fetch("/api/flow-browser", { method: "POST", body: JSON.stringify(v === "own" ? { mode: "own" } : { mode: "extension", profile: v }) }).catch(() => {}); };
-  fetch("/api/flow-browser").then((r) => r.json()).then((j) => {
-    const items = ["own", ...(j.profiles || []).map((p) => p.folder)], labels = ["Chrome riêng của tool", ...(j.profiles || []).map((p) => (p.email || p.name || p.folder) + " (" + p.folder + ")" + (p.playwright_extension ? "" : " · chưa có extension"))];
+  // Only an explicit change that really differs from the SAVED value is saved (a mouse wheel on a focused list must never change it);
+  // after every load the list shows the saved choice. Profiles without the extension can be given it from the button below.
+  ui.flowBrowserSaved = ""; ui.flowBrowserProfiles = [];
+  ui.flowBrowser.addEventListener("wheel", (e) => { if (document.activeElement === ui.flowBrowser) e.preventDefault(); }, { passive: false });
+  ui.btnInstallExt = at(button("Cài extension vào profile này"), 14, 185, 196, 32);
+  ui.btnInstallExt.title = "Mở trang Playwright MCP Bridge trên Chrome Web Store trong đúng profile đã chọn. Bạn tự bấm Thêm vào Chrome; tool không cài thay.";
+  ui.btnInstallExt.hidden = true;
+  const refreshInstallButton = () => { const p = ui.flowBrowserProfiles.find((x) => x.folder === ui.flowBrowser.value); ui.btnInstallExt.hidden = !p || p.playwright_extension; };
+  const loadFlowBrowser = () => fetch("/api/flow-browser").then((r) => r.json()).then((j) => {
+    ui.flowBrowserProfiles = j.profiles || [];
+    const items = ["own", ...ui.flowBrowserProfiles.map((p) => p.folder)], labels = ["Chrome riêng của tool", ...ui.flowBrowserProfiles.map((p) => (p.email || p.name || p.folder) + " (" + p.folder + ")" + (p.playwright_extension ? "" : " · chưa có extension"))];
     ui.flowBrowser.setItems(items, labels);
-    ui.flowBrowser.value = j.mode === "own" ? "own" : j.profile;
+    ui.flowBrowserSaved = j.mode === "own" ? "own" : j.profile;
+    ui.flowBrowser.value = ui.flowBrowserSaved;
+    refreshInstallButton();
   }).catch(() => {});
+  ui.flowBrowser.onchange = async () => {
+    const v = ui.flowBrowser.value;
+    refreshInstallButton();
+    if (v === ui.flowBrowserSaved) return;
+    const r = await fetch("/api/flow-browser", { method: "POST", body: JSON.stringify(v === "own" ? { mode: "own" } : { mode: "extension", profile: v }) }).then((x) => x.ok).catch(() => false);
+    if (r) { ui.flowBrowserSaved = v; refreshSessionBadge(); } else ui.flowBrowser.value = ui.flowBrowserSaved;
+  };
+  ui.btnInstallExt.onclick = async () => {
+    const r = await fetch("/api/flow-browser/install-extension", { method: "POST", body: JSON.stringify({ profile: ui.flowBrowser.value }) }).then((x) => x.json()).catch((e) => ({ error: e.message }));
+    if (r.error) messageBox(r.error);
+  };
+  loadFlowBrowser();
   ui.btnFlowOpen.onclick = openFlowLogin;
   ui.btnFlowCheck.onclick = () => checkFlowLogin(true);
   ui.flowLoginBox.style.display = "none";
-  ui.flowLoginBox.append(ui.btnFlowOpen, ui.btnFlowCheck, ui.btnCopyPrompt, ui.flowAccount, ui.flowBrowser);
+  ui.flowLoginBox.append(ui.btnFlowOpen, ui.btnFlowCheck, ui.btnCopyPrompt, ui.flowAccount, ui.flowBrowser, ui.btnInstallExt);
   cardActions.append(ui.flowLoginBox);
 
   // Run row (20,434 1060x62).
@@ -400,10 +432,46 @@ function renderRows() {
   }));
 }
 
+// ----- Sessions: badge, window title, list of the open windows, "Mở cửa sổ mới" -----
+let sessionState = {};
+async function refreshSessionBadge() {
+  const j = await fetch("/api/session").then((r) => r.json()).catch(() => null);
+  if (!j || j.error) return;
+  sessionState = j;
+  const text = "#" + j.stt + " · " + j.label + " · " + (j.profile_label || "");
+  if (ui.sessionBadge) { ui.sessionBadge.textContent = text; ui.sessionBadge.title = j.title; }
+  if (ui.groupLabel) { const g = j.next_group || {}; ui.groupLabel.textContent = (j.profile_label === "Chrome riêng" ? "Chrome riêng: không có nhóm tab" : "Nhóm tab Chrome của lượt chạy tới: " + (g.name || "")); ui.groupLabel.title = ui.groupLabel.textContent; }
+  document.title = j.title;
+}
+async function renderSessions() {
+  const p = ui.sessionsPanel; p.replaceChildren();
+  const r = await fetch("/api/sessions").then((x) => x.json()).catch(() => ({ sessions: [] }));
+  p.append(at(label("Các phiên đang mở", ""), 0, 0, null, 20)); p.lastChild.style.position = "static"; p.lastChild.style.fontWeight = "600";
+  for (const s of r.sessions || []) {
+    const row = button("#" + s.stt + " · " + s.label + " · " + (s.profile_label || "?") + " · " + (s.running ? "đang chạy" : "rảnh") + (s.current ? "  (cửa sổ này)" : ""));
+    Object.assign(row.style, { position: "static", display: "block", width: "100%", textAlign: "left", margin: "4px 0", height: "28px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" });
+    row.onclick = async () => { if (!s.current) await fetch("/api/sessions/open", { method: "POST", body: JSON.stringify({ name: s.session }) }).catch(() => {}); ui.sessionsPanel.style.display = "none"; };
+    p.append(row);
+  }
+  const line = el("div", "", { style: { display: "flex", gap: "6px", marginTop: "8px" } });
+  const name = el("input", "text", { placeholder: "Tên phiên mới (a-z, 0-9, -)", maxlength: "30" });
+  Object.assign(name.style, { position: "static", flex: "1", height: "28px" });
+  const open = button("Mở cửa sổ mới"); open.style.height = "28px";
+  open.onclick = async () => {
+    const v = name.value.trim().toLowerCase();
+    if (!/^[a-z0-9][a-z0-9-]{0,29}$/.test(v)) return messageBox("Tên phiên chỉ gồm chữ thường, số và dấu gạch ngang (tối đa 30 ký tự).");
+    const res = await fetch("/api/sessions/open", { method: "POST", body: JSON.stringify({ name: v }) }).then((x) => x.json()).catch((e) => ({ error: e.message }));
+    if (res.error) return messageBox(res.error);
+    ui.sessionsPanel.style.display = "none";
+  };
+  line.append(name, open); p.append(line);
+}
+setInterval(() => { refreshSessionBadge(); if (ui.sessionsPanel && ui.sessionsPanel.style.display !== "none") renderSessions(); }, 5000);
 async function loadState() {
+  await refreshSessionBadge();
   Object.assign(state, await api("state"));
   state.rows = list(state.rows).map((info) => ({ url: info.url, info: normInfo(info) }));
-  document.title = ("Product Review " + (state.version || "")).trim();
+  document.title = sessionState.title || ("Product Review " + (state.version || "")).trim();
   renderRows();
   updateStatus();
 }

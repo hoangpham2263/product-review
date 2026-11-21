@@ -6,6 +6,8 @@ import { mkdirSync, readFileSync, writeFileSync, appendFileSync, rmSync, existsS
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { platform as osPlatform } from "node:os";
+import { localChromeProfiles } from "./flow-browser.mjs";
+import { claimLock, releaseLocks, takeGroup, sessionLabel } from "./session.mjs";
 
 // 0 = no limit: a run ends when Claude finishes, so a long batch is never cut off half way. Set minutes / maxTurns above 0 to cap a run.
 export const DEFAULT_MINUTES = 0;
@@ -93,7 +95,7 @@ export function friendlyTool(name, input = {}, mode = "flow") {
 // profile must be open; the person clicks Connect). The run's tabs go into one named Chrome tab group.
 export function mcpConfig({ plat = osPlatform(), profile, headless = true, extension = null } = {}) {
   if (extension) {
-    const a = ["@playwright/mcp@latest", "--extension", "--session-name", extension.name || "Product Review", "--session-color", extension.color || "blue"];
+    const a = ["@playwright/mcp@latest", "--extension", ...(extension.profile ? ["--profile-dir-name", extension.profile] : []), "--session-name", extension.name || "Product Review", "--session-color", extension.color || "blue"];
     const server = plat === "win32" ? { command: "cmd", args: ["/c", "npx", ...a] } : { command: "npx", args: a };
     if (extension.profile) server.env = { PLAYWRIGHT_MCP_PROFILE_DIR_NAME: extension.profile };
     return { mcpServers: { playwright: server } };
@@ -105,12 +107,21 @@ export function mcpConfig({ plat = osPlatform(), profile, headless = true, exten
 }
 
 // Note put in front of the prompt when the run drives the person's everyday Chrome (extension mode).
-export const extensionNote = `RUN-NOW NOTE: this run uses the person's everyday Chrome through the Playwright extension, so the person is at the computer and will click Connect in Chrome.
+export const extensionNote = ({ groupName = "Product Review", session = "default" } = {}) => `RUN-NOW NOTE: this run uses the person's everyday Chrome through the Playwright extension, so the person is at the computer and will click Connect in Chrome. Your tabs go into the Chrome tab group named "${groupName}" (session "${session}").
 If browser_tabs shows only a Welcome / connect.html tab, or the browser tools fail: the Playwright MCP has ALREADY opened that page, do NOT open a second copy; bring it to the front with browser_run_code_unsafe: async (page) => { await page.bringToFront(); } and tell the person in one line to click Connect. Then wait up to 3 minutes, calling browser_tabs about every 15 seconds, until a real page tab appears. If nothing connects, stop and report that Chrome did not connect (CAUSE:BROWSER).
+CLEAN UP FIRST (once, at the very start): close only leftover tabs that clearly belong to an OLD Chrome tab group of this same session (a group whose title starts with "Product Review · ${session} ·" but is not "${groupName}"). Never close any other tab, never touch the person's own tabs; if you cannot tell which tabs belong to an old group, close nothing.
 Downloads: this mode cannot use download.saveAs; click the download button, then take the newest file from the Downloads folder.
 HUMAN PACING: before EVERY prompt you submit in Google Flow run: node core/flow-pace.mjs gate --tag <item id> (it waits the human-like time by itself; submit right after it returns; never several prompts behind one gate).
 
 `;
+// Extension mode only works on a profile that HAS the Playwright MCP Bridge extension: otherwise the MCP silently uses "the last used profile that
+// has it". So a chosen profile without the extension (or missing) refuses to start; another profile is never used instead.
+export function checkExtensionProfile(profile, { profiles = localChromeProfiles().profiles } = {}) {
+  const p = profiles.find((x) => x.folder === profile);
+  if (!p) return { ok: false, error: `Profile Chrome "${profile}" không có trên máy này. Chọn profile khác ở ô trình duyệt.` };
+  if (!p.playwright_extension) return { ok: false, error: `Profile ${profile}${p.email ? " (" + p.email + ")" : ""} chưa có extension Playwright MCP Bridge. Cài extension vào profile đó (nút "Cài extension vào profile này") hoặc chọn profile khác; tool không dùng profile khác thay thế.` };
+  return { ok: true };
+}
 export const newRunId = (d = new Date()) => "agent-" + d.toISOString().replace(/\D/g, "").slice(0, 14);
 
 // The text block of docs/agent-prompt.md (mode "flow") or docs/scan-prompt.md (mode "scan"), placeholders filled.
@@ -152,7 +163,7 @@ export function findClaude(plat = osPlatform()) {
   } catch { return { found: false, path: "" }; }
 }
 
-export function createAgentRunner({ toolRoot, workspace, profileDir = join(workspace, "chrome-profile"), headless = process.env.PR_FLOW_HEADLESS === "1", getBrowser = () => ({ mode: "extension", profile: "Profile 1" }), findCli = findClaude, plat = osPlatform(), spawnFn = spawn, killTree = (c) => defaultKill(c, plat), npxOk = () => defaultNpx(plat), now = () => Date.now(), graceMs = 4000, minutes = DEFAULT_MINUTES, maxTurns = 0 }) {
+export function createAgentRunner({ toolRoot, workspace, profileDir = join(workspace, "chrome-profile"), headless = process.env.PR_FLOW_HEADLESS === "1", getBrowser = () => ({ mode: "extension", profile: "Profile 1" }), session = "", checkProfile = checkExtensionProfile, findCli = findClaude, plat = osPlatform(), spawnFn = spawn, killTree = (c) => defaultKill(c, plat), npxOk = () => defaultNpx(plat), now = () => Date.now(), graceMs = 4000, minutes = DEFAULT_MINUTES, maxTurns = 0 }) {
   const runsDir = join(workspace, "runs"), tmpDir = join(workspace, "tmp");
   const stateFile = join(runsDir, "agent-run.json"), logFile = join(runsDir, "agent-run.log");
   let cur = null, last = null;
@@ -198,6 +209,7 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
     clearTimeout(run.timer);
     if (run.buf.trim()) handleLine(run, run.buf.trim());
     try { rmSync(run.cfg, { force: true }); } catch {}
+    try { releaseLocks(toolRoot, session); } catch {}
     // An image run (mode "flow") that finished its process cleanly but produced nothing for ANY of its items (no image, no result) is a failed run,
     // not a success: the final state must not look like "done, 0 errors" when 0 of N items were completed.
     let nothing = "";
@@ -237,14 +249,28 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
     mkdirSync(tmpDir, { recursive: true }); mkdirSync(runsDir, { recursive: true });
     const cfg = join(tmpDir, `mcp-${runId}-${randomBytes(3).toString("hex")}.json`);
     const bc = getBrowser() || {}, ext = bc.mode !== "own";
-    writeFileSync(cfg, JSON.stringify(mcpConfig({ plat, profile: profileDir, headless, extension: ext ? { profile: bc.profile, name: "Product Review", color: "blue" } : null })));
+    if (ext) { const chk = checkProfile(bc.profile); if (!chk.ok) return { ok: false, status: 409, error: chk.error }; }
+    // Sessions (several windows): the own Chrome profile and a project are used by one live session at a time.
+    const holderText = (h) => "phiên \"" + sessionLabel(h.session) + "\"";
+    if (!ext) {
+      const c = claimLock(toolRoot, "chrome", "own", session);
+      if (!c.ok) return { ok: false, status: 409, error: "Chrome riêng của tool đang được " + holderText(c.holder) + " dùng. Chọn Chrome thật (profile có sẵn trên máy) hoặc đợi phiên đó chạy xong." };
+    }
+    let projectId = project;
+    if (!projectId && mode === "scan" && site) { try { projectId = new URL(site).hostname.replace(/^www\./, "").replace(/\./g, "-"); } catch {} }
+    if (projectId) {
+      const c = claimLock(toolRoot, "project", projectId, session);
+      if (!c.ok) { releaseLocks(toolRoot, session); return { ok: false, status: 409, error: "Dự án " + projectId + " đang được " + holderText(c.holder) + " dùng. Chọn dự án khác hoặc đợi phiên đó xong để khỏi ghi đè dữ liệu của nhau." }; }
+    }
+    const group = ext ? takeGroup(workspace, session) : null;
+    writeFileSync(cfg, JSON.stringify(mcpConfig({ plat, profile: profileDir, headless, extension: ext ? { profile: bc.profile, name: group.name, color: group.color } : null })));
     if (!ext) mkdirSync(profileDir, { recursive: true });
     const args = ["-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "default", ...(maxTurns > 0 ? ["--max-turns", String(maxTurns)] : []), "--allowedTools", ALLOWED_TOOLS.join(","), "--add-dir", toolRoot, "--mcp-config", cfg];
     const env = { ...process.env };
     const cmd = plat === "win32" && /\.(cmd|bat)$/i.test(found.path) ? ["cmd", ["/c", found.path, ...args]] : [found.path, args];
     let child;
     try { child = spawnFn(cmd[0], cmd[1], { cwd: toolRoot, env, windowsHide: true, detached: false, stdio: ["pipe", "pipe", "pipe"] }); }
-    catch (e) { try { rmSync(cfg, { force: true }); } catch {} return { ok: false, status: 500, error: sanitize(e.message) }; }
+    catch (e) { try { rmSync(cfg, { force: true }); } catch {} try { releaseLocks(toolRoot, session); } catch {} return { ok: false, status: 500, error: sanitize(e.message) }; }
     const started = new Date(now()).toISOString();
     const run = { child, cfg, lines: [], buf: "", written: 0, stderr: [], ended: false, forced: "", result: null, timer: null,
       state: { run_id: runId, mode, project, pid: child.pid ?? null, started, updated: started, status: "running", exit_code: null, last_text: "", turns: 0, error: "" } };
@@ -267,7 +293,7 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
       : mode === "scan"
       ? "RUN-NOW NOTE: this run uses the tool's OWN Chrome (a dedicated profile, no sign-in needed to scan a shop)" + (headless ? ", running in the background (headless)" : "") + ". There is no Connect step and no extension: ignore any instruction to click Connect or wait for the person; start with browser_tabs or browser_navigate. If the site asks for a login or shows a captcha, stop and report it (never sign in for the person)." + "\n\n"
       : "RUN-NOW NOTE: this run uses the tool's OWN Chrome (a dedicated profile the person already signed in to Google Flow with)" + (headless ? ", running in the background (headless)" : "") + ". There is no Connect step and no extension: ignore any instruction to click Connect or wait for the person; start with browser_tabs or browser_navigate. If Flow shows a Google sign-in page, stop and report CAUSE:LOGIN (never sign in for the person)." + "\n\n";
-    try { child.stdin?.end((ext && mode !== "queue" ? extensionNote : note) + prompt); } catch {}
+    try { child.stdin?.end((ext && mode !== "queue" ? extensionNote({ groupName: group.name, session: sessionLabel(session) }) : note) + prompt); } catch {}
     if (minutes > 0) run.timer = setTimeout(() => { if (run.ended) return; run.forced = "timeout"; killTree(child); setTimeout(() => finish(run, null), graceMs).unref?.(); }, minutes * 60000);
     run.timer?.unref?.();
     return { ok: true, status: 200, run_id: runId, started };

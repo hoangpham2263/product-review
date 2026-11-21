@@ -4,6 +4,7 @@ The prompt is `docs/agent-prompt.md`. One run at a time, one browser = one agent
 
 1. `prepare`: snapshots the queue (URLs, product photos, review photos) into the run; lists the items.
 2. Per item: look at the product photo(s) yourself; `context-brief` shows what to write; write the JSON; `context -File <json>`. No web access for the product (AGENTS.md section 1-2).
+Sessions: several app windows can run at once (own queue, runs, logs and port each, one source); `start-app.cmd <name>` opens one, `PR_SESSION` / `PR_WORKSPACE` name it for CLI runs. See AGENTS.md "Phiên".
 3. Images in Google Flow (Playwright MCP: the person's everyday Chrome profile chosen in the app, extension mode, the person clicks Connect and your tabs sit in a group named Product Review; or the tool's own Chrome `workspace/chrome-profile` when the app says so):
    1. `flow-brief` for every item: gives `aspect`, `uploads` (review photo first, product photo second) and `condensed_prompt`.
    2. `browser_tabs`: browser up? One tab. A Google sign-in page = STOP (`CAUSE:LOGIN`). Open https://flow.google.com, new project, Images (Hình ảnh), aspect from `aspect`, x1.

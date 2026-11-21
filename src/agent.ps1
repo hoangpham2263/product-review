@@ -44,7 +44,7 @@ try {
     if (Test-Path -LiteralPath $reviewModule) { . $reviewModule }
 } catch { Fail-Agent "Cannot load the app modules. $($_.Exception.Message)" 'TOOL_ERROR' }
 
-$OutRoot = if ($env:PR_AGENT_OUT) { $env:PR_AGENT_OUT } else { Join-Path $ProjectRoot 'workspace/output' }
+$OutRoot = if ($env:PR_AGENT_OUT) { $env:PR_AGENT_OUT } else { Join-Path (Get-SessionWorkspaceDir $ProjectRoot) 'output' }
 $script:Utf8 = [Text.UTF8Encoding]::new($false)
 
 # --- run state -------------------------------------------------------------------------------------------------
@@ -52,7 +52,7 @@ function New-AgentConfig {
     $config = New-WorkflowConfiguration $ProjectRoot (Join-Path $ProjectRoot 'workspace/source-photos') ''
     $config.Results = $null
     $config.ResultsRequired = $false
-    $map = if ($env:PR_AGENT_REFERENCES) { $env:PR_AGENT_REFERENCES } else { Join-Path $ProjectRoot 'workspace/reference-inputs/references.json' }
+    $map = if ($env:PR_AGENT_REFERENCES) { $env:PR_AGENT_REFERENCES } else { Join-Path (Get-SessionWorkspaceDir $ProjectRoot) 'reference-inputs/references.json' }
     $config.ManualReferences = Read-ManualReferenceMap $map
     $config
 }
@@ -108,7 +108,7 @@ function Get-AgentContext([string]$Id) {
 # --- 1. prepare ------------------------------------------------------------------------------------------------
 function Invoke-AgentPrepare {
     Open-AgentRun $Run
-    $queuePath = if ($List) { $List } else { Join-Path $ProjectRoot 'workspace/urls.txt' }
+    $queuePath = if ($List) { $List } else { Join-Path (Get-SessionWorkspaceDir $ProjectRoot) 'urls.txt' }
     if (-not (Test-Path -LiteralPath $queuePath)) { throw "URL list not found: $queuePath" }
     $queue = Read-UrlQueue $queuePath
     $existing = @(Read-AgentItems)

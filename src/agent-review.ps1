@@ -4,7 +4,7 @@ if (-not (Get-Command Get-WritingStyle -ErrorAction SilentlyContinue)) { . (Join
 
 function Resolve-AgentRunDir([string]$Run) {
     $root = Split-Path $PSScriptRoot -Parent
-    $dir = if ([IO.Path]::IsPathRooted($Run)) { $Run } else { Join-Path (Join-Path $root 'workspace/output') $Run }
+    $dir = if ([IO.Path]::IsPathRooted($Run)) { $Run } else { Join-Path (Join-Path (Get-SessionWorkspaceDir $root) 'output') $Run }
     if (-not (Test-Path -LiteralPath $dir -PathType Container)) { Fail-Agent "Run folder not found: $dir" 'RUN_NOT_FOUND' }
     return (Resolve-Path -LiteralPath $dir).Path
 }

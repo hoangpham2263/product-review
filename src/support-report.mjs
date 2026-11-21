@@ -71,7 +71,7 @@ async function generate(prompt, output, trace, timeoutMs = 120000) {
 }
 
 export async function main({ generateOnly = false, projectRoot = root, generateReport = generate } = {}) {
-  const workspace = join(projectRoot, 'workspace');
+  const workspace = process.env.PR_WORKSPACE || join(projectRoot, 'workspace');
   const temp = join(workspace, 'temp');
   await mkdir(temp, { recursive: true });
   const id = `${new Date().toISOString().replace(/[:.]/g, '-')}_${process.platform}_${randomUUID().slice(0, 8)}`;

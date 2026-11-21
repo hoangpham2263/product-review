@@ -14,6 +14,8 @@ function Test-HubServer {
         $answer=Get-HubHttpText "http://127.0.0.1:$port/api/root" | ConvertFrom-Json
         if(([string]$answer.root).TrimEnd('\').ToLowerInvariant() -ne $serverRoot.TrimEnd('\').ToLowerInvariant()){return $false}
         if($answer.service -ne $serverService -or $answer.protocol -ne 1){return $false}
+        $wantSession = if (Test-Path variable:serverSession) { [string]$serverSession } else { '' }
+        if(([string]$answer.session) -ne $wantSession){return $false}
         $html=Get-HubHttpText "http://127.0.0.1:$port/"
         return $html -match '(?i)<(?:!doctype\s+html|html\b)'
     } catch {return $false}
@@ -25,7 +27,7 @@ function Test-HubPortFree([int]$PortNumber) {
 function Select-HubServerPort([int]$BasePort,[string]$AddressFile) {
     try {
         $saved=Get-Content -LiteralPath $AddressFile -Raw -Encoding UTF8 | ConvertFrom-Json
-        if($saved.root -eq $serverRoot -and $saved.service -eq $serverService -and $saved.port -ge $BasePort -and $saved.port -le ($BasePort+20)){
+        if($saved.root -eq $serverRoot -and $saved.service -eq $serverService -and ([string]$saved.session) -eq $(if (Test-Path variable:serverSession) { [string]$serverSession } else { '' }) -and $saved.port -ge $BasePort -and $saved.port -le ($BasePort+20)){
             $port=[int]$saved.port
             if(Test-HubServer){return $port}
         }

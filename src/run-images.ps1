@@ -2,9 +2,9 @@
 # For every URL: load product, take the review photo the user attached, create one photo, write a review.
 # URLs are processed in parallel (-ThrottleLimit); results are committed one by one in the main thread.
 param(
-    [Alias('UrlList')][string]$List = (Join-Path (Split-Path $PSScriptRoot -Parent) 'workspace/urls.txt'),
+    [Alias('UrlList')][string]$List = (Join-Path $(if ($env:PR_WORKSPACE) { $env:PR_WORKSPACE } else { Join-Path (Split-Path $PSScriptRoot -Parent) 'workspace' }) 'urls.txt'),
     [Alias('InputDir')][string]$SourceDir = (Join-Path (Split-Path $PSScriptRoot -Parent) 'workspace/source-photos'),
-    [string]$OutDir = (Join-Path (Split-Path $PSScriptRoot -Parent) 'workspace/output'),
+    [string]$OutDir = (Join-Path $(if ($env:PR_WORKSPACE) { $env:PR_WORKSPACE } else { Join-Path (Split-Path $PSScriptRoot -Parent) 'workspace' }) 'output'),
     # Ignored: one attached review photo per image. Kept so older callers still start.
     [Alias('ReferencePhotosPerImage')][int]$PhotosPerImage = 1,
     [ValidateRange(1, 4)][int]$ThrottleLimit = 2,

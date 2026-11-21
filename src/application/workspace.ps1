@@ -1,6 +1,13 @@
 ﻿# All project runtime state belongs to this ignored directory.
+# Sessions (several windows from one source): PR_WORKSPACE (set by the launcher / server for a session) is THIS session's own workspace
+# (queue, output, temp, logs ...); without it, workspace/ of the install. Shared state (config, projects, source photos, Chrome profile)
+# is always the literal workspace/ of the install.
+function Get-SessionWorkspaceDir([string]$ProjectRoot) {
+    if ($env:PR_WORKSPACE) { return [IO.Path]::GetFullPath($env:PR_WORKSPACE) }
+    return Join-Path ([IO.Path]::GetFullPath($ProjectRoot)) 'workspace'
+}
 function Initialize-ProjectWorkspace([string]$ProjectRoot) {
-    $root = Join-Path ([IO.Path]::GetFullPath($ProjectRoot)) 'workspace'
+    $root = Get-SessionWorkspaceDir $ProjectRoot
     $paths = @{
         Root = $root
         Output = Join-Path $root 'output'

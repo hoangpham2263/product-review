@@ -44,6 +44,7 @@ function Fail-Scan([string]$Message, [string]$Cause = '') {
     exit 1
 }
 
+. (Join-Path $PSScriptRoot 'application/workspace.ps1')
 . (Join-Path $PSScriptRoot 'application/scan-store.ps1')
 $ScanRoot = if ($env:PR_SCAN_OUT) { $env:PR_SCAN_OUT } else { Get-ProjectsRoot $ProjectRoot }
 $MaxImageBytes = 25MB
@@ -187,8 +188,8 @@ function Get-ScanSummary([string]$Dir, $Info, $Session) {
 }
 
 # ---- Thêm vào hàng chờ: the run queue (workspace/urls.txt + workspace/reference-inputs/references.json) ----
-$QueueMapPath = Join-Path $ProjectRoot 'workspace/reference-inputs/references.json'
-$QueueUrlsPath = Join-Path $ProjectRoot 'workspace/urls.txt'
+$QueueMapPath = Join-Path (Get-SessionWorkspaceDir $ProjectRoot) 'reference-inputs/references.json'
+$QueueUrlsPath = Join-Path (Get-SessionWorkspaceDir $ProjectRoot) 'urls.txt'
 $LibraryDir = Join-Path $ProjectRoot 'workspace/source-photos'
 # Dot-sourcing inside a function defines the functions only in that function's scope (they vanish when it returns), so the libraries are
 # loaded here, at script level, for the queue commands. Import-QueueLibs stays as a no-op for the existing callers.
@@ -240,7 +241,7 @@ function Get-LibraryPhotoFile([string]$LibraryGroup, $Photo) {
 
 # ---- Scene checks (perceptual hash): the same picture re-saved / resized has a distance of 0-6 of 256 bits, different photos 99+ ----
 $SceneSameDistance = 20
-$OutputDir = Join-Path $ProjectRoot 'workspace/output'
+$OutputDir = Join-Path (Get-SessionWorkspaceDir $ProjectRoot) 'output'
 # Hash of a library photo (cached by name + md5); '' when it is not on this machine yet.
 function Get-LibraryPhotoHash([string]$LibraryGroup, $Photo) {
     if (-not $Photo.local -or -not (Test-Path -LiteralPath $Photo.local)) { return '' }
@@ -492,7 +493,7 @@ try {
             $library = @(Get-LibraryPhotos $Group)
             if (-not $library.Count) { Fail-Scan "No photos in group $Group." 'UNKNOWN_GROUP' }
             $handle = Get-Slug (([Uri]$row[0].product_url).Segments[-1].Trim('/')) 80
-            $sceneDir = Join-Path $ProjectRoot ("workspace/reference-inputs/$ProjectId-scenes")
+            $sceneDir = Join-Path (Get-SessionWorkspaceDir $ProjectRoot) "reference-inputs/$ProjectId-scenes"
             New-Item -ItemType Directory -Force -Path $sceneDir | Out-Null
             $picked = @(); $number = 0; $seen = @()
             foreach ($wantedName in $wanted) {
