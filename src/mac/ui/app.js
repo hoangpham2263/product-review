@@ -210,35 +210,57 @@ function buildMain() {
   const c = ui.client;
   // Header (Dock Top, 64).
   const header = at(el("div", "panel"), 0, 0, null, 64, { right: 0 });
-  header.append(at(label("Product Review", ""), 20, 19, null, 26));
+  header.append(at(label("Product Review", ""), 20, 8, null, 26));
   header.firstChild.style.fontSize = "17.33px";
-  ui.btnUpdate = at(button("Cập nhật"), null, 16, 100, 32, { right: 24, left: false });
+  ui.btnUpdate = at(button("Cập nhật"), null, 4, 100, 32, { right: 24, left: false });
   // Cấu hình (core/setup), left of Cập nhật.
-  ui.btnSetup = at(button("Cấu hình"), null, 16, 100, 32, { right: 132, left: false });
+  ui.btnSetup = at(button("Cấu hình"), null, 4, 100, 32, { right: 132, left: false });
   // Tải về máy runs in the background (src/sync-source.ps1); its progress shows here, in the header, so work goes on.
-  ui.syncLabel = at(label("", "muted"), 260, 14, null, 22, { right: 442 });
+  ui.syncLabel = at(label("", "muted"), 260, 8, null, 22, { right: 442 });
   ui.syncLabel.style.textAlign = "right";
-  ui.syncBar = at(el("div", "progress"), null, 40, 200, 4, { right: 442, left: false });
+  ui.syncBar = at(el("div", "progress"), null, 33, 200, 4, { right: 442, left: false });
   ui.syncBar.append(el("span"));
   ui.syncLabel.hidden = ui.syncBar.hidden = true;
   // Tải lại: this tool's server starts again on the files as they are now and the page loads afresh.
-  ui.btnReload = at(button("Tải lại"), null, 16, 90, 32, { right: 240, left: false });
+  ui.btnReload = at(button("Tải lại"), null, 4, 90, 32, { right: 240, left: false });
   // Sessions (several windows from one source, core/setup/session.mjs): the badge tells which window this is (number, session, Chrome profile)
   // and which Chrome tab group the next run will open, so a window can be matched to its tab group.
-  ui.sessionBadge = at(label("", ""), 170, 21, null, 22, { right: 450 });
-  ui.sessionBadge.style.fontWeight = "600"; ui.sessionBadge.style.whiteSpace = "nowrap"; ui.sessionBadge.style.overflow = "hidden"; ui.sessionBadge.style.textOverflow = "ellipsis";
-  ui.groupLabel = at(label("", "muted"), 20, 44, null, 18, { right: 450 });
-  ui.groupLabel.style.fontSize = "11.5px"; ui.groupLabel.style.whiteSpace = "nowrap"; ui.groupLabel.style.overflow = "hidden"; ui.groupLabel.style.textOverflow = "ellipsis";
-  ui.btnSessions = at(button("Các phiên"), null, 16, 100, 32, { right: 340, left: false });
-  ui.sessionsPanel = at(el("div", "card"), null, 52, 480, null, { right: 24, left: false });
-  ui.sessionsPanel.style.zIndex = "30"; ui.sessionsPanel.style.display = "none"; ui.sessionsPanel.style.padding = "8px"; ui.sessionsPanel.style.background = "var(--surface)";
+  const line = (e, size, weight) => { Object.assign(e.style, { fontSize: size, lineHeight: size === "13px" ? "15px" : "13px", fontWeight: weight, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }); return e; };
+  ui.sessionBadge = line(at(label("", ""), 20, 37, null, 15, { right: 20 }), "13px", "600");
+  ui.groupLabel = line(at(label("", "muted"), 20, 51, null, 13, { right: 20 }), "11px", "400");
+  ui.btnSessions = at(button("Các phiên"), null, 4, 100, 32, { right: 340, left: false });
+  // "Các phiên" panel: heading, one row per open session, then the form for a new window. Closes on a click outside or Esc.
+  ui.sessionsPanel = at(el("div", "card"), null, 40, 470, null, { right: 24, left: false });
+  Object.assign(ui.sessionsPanel.style, { zIndex: "30", display: "none", padding: "12px", background: "var(--surface)", border: "1px solid var(--line)" });
+  const sHead = el("div", "", { text: "Các phiên đang mở" }); Object.assign(sHead.style, { fontWeight: "600", marginBottom: "6px" });
+  ui.sessionsList = el("div");
+  const sForm = el("div"); Object.assign(sForm.style, { marginTop: "10px", paddingTop: "10px", borderTop: "1px solid var(--line)" });
+  const sLabel = el("div", "", { text: "Tên phiên mới" }); Object.assign(sLabel.style, { marginBottom: "4px" });
+  ui.sessionName = el("input", "text", { placeholder: "vd: grenheim", maxlength: "30" });
+  Object.assign(ui.sessionName.style, { position: "static", display: "block", width: "100%", height: "28px" });
+  const sHint = el("div", "muted", { text: "Chữ thường, số và dấu gạch ngang, tối đa 30 ký tự." }); Object.assign(sHint.style, { fontSize: "11px", margin: "4px 0 8px" });
+  ui.btnSessionOpen = button("Mở"); Object.assign(ui.btnSessionOpen.style, { position: "static", display: "block", height: "28px", minWidth: "90px" });
+  const openNew = async () => {
+    const v = ui.sessionName.value.trim().toLowerCase();
+    if (!/^[a-z0-9][a-z0-9-]{0,29}$/.test(v)) return messageBox("Tên phiên chỉ gồm chữ thường, số và dấu gạch ngang (tối đa 30 ký tự).");
+    const res = await fetch("/api/sessions/open", { method: "POST", body: JSON.stringify({ name: v }) }).then((x) => x.json()).catch((e) => ({ error: e.message }));
+    if (res.error) return messageBox(res.error);
+    ui.sessionName.value = ""; ui.sessionsPanel.style.display = "none";
+  };
+  ui.btnSessionOpen.onclick = openNew;
+  ui.sessionName.addEventListener("keydown", (e) => { if (e.key === "Enter") openNew(); });
+  sForm.append(sLabel, ui.sessionName, sHint, ui.btnSessionOpen);
+  ui.sessionsPanel.append(sHead, ui.sessionsList, sForm);
   ui.btnSessions.onclick = () => { const open = ui.sessionsPanel.style.display !== "none"; ui.sessionsPanel.style.display = open ? "none" : ""; if (!open) renderSessions(); };
+  document.addEventListener("mousedown", (e) => { if (ui.sessionsPanel.style.display !== "none" && !ui.sessionsPanel.contains(e.target) && e.target !== ui.btnSessions) ui.sessionsPanel.style.display = "none"; });
+  document.addEventListener("keydown", (e) => { if (e.key === "Escape") ui.sessionsPanel.style.display = "none"; });
   header.append(ui.btnReload, ui.btnSetup, ui.btnUpdate, ui.syncLabel, ui.syncBar, ui.sessionBadge, ui.groupLabel, ui.btnSessions, ui.sessionsPanel);
 
-  // Link sản phẩm & ảnh (20,78 820x344, Top/Left/Right).
-  const cardList = at(el("div", "card"), 20, 78, null, 344, { right: 264 });
+
+  // Link sản phẩm & ảnh (20,78 820x376, Top/Left/Right).
+  const cardList = at(el("div", "card"), 20, 78, null, 376, { right: 264 });
   cardList.append(at(label("Link sản phẩm & ảnh"), 14, 10, null, 20));
-  const editor = at(el("div", "panel"), 14, 36, null, 296, { right: 14 });
+  const editor = at(el("div", "panel"), 14, 36, null, 328, { right: 14 });
   ui.btnAdd = at(button("+ Thêm sản phẩm", true), 0, 0, 160, 34);
   ui.btnBulk = at(button("Nhập hàng loạt"), 172, 0, 150, 34);
   ui.btnClear = at(button("Xóa tất cả"), 334, 0, 120, 34);
@@ -248,8 +270,8 @@ function buildMain() {
   editor.append(ui.btnAdd, ui.btnBulk, ui.btnClear, ui.btnProjects, ui.flow);
   cardList.append(editor);
 
-  // Thao tác (856,78 224x344, Top/Right).
-  const cardActions = at(el("div", "card"), null, 78, 224, 344, { right: 24, left: false });
+  // Thao tác (856,78 224x376, Top/Right).
+  const cardActions = at(el("div", "card"), null, 78, 224, 376, { right: 24, left: false });
   cardActions.append(at(label("Thao tác"), 14, 10, null, 20));
   // In the order they are used: review the results, open them, then support. Cấu hình is in the header.
   const names = [["btnReview", "Duyệt & xuất file"], ["btnOut", "Mở kết quả"], ["btnLogs", "Báo lỗi"], ["btnClearLog", "Xóa thông báo"]];
@@ -258,16 +280,18 @@ function buildMain() {
   // No text lines: the sign-in state is a dot inside the "Mở Chrome để đăng nhập" button (green = signed in, red = signed out, grey = checking / busy / unknown);
   // the message is its tooltip. Both buttons always stay.
   // Same 37 px step as the buttons above (36 + 4 * 37): the gap between all buttons is equal.
-  ui.flowLoginBox = at(el("div", "abs"), 0, 36 + names.length * 37, 224, 217);
+  ui.flowLoginBox = at(el("div", "abs"), 0, 36 + names.length * 37, 224, 184);
   ui.btnFlowOpen = at(button("Mở Chrome để đăng nhập"), 14, 0, 196, 32);
-  ui.btnFlowCheck = at(button("Kiểm tra lại"), 14, 37, 196, 32);
+  ui.btnFlowCheck = at(button("Kiểm tra lại"), 14, 37, 96, 32);
   // Copy prompt (Claude (Google Flow) only): the fixed prompt of docs/agent-prompt.md, to paste by hand into Claude Code.
-  ui.btnCopyPrompt = at(button("Copy prompt"), 14, 74, 196, 32);
+  ui.btnCopyPrompt = at(button("Copy prompt"), 114, 37, 96, 32);
   ui.btnCopyPrompt.onclick = copyAgentPrompt;
   ui.flowDot = el("span", "", { style: { display: "inline-block", width: "7px", height: "7px", borderRadius: "50%", marginRight: "6px", verticalAlign: "middle", background: "var(--muted)" } });
   ui.btnFlowOpen.prepend(ui.flowDot);
   // Which signed-in Google account Flow uses (the profile may hold several; Flow opens the first, which can be the one out of credits).
-  ui.flowAccount = at(combo(), 14, 111, 196, 32);
+  ui.lblFlowAccount = at(label("Tài khoản Flow", "muted"), 14, 76, 196, 14);
+  ui.lblFlowAccount.style.fontSize = "11px"; ui.lblFlowAccount.style.lineHeight = "14px";
+  ui.flowAccount = at(combo(), 14, 92, 196, 32);
   ui.flowAccount.title = "Để trống = Flow tự chọn. Danh sách là các tài khoản Google đã đăng nhập trong profile Chrome đang chọn (hoặc Chrome riêng); Claude sẽ chọn đúng tài khoản đó, không đăng xuất, không đổi tài khoản khác. Đổi profile thì tài khoản tự về tài khoản chính của profile.";
   ui.flowAccount.setItems([""], ["Tự chọn tài khoản Flow"]);
   // The account list is read from the server: the accounts of the chosen Chrome profile (or of the own Chrome).
@@ -275,32 +299,39 @@ function buildMain() {
     const list = [...new Set([...(saved.flowAccounts || []), ...(saved.flowAccount ? [String(saved.flowAccount).toLowerCase()] : [])])];
     ui.flowAccount.setItems(["", ...list], ["Tự chọn tài khoản Flow", ...list]);
     ui.flowAccount.value = String(saved.flowAccount || "").toLowerCase();
+    ui.flowAccount.title = ui.flowAccount.value || "Tự chọn tài khoản Flow";
     ui.flowAccountSaved = ui.flowAccount.value;
   }).catch(() => {});
   ui.flowAccountSaved = "";
-  ui.flowAccount.onchange = () => { const v = ui.flowAccount.value.trim(); if (v === ui.flowAccountSaved) return; ui.flowAccountSaved = v; fetch("/api/run-settings", { method: "POST", body: JSON.stringify({ flowAccount: v }) }).catch(() => {}); };
+  ui.flowAccount.onchange = () => { const v = ui.flowAccount.value.trim(); ui.flowAccount.title = v || "Tự chọn tài khoản Flow"; if (v === ui.flowAccountSaved) return; ui.flowAccountSaved = v; fetch("/api/run-settings", { method: "POST", body: JSON.stringify({ flowAccount: v }) }).catch(() => {}); };
   // Which browser Claude (Flow) drives: "own" = the tool's own Chrome, or a Chrome profile installed on this machine (everyday Chrome through the Playwright extension).
-  ui.flowBrowser = at(combo(), 14, 148, 196, 32);
+  ui.lblFlowBrowser = at(label("Chrome profile", "muted"), 14, 130, 100, 14);
+  ui.lblFlowBrowser.style.fontSize = "11px"; ui.lblFlowBrowser.style.lineHeight = "14px";
+  ui.flowBrowser = at(combo(), 14, 146, 196, 32);
   ui.flowBrowser.title = "Trình duyệt cho Claude (Flow): Chrome thật của bạn (chọn profile có sẵn trên máy, cần extension Playwright, bấm Connect mỗi lượt) hoặc Chrome riêng của tool.";
   ui.flowBrowser.setItems([""], ["Đang đọc profile…"]);
   // Only an explicit change that really differs from the SAVED value is saved (a mouse wheel on a focused list must never change it);
   // after every load the list shows the saved choice. Profiles without the extension can be given it from the button below.
   ui.flowBrowserSaved = ""; ui.flowBrowserProfiles = [];
   ui.flowBrowser.addEventListener("wheel", (e) => { if (document.activeElement === ui.flowBrowser) e.preventDefault(); }, { passive: false });
-  ui.btnInstallExt = at(button("Cài extension vào profile này"), 14, 185, 196, 32);
-  ui.btnInstallExt.title = "Mở trang Playwright MCP Bridge trên Chrome Web Store trong đúng profile đã chọn. Bạn tự bấm Thêm vào Chrome; tool không cài thay.";
+  ui.btnInstallExt = at(button("Cài extension"), 112, 127, 98, 18);
+  Object.assign(ui.btnInstallExt.style, { fontSize: "11px", padding: "0 4px", lineHeight: "16px", minHeight: "0" });
+  ui.btnInstallExt.title = "Cài extension vào profile này: mở trang Playwright MCP Bridge trên Chrome Web Store trong đúng profile đã chọn. Bạn tự bấm Thêm vào Chrome; tool không cài thay.";
   ui.btnInstallExt.hidden = true;
   const refreshInstallButton = () => { const p = ui.flowBrowserProfiles.find((x) => x.folder === ui.flowBrowser.value); ui.btnInstallExt.hidden = !p || p.playwright_extension; };
   const loadFlowBrowser = () => fetch("/api/flow-browser").then((r) => r.json()).then((j) => {
     ui.flowBrowserProfiles = j.profiles || [];
-    const items = ["own", ...ui.flowBrowserProfiles.map((p) => p.folder)], labels = ["Chrome riêng của tool", ...ui.flowBrowserProfiles.map((p) => (p.email || p.name || p.folder) + " (" + p.folder + ")" + (p.playwright_extension ? "" : " · chưa có extension"))];
+    const items = ["own", ...ui.flowBrowserProfiles.map((p) => p.folder)], labels = ["Chrome riêng của tool", ...ui.flowBrowserProfiles.map((p) => ((p.email || p.name || p.folder).split("@")[0]) + " · " + p.folder + (p.playwright_extension ? "" : " · chưa có extension"))];
     ui.flowBrowser.setItems(items, labels);
+    [...ui.flowBrowser.options].forEach((o, i) => { const p = ui.flowBrowserProfiles[i - 1]; o.title = i === 0 ? "Chrome riêng của tool (profile tách biệt)" : (p.email || p.name || p.folder) + " (" + p.folder + ")" + (p.playwright_extension ? "" : " · chưa có extension Playwright MCP Bridge"); });
     ui.flowBrowserSaved = j.mode === "own" ? "own" : j.profile;
     ui.flowBrowser.value = ui.flowBrowserSaved;
+    ui.flowBrowser.title = ui.flowBrowser.selectedOptions[0]?.title || "";
     refreshInstallButton(); applyFlowBrowserMode();
   }).catch(() => {});
   ui.flowBrowser.onchange = async () => {
     const v = ui.flowBrowser.value;
+    ui.flowBrowser.title = ui.flowBrowser.selectedOptions[0]?.title || "";
     refreshInstallButton();
     if (v === ui.flowBrowserSaved) return;
     const r = await fetch("/api/flow-browser", { method: "POST", body: JSON.stringify(v === "own" ? { mode: "own" } : { mode: "extension", profile: v }) }).then((x) => x.ok).catch(() => false);
@@ -314,11 +345,11 @@ function buildMain() {
   ui.btnFlowOpen.onclick = openFlowLogin;
   ui.btnFlowCheck.onclick = () => checkFlowLogin(true);
   ui.flowLoginBox.style.display = "none";
-  ui.flowLoginBox.append(ui.btnFlowOpen, ui.btnFlowCheck, ui.btnCopyPrompt, ui.flowAccount, ui.flowBrowser, ui.btnInstallExt);
+  ui.flowLoginBox.append(ui.btnFlowOpen, ui.btnFlowCheck, ui.btnCopyPrompt, ui.lblFlowAccount, ui.flowAccount, ui.lblFlowBrowser, ui.flowBrowser, ui.btnInstallExt);
   cardActions.append(ui.flowLoginBox);
 
-  // Run row (20,434 1060x62).
-  const cardRun = at(el("div", "card"), 20, 434, null, 90, { right: 24 });
+  // Run row (20,466 1060x90).
+  const cardRun = at(el("div", "card"), 20, 466, null, 90, { right: 24 });
   ui.btnRun = at(button("Bắt đầu", true), 14, 25, 160, 40);
   ui.btnStop = at(button("Dừng"), 186, 25, 100, 40);
   ui.btnStop.disabled = true;
@@ -363,7 +394,7 @@ function buildMain() {
   cardRun.append(ui.btnRun, ui.btnStop, ui.lblStatus, ui.lblTokens, ui.lblQuota, ui.lblText, ui.cmbText, ui.lblBackend, ui.cmbBackend, ui.lblThr, ui.numThr);
 
   // Tiến trình & thông báo (20,508 1060x282, all anchors).
-  const cardLog = at(el("div", "card"), 20, 536, null, null, { right: 24, bottom: 10 });
+  const cardLog = at(el("div", "card"), 20, 568, null, null, { right: 24, bottom: 10 });
   cardLog.append(at(label("Tiến trình & thông báo"), 14, 10, null, 20));
   ui.bar = at(el("div", "progress"), 14, 36, null, 8, { right: 14 });
   ui.bar.append(el("span"));
@@ -452,29 +483,19 @@ async function refreshSessionBadge() {
   document.title = j.title;
 }
 async function renderSessions() {
-  const p = ui.sessionsPanel; p.replaceChildren();
   const r = await fetch("/api/sessions").then((x) => x.json()).catch(() => ({ sessions: [] }));
-  p.append(at(label("Các phiên đang mở", ""), 0, 0, null, 20)); p.lastChild.style.position = "static"; p.lastChild.style.fontWeight = "600";
+  const rows = [];
   for (const s of r.sessions || []) {
-    const row = button("#" + s.stt + " · " + s.label + " · " + (s.profile_label || "?") + " · " + (s.running ? "đang chạy" : "rảnh") + (s.current ? "  (cửa sổ này)" : ""));
-    Object.assign(row.style, { position: "static", display: "block", width: "100%", textAlign: "left", margin: "4px 0", height: "28px", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" });
-    row.onclick = async () => { if (!s.current) await fetch("/api/sessions/open", { method: "POST", body: JSON.stringify({ name: s.session }) }).catch(() => {}); ui.sessionsPanel.style.display = "none"; };
-    p.append(row);
+    const row = button("#" + s.stt + " · " + s.label + " · " + (s.profile_label || "?") + " · " + (s.running ? "đang chạy" : "rảnh") + (s.current ? " (cửa sổ này)" : ""));
+    Object.assign(row.style, { position: "static", display: "block", width: "100%", textAlign: "left", margin: "0 0 4px", height: "auto", minHeight: "28px", padding: "4px 8px", whiteSpace: "normal", lineHeight: "1.3", fontWeight: s.current ? "600" : "400", cursor: s.current ? "default" : "pointer" });
+    row.title = s.current ? "Cửa sổ này" : "Chuyển sang cửa sổ này";
+    row.onclick = async () => { if (s.current) return; await fetch("/api/sessions/open", { method: "POST", body: JSON.stringify({ name: s.session }) }).catch(() => {}); ui.sessionsPanel.style.display = "none"; };
+    rows.push(row);
   }
-  const line = el("div", "", { style: { display: "flex", gap: "6px", marginTop: "8px" } });
-  const name = el("input", "text", { placeholder: "Tên phiên mới (a-z, 0-9, -)", maxlength: "30" });
-  Object.assign(name.style, { position: "static", flex: "1", height: "28px" });
-  const open = button("Mở cửa sổ mới"); open.style.height = "28px";
-  open.onclick = async () => {
-    const v = name.value.trim().toLowerCase();
-    if (!/^[a-z0-9][a-z0-9-]{0,29}$/.test(v)) return messageBox("Tên phiên chỉ gồm chữ thường, số và dấu gạch ngang (tối đa 30 ký tự).");
-    const res = await fetch("/api/sessions/open", { method: "POST", body: JSON.stringify({ name: v }) }).then((x) => x.json()).catch((e) => ({ error: e.message }));
-    if (res.error) return messageBox(res.error);
-    ui.sessionsPanel.style.display = "none";
-  };
-  line.append(name, open); p.append(line);
+  ui.sessionsList.replaceChildren(...rows);
 }
 setInterval(() => { refreshSessionBadge(); if (ui.sessionsPanel && ui.sessionsPanel.style.display !== "none") renderSessions(); }, 5000);
+
 async function loadState() {
   await refreshSessionBadge();
   Object.assign(state, await api("state"));
@@ -1523,6 +1544,7 @@ function applyFlowBrowserMode() {
   const ext = flowExtensionMode();
   ui.flowDot.style.display = ext ? "none" : "inline-block";
   ui.btnFlowCheck.style.display = ext ? "none" : "";
+  ui.btnCopyPrompt.style.left = ext ? "14px" : "114px"; ui.btnCopyPrompt.style.width = ext ? "196px" : "96px";
   if (ext) {
     flowLogin.state = "extension";
     ui.btnFlowOpen.title = "Mở Flow trong profile Chrome đã chọn (" + (ui.flowBrowser.selectedOptions[0]?.text || "") + "), đúng tài khoản Flow đã chọn: thêm một tab vào Chrome đang mở, bạn đăng nhập hoặc kiểm tra ở đó. Tool không kiểm tra đăng nhập ở chế độ này.";
