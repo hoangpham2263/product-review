@@ -210,51 +210,61 @@ function buildMain() {
   const c = ui.client;
   // Header (Dock Top, 64).
   const header = at(el("div", "panel"), 0, 0, null, 64, { right: 0 });
-  header.append(at(label("Product Review", ""), 20, 8, null, 26));
+  header.append(at(label("Product Review", ""), 20, 19, null, 26));
   header.firstChild.style.fontSize = "17.33px";
-  ui.btnUpdate = at(button("Cập nhật"), null, 4, 100, 32, { right: 24, left: false });
+  ui.btnUpdate = at(button("Cập nhật"), null, 16, 100, 32, { right: 24, left: false });
   // Cấu hình (core/setup), left of Cập nhật.
-  ui.btnSetup = at(button("Cấu hình"), null, 4, 100, 32, { right: 132, left: false });
+  ui.btnSetup = at(button("Cấu hình"), null, 16, 100, 32, { right: 132, left: false });
   // Tải về máy runs in the background (src/sync-source.ps1); its progress shows here, in the header, so work goes on.
-  ui.syncLabel = at(label("", "muted"), 260, 8, null, 22, { right: 442 });
+  ui.syncLabel = at(label("", "muted"), 260, 14, null, 22, { right: 446 });
   ui.syncLabel.style.textAlign = "right";
-  ui.syncBar = at(el("div", "progress"), null, 33, 200, 4, { right: 442, left: false });
+  ui.syncBar = at(el("div", "progress"), null, 40, 200, 4, { right: 446, left: false });
   ui.syncBar.append(el("span"));
   ui.syncLabel.hidden = ui.syncBar.hidden = true;
   // Tải lại: this tool's server starts again on the files as they are now and the page loads afresh.
-  ui.btnReload = at(button("Tải lại"), null, 4, 90, 32, { right: 240, left: false });
+  ui.btnReload = at(button("Tải lại"), null, 16, 90, 32, { right: 240, left: false });
   // Sessions (several windows from one source, core/setup/session.mjs): the badge tells which window this is (number, session, Chrome profile)
   // and which Chrome tab group the next run will open, so a window can be matched to its tab group.
-  const line = (e, size, weight) => { Object.assign(e.style, { fontSize: size, lineHeight: size === "13px" ? "15px" : "13px", fontWeight: weight, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }); return e; };
-  ui.sessionBadge = line(at(label("", ""), 20, 37, null, 15, { right: 20 }), "13px", "600");
-  ui.groupLabel = line(at(label("", "muted"), 20, 51, null, 13, { right: 20 }), "11px", "400");
-  ui.btnSessions = at(button("Các phiên"), null, 4, 100, 32, { right: 340, left: false });
-  // "Các phiên" panel: heading, one row per open session, then the form for a new window. Closes on a click outside or Esc.
-  ui.sessionsPanel = at(el("div", "card"), null, 40, 470, null, { right: 24, left: false });
+  ui.btnSessions = at(button("Các phiên"), null, 16, 100, 32, { right: 338, left: false });
+  // "Các phiên" panel: the windows open now, then the projects (ONE click opens the project's own window, or focuses it when it is already open).
+  // Closes on a click outside or Esc. The window title bar (Product Review · #stt · phiên · profile) says which window this is.
+  ui.sessionsPanel = at(el("div", "card"), null, 52, 470, null, { right: 24, left: false });
   Object.assign(ui.sessionsPanel.style, { zIndex: "30", display: "none", padding: "12px", background: "var(--surface)", border: "1px solid var(--line)" });
-  const sHead = el("div", "", { text: "Các phiên đang mở" }); Object.assign(sHead.style, { fontWeight: "600", marginBottom: "6px" });
+  const heading = (text) => { const h = el("div", "", { text }); Object.assign(h.style, { fontWeight: "600", marginBottom: "6px" }); return h; };
   ui.sessionsList = el("div");
-  const sForm = el("div"); Object.assign(sForm.style, { marginTop: "10px", paddingTop: "10px", borderTop: "1px solid var(--line)" });
-  const sLabel = el("div", "", { text: "Tên phiên mới" }); Object.assign(sLabel.style, { marginBottom: "4px" });
-  ui.sessionName = el("input", "text", { placeholder: "vd: grenheim", maxlength: "30" });
-  Object.assign(ui.sessionName.style, { position: "static", display: "block", width: "100%", height: "28px" });
-  const sHint = el("div", "muted", { text: "Chữ thường, số và dấu gạch ngang, tối đa 30 ký tự." }); Object.assign(sHint.style, { fontSize: "11px", margin: "4px 0 8px" });
+  const pHead = el("div"); Object.assign(pHead.style, { display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: "10px", paddingTop: "10px", borderTop: "1px solid var(--line)" });
+  const pTitle = heading("Mở cửa sổ cho dự án"); pTitle.style.marginBottom = "0";
+  ui.showAllProjects = checkbox("Hiện tất cả");
+  Object.assign(ui.showAllProjects.style, { position: "static", fontSize: "12px", whiteSpace: "nowrap", flex: "none", width: "96px", overflow: "visible", margin: "0" });
+  try { ui.showAllProjects.input.checked = localStorage.getItem("pr.sessions.showAll") === "1"; } catch {}
+  ui.showAllProjects.input.onchange = () => { try { localStorage.setItem("pr.sessions.showAll", ui.showAllProjects.input.checked ? "1" : "0"); } catch {} renderProjectChoices(); };
+  pHead.append(pTitle, ui.showAllProjects);
+  ui.projectChoices = el("div"); Object.assign(ui.projectChoices.style, { marginTop: "6px", maxHeight: "230px", overflowY: "auto" });
+  // "Khác...": an arbitrary session name, collapsed.
+  const other = el("div"); other.style.marginTop = "6px";
+  const otherToggle = button("Khác…"); Object.assign(otherToggle.style, { position: "static", height: "24px", fontSize: "12px" });
+  const otherBox = el("div"); Object.assign(otherBox.style, { display: "none", marginTop: "6px" });
+  ui.sessionName = el("input", "text", { placeholder: "vd: thu-nghiem (chữ thường, số, gạch ngang)", maxlength: "60" });
+  Object.assign(ui.sessionName.style, { position: "static", display: "block", width: "100%", height: "28px", marginBottom: "6px" });
   ui.btnSessionOpen = button("Mở"); Object.assign(ui.btnSessionOpen.style, { position: "static", display: "block", height: "28px", minWidth: "90px" });
-  const openNew = async () => {
+  otherBox.append(ui.sessionName, ui.btnSessionOpen);
+  otherToggle.onclick = () => { otherBox.style.display = otherBox.style.display === "none" ? "" : "none"; };
+  other.append(otherToggle, otherBox);
+  const openByName = async () => {
     const v = ui.sessionName.value.trim().toLowerCase();
-    if (!/^[a-z0-9][a-z0-9-]{0,29}$/.test(v)) return messageBox("Tên phiên chỉ gồm chữ thường, số và dấu gạch ngang (tối đa 30 ký tự).");
+    if (!/^[a-z0-9][a-z0-9-]{0,59}$/.test(v)) return messageBox("Tên phiên chỉ gồm chữ thường, số và dấu gạch ngang (tối đa 60 ký tự).");
     const res = await fetch("/api/sessions/open", { method: "POST", body: JSON.stringify({ name: v }) }).then((x) => x.json()).catch((e) => ({ error: e.message }));
     if (res.error) return messageBox(res.error);
     ui.sessionName.value = ""; ui.sessionsPanel.style.display = "none";
   };
-  ui.btnSessionOpen.onclick = openNew;
-  ui.sessionName.addEventListener("keydown", (e) => { if (e.key === "Enter") openNew(); });
-  sForm.append(sLabel, ui.sessionName, sHint, ui.btnSessionOpen);
-  ui.sessionsPanel.append(sHead, ui.sessionsList, sForm);
-  ui.btnSessions.onclick = () => { const open = ui.sessionsPanel.style.display !== "none"; ui.sessionsPanel.style.display = open ? "none" : ""; if (!open) renderSessions(); };
+  ui.btnSessionOpen.onclick = openByName;
+  ui.sessionName.addEventListener("keydown", (e) => { if (e.key === "Enter") openByName(); });
+  ui.sessionsNote = el("div", "muted"); Object.assign(ui.sessionsNote.style, { fontSize: "11px", marginTop: "10px", paddingTop: "8px", borderTop: "1px solid var(--line)" });
+  ui.sessionsPanel.append(heading("Các phiên đang mở"), ui.sessionsList, pHead, ui.projectChoices, other, ui.sessionsNote);
+  ui.btnSessions.onclick = () => { const open = ui.sessionsPanel.style.display !== "none"; ui.sessionsPanel.style.display = open ? "none" : ""; if (!open) { renderSessions(); refreshSessionBadge(); } };
   document.addEventListener("mousedown", (e) => { if (ui.sessionsPanel.style.display !== "none" && !ui.sessionsPanel.contains(e.target) && e.target !== ui.btnSessions) ui.sessionsPanel.style.display = "none"; });
   document.addEventListener("keydown", (e) => { if (e.key === "Escape") ui.sessionsPanel.style.display = "none"; });
-  header.append(ui.btnReload, ui.btnSetup, ui.btnUpdate, ui.syncLabel, ui.syncBar, ui.sessionBadge, ui.groupLabel, ui.btnSessions, ui.sessionsPanel);
+  header.append(ui.btnReload, ui.btnSetup, ui.btnUpdate, ui.syncLabel, ui.syncBar, ui.btnSessions, ui.sessionsPanel);
 
 
   // Link sản phẩm & ảnh (20,78 820x376, Top/Left/Right).
@@ -477,22 +487,50 @@ async function refreshSessionBadge() {
   const j = await fetch("/api/session").then((r) => r.json()).catch(() => null);
   if (!j || j.error) return;
   sessionState = j;
-  const text = "#" + j.stt + " · " + j.label + " · " + (j.profile_label || "");
-  if (ui.sessionBadge) { ui.sessionBadge.textContent = text; ui.sessionBadge.title = j.title; }
-  if (ui.groupLabel) { const g = j.next_group || {}; ui.groupLabel.textContent = (j.profile_label === "Chrome riêng" ? "Chrome riêng: không có nhóm tab" : "Nhóm tab Chrome của lượt chạy tới: " + (g.name || "")); ui.groupLabel.title = ui.groupLabel.textContent; }
-  document.title = j.title;
+  document.title = j.title; // the window title bar: Product Review · #stt · phiên · profile (shown once, nowhere else)
+  if (ui.sessionsNote) { const g = j.next_group || {}; ui.sessionsNote.textContent = j.profile_label === "Chrome riêng" ? "Chrome riêng: lượt chạy không có nhóm tab." : "Nhóm tab Chrome của lượt chạy tới: " + (g.name || ""); }
+}
+let projectChoicesData = [];
+async function loadProjectChoices() {
+  const r = await fetch("/api/sessions/projects").then((x) => x.json()).catch(() => ({ projects: [] }));
+  projectChoicesData = r.projects || [];
+  renderProjectChoices();
+}
+// The default view: projects no live window uses AND that still have unused products (or were never scanned). "Hiện tất cả" adds the open and the finished ones.
+function renderProjectChoices() {
+  const all = ui.showAllProjects.input.checked;
+  const shown = projectChoicesData.filter((p) => all || (!p.busy && !p.window_open && (!p.scanned || p.unused > 0)));
+  const rows = shown.map((p) => {
+    const stateText = p.window_open ? (p.current ? "cửa sổ này" : "đang mở #" + p.window_stt) : p.busy ? "đang dùng bởi phiên " + p.busy : "rảnh";
+    const count = p.scanned ? p.unused + "/" + p.products + " chưa dùng" : "chưa quét";
+    const row = button((p.name || p.id) + " · " + count + " · " + stateText);
+    const blocked = !!p.busy && !p.window_open;
+    Object.assign(row.style, { position: "static", display: "block", width: "100%", textAlign: "left", margin: "0 0 4px", height: "auto", minHeight: "28px", padding: "4px 8px", whiteSpace: "normal", lineHeight: "1.3", fontWeight: p.current ? "600" : "400", opacity: blocked ? "0.55" : "1", cursor: blocked || p.current ? "default" : "pointer" });
+    row.title = (p.site || p.id) + (blocked ? " — đang được phiên khác dùng" : p.window_open ? " — bấm để chuyển sang cửa sổ này" : " — bấm để mở cửa sổ riêng cho dự án này");
+    row.disabled = blocked;
+    row.onclick = async () => {
+      if (p.current) return;
+      const res = await fetch("/api/sessions/open", { method: "POST", body: JSON.stringify({ project: p.id }) }).then((x) => x.json()).catch((e) => ({ error: e.message }));
+      if (res.error) return messageBox(res.error);
+      ui.sessionsPanel.style.display = "none";
+    };
+    return row;
+  });
+  if (!rows.length) { const none = el("div", "muted", { text: all ? "Chưa có dự án." : "Không có dự án chưa dùng. Bật Hiện tất cả để xem cả dự án đang mở hoặc đã dùng hết." }); none.style.fontSize = "12px"; rows.push(none); }
+  ui.projectChoices.replaceChildren(...rows);
 }
 async function renderSessions() {
   const r = await fetch("/api/sessions").then((x) => x.json()).catch(() => ({ sessions: [] }));
   const rows = [];
   for (const s of r.sessions || []) {
-    const row = button("#" + s.stt + " · " + s.label + " · " + (s.profile_label || "?") + " · " + (s.running ? "đang chạy" : "rảnh") + (s.current ? " (cửa sổ này)" : ""));
+    const row = button("#" + s.stt + " · " + s.label + " · " + (s.profile_label || "?") + (s.project && s.project !== s.session ? " · dự án " + s.project : "") + " · " + (s.running ? "đang chạy" : "rảnh") + (s.current ? " (cửa sổ này)" : ""));
     Object.assign(row.style, { position: "static", display: "block", width: "100%", textAlign: "left", margin: "0 0 4px", height: "auto", minHeight: "28px", padding: "4px 8px", whiteSpace: "normal", lineHeight: "1.3", fontWeight: s.current ? "600" : "400", cursor: s.current ? "default" : "pointer" });
     row.title = s.current ? "Cửa sổ này" : "Chuyển sang cửa sổ này";
     row.onclick = async () => { if (s.current) return; await fetch("/api/sessions/open", { method: "POST", body: JSON.stringify({ name: s.session }) }).catch(() => {}); ui.sessionsPanel.style.display = "none"; };
     rows.push(row);
   }
   ui.sessionsList.replaceChildren(...rows);
+  loadProjectChoices();
 }
 setInterval(() => { refreshSessionBadge(); if (ui.sessionsPanel && ui.sessionsPanel.style.display !== "none") renderSessions(); }, 5000);
 
@@ -752,7 +790,7 @@ function showScanDialog() {
     if (!r.ok) return say(body.error || "Chưa bắt đầu quét được.", "var(--error)");
     setBusy(true); say("Đang bắt đầu…", "var(--accent)"); watch();
   };
-  stop.onclick = async () => { stop.disabled = true; say("Đang dừng…", "var(--accent)"); await fetch("/api/scan/stop", { method: "POST" }).catch(() => {}); };
+  stop.onclick = async () => { stop.disabled = true; say("Đang dừng…", "var(--accent)"); const calls = []; if (runningLight) calls.push("/api/project/queue/stop"); if (runningMain) calls.push(runningMain === "reviews" ? "/api/project/reviews/stop" : "/api/scan/stop"); await Promise.all(calls.map((u) => fetch(u, { method: "POST" }).catch(() => {}))); };
   openDir.onclick = () => scan?.dir && api("openPath", { path: scan.dir });
   toImport.onclick = () => { if (!scan?.csv) return; view.close(); showBulkDialog({ csv: scan.csv }); };
   // Closing the popup leaves a running scan running; opening it again picks it up.
@@ -797,27 +835,44 @@ function showProjectsDialog(pick = "") {
   sceneCount.title = "Số ảnh ngữ cảnh khác nhau cho mỗi sản phẩm, 1-4. Thêm vào hàng chờ tự gắn ảnh gốc của sản phẩm và Claude chọn ảnh ngữ cảnh hợp.";
   Object.assign(status.style, { whiteSpace: "pre-line", lineHeight: "20px" });
   // Six buttons share the 868 px row evenly (13 px gaps).
-  const scanBtn = at(button("Quét cập nhật"), 16, 478, 140, 32);
-  const reviewsBtn = at(button("Cập nhật số review"), 169, 478, 170, 32);
-  const queueBtn = at(button("Thêm vào hàng chờ"), 352, 478, 170, 32);
-  const openDir = at(button("Mở thư mục"), 535, 478, 130, 32);
-  const stop = at(button("Dừng"), 678, 478, 90, 32);
-  const close = at(button("Đóng"), 781, 478, 100, 32);
-  view.body.append(listTitle, projectLine, listBox, addWeb, catLabel, catBox, unusedOnly, countLabel, tableBox, status, queueHint, queueCount, sceneHint, sceneCount, scanBtn, reviewsBtn, queueBtn, openDir, stop, close);
+  const scanBtn = at(button("Quét cập nhật"), 16, 478, 120, 32);
+  const reviewsBtn = at(button("Cập nhật số review"), 145, 478, 150, 32);
+  const queueBtn = at(button("Thêm vào hàng chờ"), 304, 478, 160, 32);
+  const prepBtn = at(button("Chuẩn bị trước"), 473, 478, 130, 32);
+  prepBtn.title = "Claude chọn sẵn ảnh bối cảnh cho các sản phẩm chưa chuẩn bị của dự án (theo danh mục và ô Chỉ chưa dùng), lưu vào kho đã chuẩn bị; không đụng hàng chờ, chạy được khi Bắt đầu đang chạy. Lần sau Thêm vào hàng chờ lấy ngay từ kho này.";
+  const openDir = at(button("Mở thư mục"), 612, 478, 100, 32);
+  const stop = at(button("Dừng"), 721, 478, 70, 32);
+  const close = at(button("Đóng"), 800, 478, 80, 32);
+  view.body.append(listTitle, projectLine, listBox, addWeb, catLabel, catBox, unusedOnly, countLabel, tableBox, status, queueHint, queueCount, sceneHint, sceneCount, scanBtn, reviewsBtn, queueBtn, prepBtn, openDir, stop, close);
 
-  let projects = [], current = "", data = null, timer = null, running = "", startedAt = 0, ticks = 0, otherActive = false;
+  // Two kinds of run can go at once: the main runner (scan / review count / the Flow run of Bắt đầu) and the LIGHT runner (queue, prep: no browser).
+  let projects = [], current = "", data = null, timer = null, runningMain = "", runningLight = "", startedAt = 0, lightStarted = 0, ticks = 0, otherActive = false, otherLight = false, prepText = "", fastNote = "";
+  // A window opened for a project (session named after it) shows only that project.
+  const lockedProject = sessionState.project && sessionState.project === sessionState.session ? sessionState.project : "";
   const say = (text, color = "") => { status.style.color = color; status.textContent = text; };
   const clock = () => { const s = Math.max(0, Math.floor((Date.now() - startedAt) / 1000)); return String(Math.floor(s / 60)).padStart(2, "0") + ":" + String(s % 60).padStart(2, "0"); };
-  const KIND = { scan: "Đang quét cập nhật", reviews: "Đang đọc số review trên các trang sản phẩm", queue: "Đang thêm sản phẩm vào hàng chờ (chọn 2 ảnh bối cảnh cho từng sản phẩm)" };
+  const KIND = { scan: "Đang quét cập nhật", reviews: "Đang đọc số review trên các trang sản phẩm", queue: "Đang thêm sản phẩm vào hàng chờ (chọn ảnh bối cảnh cho từng sản phẩm)", prep: "Đang chuẩn bị trước ảnh bối cảnh cho các sản phẩm" };
   const refreshButtons = () => {
-    const busy = !!running, has = !!data;
-    scanBtn.disabled = busy || otherActive || !has;
-    reviewsBtn.disabled = busy || otherActive || !has || !data.rows.length;
-    queueBtn.disabled = busy || otherActive || !has || !data.rows.length;
-    queueCount.enabled = !busy; sceneCount.enabled = !busy;
+    const has = !!data, mainBusy = !!runningMain, lightBusy = !!runningLight;
+    scanBtn.disabled = mainBusy || otherActive || !has;
+    reviewsBtn.disabled = mainBusy || otherActive || !has || !data.rows.length;
+    // queue / prep need no browser: only another LIGHT run blocks them, never the main Bắt đầu run
+    queueBtn.disabled = lightBusy || otherLight || !has || !data.rows.length;
+    prepBtn.disabled = lightBusy || otherLight || !has || !data.rows.length;
+    queueCount.enabled = !lightBusy; sceneCount.enabled = !lightBusy;
     openDir.disabled = !has;
-    stop.disabled = !busy;
+    stop.disabled = !(mainBusy || lightBusy);
   };
+  const idleText = () => (data ? `${data.project.products} sản phẩm · đã dùng ${data.project.used} · đã kiểm tra review ${data.project.with_reviews}.` + (prepText ? "\n" + prepText : "") : "");
+  // "Đã chuẩn bị: X sẵn sàng / Y sản phẩm" for the selected project and the category / only-unused filter.
+  const refreshPrepared = async () => {
+    if (!current) { prepText = ""; return; }
+    const q = new URLSearchParams({ project: current, category: catBox.value, unused_only: unusedOnly.input.checked ? "1" : "0" });
+    const r = await fetch("/api/project/prepared?" + q).then((x) => x.json()).catch(() => null);
+    prepText = r && !r.error ? `Đã chuẩn bị: ${r.ready} sẵn sàng / ${r.products} sản phẩm${r.skipped ? ` (bỏ qua ${r.skipped}, không hợp ảnh)` : ""}` : "";
+    if (!runningMain && !runningLight && !otherActive && !otherLight && data && prepShowIdle) say(idleText(), "");
+  };
+  let prepShowIdle = true;
 
   const renderList = () => {
     listBox.replaceChildren(...(projects.length ? projects.map((p) => {
@@ -830,7 +885,7 @@ function showProjectsDialog(pick = "") {
         el("div", "label muted", { text: `Review: ${fmtStamp(p.last_reviews_check)}`, style: oneLine({ position: "static", fontSize: "12px" }) }),
       );
       item.title = p.site;
-      item.onclick = () => choose(p.id);
+      item.onclick = () => selectProject(p.id);
       return item;
     }) : [el("div", "label muted", { text: "Chưa có dự án. Bấm Thêm web mới để quét web đầu tiên.", style: { position: "static", padding: "10px", whiteSpace: "normal" } })]));
   };
@@ -875,71 +930,100 @@ function showProjectsDialog(pick = "") {
     } catch (e) { data = null; say(e.message, "var(--error)"); }
     projectLine.textContent = data ? `${data.project.name} · ${data.project.site}` : "";
     fillCategories(); renderList(); renderTable(); refreshButtons();
-    if (!quiet && data && !running) say(`${data.project.products} sản phẩm · đã dùng ${data.project.used} · đã kiểm tra review ${data.project.with_reviews}.`, "");
+    if (data) { if (!quiet && !runningMain && !runningLight) say(idleText(), ""); refreshPrepared(); }
+  };
+  // The project of a window is the one selected here: another live window cannot take it (409 with the Vietnamese message).
+  const selectProject = async (id) => {
+    if (id === current) return;
+    const r = await fetch("/api/session/project", { method: "POST", body: JSON.stringify({ project: id }) }).then(async (x) => ({ ok: x.ok, ...(await x.json().catch(() => ({}))) })).catch(() => ({ ok: true }));
+    if (!r.ok) return say(r.error || "Dự án đang được phiên khác dùng.", "var(--error)");
+    sessionState.project = id;
+    await choose(id);
   };
   async function loadProjects(select = "", quiet = false) {
-    try { projects = list(await api("projects")); } catch (e) { projects = []; say(e.message, "var(--error)"); }
+    try { projects = list(await api("projects")).filter((p) => !lockedProject || p.id === lockedProject); } catch (e) { projects = []; say(e.message, "var(--error)"); }
     const want = projects.some((p) => p.id === select) ? select : (projects.some((p) => p.id === current) ? current : projects[0]?.id || "");
     if (quiet && want === current) { renderList(); return; }
     await choose(want, quiet);
   }
 
-  // One poll for both kinds of run (and a Flow run that blocks them): /api/agent/status says which one is active.
+  // One poll for the two runners: /api/agent/status (scan, review count, the Flow run) and /api/light/status (queue, prep).
   const poll = async () => {
-    const st = await fetch("/api/agent/status").then((x) => x.json()).catch(() => null);
-    if (!st) return;
-    if (st.active && (st.mode === "scan" || st.mode === "reviews" || st.mode === "queue")) {
-      if (!running) { running = st.mode; startedAt = Date.now() - (st.elapsed_s || 0) * 1000; if (st.project && st.mode !== "scan" && st.project !== current) choose(st.project, true); }
-      otherActive = false; refreshButtons();
-      say(`${KIND[st.mode]}… ${clock()}\n${st.last_text || ""}`.trim(), "var(--accent)");
-      if (++ticks % 4 === 0) { choose(current, true); }
-      return;
+    const [st, lt] = await Promise.all([fetch("/api/agent/status").then((x) => x.json()).catch(() => null), fetch("/api/light/status").then((x) => x.json()).catch(() => null)]);
+    if (!st || !lt) return;
+    const lightNow = lt.active && (lt.mode === "queue" || lt.mode === "prep");
+    const mainNow = st.active && (st.mode === "scan" || st.mode === "reviews");
+    otherLight = !!lightNow && !runningLight; otherActive = !!st.active && !mainNow && !runningMain;
+    // --- the light runner started here (or still running from an earlier popup)
+    if (lightNow) {
+      if (!runningLight) { runningLight = lt.mode; otherLight = false; lightStarted = Date.now() - (lt.elapsed_s || 0) * 1000; if (lt.project && lt.project !== current && !lockedProject) choose(lt.project, true); }
+    } else if (runningLight) {
+      const kind = runningLight; runningLight = "";
+      let ok = lt.status === "done";
+      let text = ok ? "Xong." : `Lượt chạy dừng${lt.error ? ": " + lt.error : ""}.`;
+      if (kind === "queue") {
+        // The queue changed on disk (urls.txt + references.json): reload the main window's list so the person can check every product there.
+        const before = countUrls();
+        await loadState().catch(() => {});
+        const added = countUrls() - before;
+        const worked = ok && added > 0;
+        if (ok && !worked) ok = false;
+        text = (worked ? `Claude đã chọn thêm ${added} sản phẩm. Xem và kiểm tra danh sách ở cửa sổ chính (mỗi sản phẩm có ảnh gốc và ảnh bối cảnh, bấm Xem / sửa để đổi).\n` : (lt.error ? `Lượt thêm vào hàng chờ dừng: ${lt.error}. ` : "Claude chưa thêm được sản phẩm nào. ") + "Phần đã thêm (nếu có) vẫn nằm trong hàng chờ.\n") + (lt.last_text || "");
+        if (fastNote) text = fastNote + "\n" + text;
+      } else { text = (ok ? "Chuẩn bị xong." : `Chuẩn bị dừng${lt.error ? ": " + lt.error : ""}. Phần đã chuẩn bị vẫn nằm trong kho.`); }
+      fastNote = "";
+      await refreshPrepared();
+      say((kind === "prep" ? text + (prepText ? "\n" + prepText : "") : text), ok ? "var(--ok)" : "var(--error)");
+      refreshButtons();
     }
-    otherActive = !!st.active;
-    if (running) {
-      const kind = running; running = ""; clearInterval(timer); timer = null;
-      let ok = st.status === "done";
+    // --- the main runner (scan / review count); a Flow run only blocks scan and review count
+    if (mainNow) {
+      if (!runningMain) { runningMain = st.mode; startedAt = Date.now() - (st.elapsed_s || 0) * 1000; otherActive = false; if (st.project && st.mode !== "scan" && st.project !== current && !lockedProject) choose(st.project, true); }
+    } else if (runningMain) {
+      const kind = runningMain; runningMain = "";
+      const ok = st.status === "done";
       let text = ok ? "Xong." : `Lượt chạy dừng${st.error ? ": " + st.error : ""}.`;
       if (kind === "scan") {
         const ss = await fetch("/api/scan/status").then((x) => x.json()).catch(() => null);
         const sc = ss?.scan;
         if (sc) text = `${ok ? "Quét xong" : "Quét dừng"}: ${sc.rows} sản phẩm trong dự án (mới ${sc.added ?? 0}, đã có ${sc.already_known ?? 0}).${ok ? "" : st.error ? " " + st.error : ""}`;
-      } else if (kind === "queue") {
-        // The queue changed on disk (urls.txt + references.json): reload the main window's list so the person can check every product there.
-        const before = countUrls();
-        await loadState().catch(() => {});
-        const added = countUrls() - before;
-        // "Xong" only counts when links really reached the queue: a run can end without an error and still have added nothing.
-        const worked = ok && added > 0;
-        if (ok && !worked) ok = false;
-        text = (worked ? `Đã thêm ${added} sản phẩm vào hàng chờ. Xem và kiểm tra danh sách ở cửa sổ chính (mỗi sản phẩm có ảnh gốc và ảnh bối cảnh, bấm Xem / sửa để đổi).\n` : (st.error ? `Lượt thêm vào hàng chờ dừng: ${st.error}. ` : "Không có sản phẩm nào được thêm vào hàng chờ. ") + "Phần đã thêm (nếu có) vẫn nằm trong hàng chờ.\n") + (st.last_text || "");
       } else if (ok) text = "Đã cập nhật số review.";
       await loadProjects(current, true); await choose(current, true);
-      say(text, ok ? "var(--ok)" : "var(--error)");
-      return;
+      if (!runningLight) say(text, ok ? "var(--ok)" : "var(--error)");
     }
-    if (st.active) say("Đang có một lượt Claude khác chạy (tạo ảnh Flow). Chờ xong rồi quét hoặc cập nhật review.", "var(--warn)");
+    // --- what the status area shows while something runs
+    if (runningLight) {
+      const secs = Math.max(0, Math.floor((Date.now() - lightStarted) / 1000)), clockText = String(Math.floor(secs / 60)).padStart(2, "0") + ":" + String(secs % 60).padStart(2, "0");
+      say(`${KIND[runningLight]}… ${clockText}\n${(runningLight === "prep" ? prepText : lt.last_text) || ""}`.trim(), "var(--accent)");
+      if (++ticks % 3 === 0) { if (runningLight === "prep") refreshPrepared(); else choose(current, true); }
+    } else if (runningMain) {
+      say(`${KIND[runningMain]}… ${clock()}\n${st.last_text || ""}`.trim(), "var(--accent)");
+      if (++ticks % 4 === 0) choose(current, true);
+    } else if (st.active && !mainNow) say("Đang có một lượt Claude khác chạy (tạo ảnh Flow). Quét và cập nhật review chờ xong; Chuẩn bị trước và Thêm vào hàng chờ vẫn dùng được.", "var(--warn)");
     refreshButtons();
-    if (!st.active && timer) { clearInterval(timer); timer = null; }
+    if (!st.active && !lt.active && !runningMain && !runningLight && timer) { clearInterval(timer); timer = null; }
   };
   const watch = () => { if (!timer) timer = setInterval(poll, 2000); poll(); };
   const begin = async (url, body, kind, failText) => {
-    if (run.active) return say("Đang có một lượt chạy trong cửa sổ chính. Chờ xong rồi chạy.", "var(--warn)");
+    const isLight = kind === "queue" || kind === "prep";
+    if (!isLight && run.active) return say("Đang có một lượt chạy trong cửa sổ chính. Chờ xong rồi chạy.", "var(--warn)");
     const r = await fetch(url, { method: "POST", body: JSON.stringify(body) });
     const answer = await r.json().catch(() => ({}));
     if (!r.ok) return say(answer.error || failText, "var(--error)");
-    running = kind; startedAt = Date.now(); ticks = 0; refreshButtons(); say("Đang bắt đầu…", "var(--accent)"); watch();
+    ticks = 0;
+    if (isLight) { runningLight = kind; lightStarted = Date.now(); } else { runningMain = kind; startedAt = Date.now(); }
+    refreshButtons(); say("Đang bắt đầu…", "var(--accent)"); watch();
   };
 
   scanBtn.onclick = () => { if (data) begin("/api/scan/run", { site: data.project.site, max: data.project.max_per_collection || 20 }, "scan", "Chưa bắt đầu quét được."); };
   reviewsBtn.onclick = () => { if (data) begin("/api/project/reviews/run", { project: current }, "reviews", "Chưa bắt đầu cập nhật số review được."); };
-  // Prepares the queue only (docs/queue-prompt.md): the products of the selected project, filtered like the table, go into the run queue with their
-  // project photo and 2 scene photos Claude picks from the library. It never starts image creation and writes no review text.
+  // Thêm vào hàng chờ: first the READY products of the prepared store go into the queue instantly (no agent); Claude only picks scenes for the shortfall.
+  // It never starts image creation and writes no review text.
   queueBtn.onclick = async () => {
     if (!data) return;
     if (sceneCount.value === 0) {
-      // No scenes wanted: add the first N products of the table (same filters) straight into the queue, no Claude run.
-      if (run.active) return say("Đang có một lượt chạy trong cửa sổ chính. Chờ xong rồi thêm.", "var(--warn)");
+      // No scenes wanted: add the first N products of the table (same filters) straight into the queue, no Claude run. The queue writes are mutex-guarded,
+      // so this is safe while Bắt đầu runs.
       queueBtn.disabled = true; say("Đang thêm vào hàng chờ…", "var(--accent)");
       const r = await fetch("/api/project/queue/direct", { method: "POST", body: JSON.stringify({ project: current, category: catBox.value, unused_only: unusedOnly.input.checked, count: queueCount.value }) });
       const answer = await r.json().catch(() => ({}));
@@ -948,16 +1032,29 @@ function showProjectsDialog(pick = "") {
       await loadState().catch(() => {});
       return say(`Đã thêm ${answer.added} sản phẩm (không ảnh bối cảnh). Xem danh sách ở cửa sổ chính.`, "var(--ok)");
     }
-    begin("/api/project/queue/run", { project: current, category: catBox.value, unused_only: unusedOnly.input.checked, count: queueCount.value, scenes: sceneCount.value }, "queue", "Chưa thêm vào hàng chờ được."); };
+    queueBtn.disabled = prepBtn.disabled = true; say("Đang lấy từ kho đã chuẩn bị…", "var(--accent)");
+    const r = await fetch("/api/project/queue/run", { method: "POST", body: JSON.stringify({ project: current, category: catBox.value, unused_only: unusedOnly.input.checked, count: queueCount.value, scenes: sceneCount.value }) });
+    const a = await r.json().catch(() => ({}));
+    if (!r.ok) { refreshButtons(); say(a.error || "Chưa thêm vào hàng chờ được.", "var(--error)"); return; }
+    await loadState().catch(() => {});
+    const got = a.from_prepared || 0, need = a.needs_claude || 0, dropNote = (a.dropped || []).length ? ` (${a.dropped.length} dòng đã chuẩn bị không còn hợp lệ, đã trả về "chưa chuẩn bị")` : "";
+    fastNote = `Đã lấy ${got} từ kho đã chuẩn bị, ${need} cần Claude chọn thêm${dropNote}.`;
+    refreshPrepared();
+    if (need <= 0) { refreshButtons(); say(`Đã lấy ${got} sản phẩm từ kho đã chuẩn bị, không cần Claude${dropNote}. Xem danh sách ở cửa sổ chính.`, "var(--ok)"); return; }
+    if (!a.started) { refreshButtons(); say(fastNote + "\n" + (a.message || ""), "var(--warn)"); return; }
+    runningLight = "queue"; lightStarted = Date.now(); ticks = 0; refreshButtons(); say(fastNote + "\nĐang bắt đầu…", "var(--accent)"); watch();
+  };
+  // Chuẩn bị trước: Claude picks the scenes of the not-yet-prepared products and stores them (prepared.csv); the queue is not touched.
+  prepBtn.onclick = () => { if (data) begin("/api/project/prep/run", { project: current, category: catBox.value, unused_only: unusedOnly.input.checked, scenes: sceneCount.value || 2 }, "prep", "Chưa bắt đầu chuẩn bị được."); };
   stop.onclick = async () => { stop.disabled = true; say("Đang dừng…", "var(--accent)"); await fetch(running === "queue" ? "/api/project/queue/stop" : running === "reviews" ? "/api/project/reviews/stop" : "/api/scan/stop", { method: "POST" }).catch(() => {}); };
   openDir.onclick = () => data && api("openPath", { path: data.project.dir });
-  catBox.onchange = renderTable;
-  unusedOnly.input.onchange = renderTable;
+  catBox.onchange = () => { renderTable(); refreshPrepared(); };
+  unusedOnly.input.onchange = () => { renderTable(); refreshPrepared(); };
   // Closing the popup leaves a running scan or review update running; opening it again picks it up.
   view.onClose = () => { if (timer) { clearInterval(timer); timer = null; } };
   view.cancel = close.onclick = () => view.close();
   refreshButtons();
-  loadProjects(pick).then(() => watch());
+  loadProjects(pick || sessionState.project || "").then(() => watch());
 }
 
 async function showProductDialog(target = null) {

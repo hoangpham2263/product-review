@@ -10,7 +10,8 @@
 # Projects: projects, project, set-used. Review numbers: reviews-todo (links to read), set-reviews (stores the number Claude read on a
 # page; nothing here reads or parses a page). Files and the `used` flag: src/application/scan-store.ps1.
 # Thêm vào hàng chờ (docs/queue-prompt.md): queue-todo (products to queue), scenes (the photo library), scene-get (a library photo on disk),
-# queue-add (link into urls.txt + product photo + 2 scene photos into references.json). Nothing here picks a scene: Claude does. The CLI only CHECKS and
+# queue-add (link into urls.txt + product photo + 2 scene photos into references.json). Chuẩn bị trước (docs/prep-prompt.md): prep-todo, prep-add, prep-status store the scene
+# picks of each product in workspace/projects/<id>/prepared.csv in advance (no queue write); queue-from-prepared takes ready rows into the queue instantly, no agent. Nothing here picks a scene: Claude does. The CLI only CHECKS and
 # INFORMS with a perceptual hash (src/infrastructure/image-phash.ps1): scenes shows used_count / dup_of, queue-add rejects SCENE_DUPLICATE (two scenes of
 # one product look the same) and SCENE_REUSED (a scene already used by another product in the queue or the last 5 runs; -AllowReuse overrides).
 param(
@@ -18,7 +19,7 @@ param(
     [string]$Site = '', [int]$Max = 20, [string]$Run = '', [string]$Scan = '', [string]$Project = '', [string]$Id = '',
     [string]$Url = '', [string]$Title = '', [string]$Collection = '', [string]$CollectionUrl = '', [string]$ImageUrl = '', [string]$ImageFile = '', [string]$File = '',
     [int]$Count = -1, [string]$Rating = '', [string]$Source = '', [string]$Used = '', [int]$Limit = 0,
-    [string]$Group = '', [string]$Category = '', [string]$SceneNames = '', [int]$SceneCount = 0, [switch]$UnusedOnly, [switch]$AllowReuse, [switch]$Prefetch,
+    [string]$Group = '', [string]$Category = '', [string]$SceneNames = '', [int]$SceneCount = 0, [switch]$UnusedOnly, [switch]$AllowReuse, [switch]$Prefetch, [switch]$Skip, [string]$Reason = '',
     [Parameter(ValueFromRemainingArguments = $true)]$Rest
 )
 
@@ -193,7 +194,7 @@ $QueueUrlsPath = Join-Path (Get-SessionWorkspaceDir $ProjectRoot) 'urls.txt'
 $LibraryDir = Join-Path $ProjectRoot 'workspace/source-photos'
 # Dot-sourcing inside a function defines the functions only in that function's scope (they vanish when it returns), so the libraries are
 # loaded here, at script level, for the queue commands. Import-QueueLibs stays as a no-op for the existing callers.
-if ($Command -in @('scenes', 'scene-get', 'queue-add', 'queue-direct', 'queue-todo')) {
+if ($Command -in @('scenes', 'scene-get', 'queue-add', 'queue-direct', 'queue-todo', 'prep-todo', 'prep-add', 'prep-status', 'queue-from-prepared')) {
     . (Join-Path $PSScriptRoot 'application/image-feedback.ps1')
     . (Join-Path $PSScriptRoot 'infrastructure/source-catalog.ps1')
     . (Join-Path $PSScriptRoot 'infrastructure/source-sync.ps1')
@@ -274,6 +275,8 @@ function Get-UsedScenes {
             }
         }
     }
+    # Scenes already picked in advance (prepared.csv, status ready, every project): another product must not take them either.
+    foreach ($pr in @(Get-PreparedUsedScenes)) { $used.Add($pr) }
     $script:UsedScenesCache = $used.ToArray()
     return $script:UsedScenesCache
 }
@@ -288,14 +291,102 @@ function Find-UsedScenes([string]$Hash, [string]$ExceptUrl = '') {
 # queue-add (Claude's scenes) and queue-direct (no scenes). Never called for a link already queued.
 function Add-QueueEntry([string]$Dir, $Row, $Picked) {
     $productFile = Join-Path (Join-Path $Dir 'images') $Row.product_image
-    $queueMap = Read-ManualReferenceMap $QueueMapPath
-    $queueEntry = [pscustomobject]@{ product_url = $Row.product_url; origin = 'user_reference' }
-    Set-ManualProducts $queueEntry @([pscustomobject]@{ file = $productFile; sha256 = (Get-FileHashText $productFile 'SHA256'); scenes = @($Picked) })
-    Save-ManualMapEntry $QueueMapPath $queueMap $queueEntry
-    $existingText = if (Test-Path -LiteralPath $QueueUrlsPath) { [IO.File]::ReadAllText($QueueUrlsPath) } else { '' }
-    $lead = if ($existingText -and -not $existingText.EndsWith("`n")) { "`r`n" } else { '' }
-    [IO.File]::AppendAllText($QueueUrlsPath, $lead + $Row.product_url + "`r`n", [Text.UTF8Encoding]::new($false))
+    $productSha = Get-FileHashText $productFile 'SHA256'
+    # references.json and urls.txt change together under the queue mutex, so a running batch (Remove-FromQueue) or the app can write meanwhile
+    # without losing this entry.
+    [void](Use-QueueMutex (Get-SessionWorkspaceDir $ProjectRoot) {
+        $queueMap = Read-ManualReferenceMap $QueueMapPath
+        $queueEntry = [pscustomobject]@{ product_url = $Row.product_url; origin = 'user_reference' }
+        Set-ManualProducts $queueEntry @([pscustomobject]@{ file = $productFile; sha256 = $productSha; scenes = @($Picked) })
+        Save-ManualMapEntry $QueueMapPath $queueMap $queueEntry
+        $existingText = if (Test-Path -LiteralPath $QueueUrlsPath) { [IO.File]::ReadAllText($QueueUrlsPath) } else { '' }
+        $lead = if ($existingText -and -not $existingText.EndsWith("`n")) { "`r`n" } else { '' }
+        [IO.File]::AppendAllText($QueueUrlsPath, $lead + $Row.product_url + "`r`n", [Text.UTF8Encoding]::new($false))
+        $true
+    })
     return $productFile
+}
+
+# ---- Chuẩn bị trước: prepared.csv (workspace/projects/<id>/, shared by every session) ----
+# product_url, group, scenes (names joined by |), scene_sha256 (joined by |), scene_count, prepared_at, status (ready | skipped:no-fit | consumed), consumed_at, consumed_by
+$PreparedColumns = @('product_url', 'group', 'scenes', 'scene_sha256', 'scene_count', 'prepared_at', 'status', 'consumed_at', 'consumed_by')
+function Get-PreparedFile([string]$Dir) { return (Join-Path $Dir 'prepared.csv') }
+function Read-PreparedRows([string]$Dir) { return @(Read-ScanRows (Get-PreparedFile $Dir)) }
+function Write-PreparedRows([string]$Dir, $Rows) {
+    $path = Get-PreparedFile $Dir
+    $out = New-Object System.Collections.Generic.List[string]
+    $out.Add($PreparedColumns -join ',')
+    foreach ($row in @($Rows)) { $out.Add((@($PreparedColumns | ForEach-Object { $p = $row.PSObject.Properties[$_]; ConvertTo-ScanCell $(if ($p) { [string]$p.Value } else { '' }) }) -join ',')) }
+    $tmp = "$path.$PID.tmp"
+    [IO.File]::WriteAllText($tmp, (($out -join "`r`n") + "`r`n"), [Text.UTF8Encoding]::new($true))
+    Move-Item -LiteralPath $tmp -Destination $path -Force
+}
+# An exclusive file lock around a read-modify-write of prepared.csv (several sessions, the prep run and queue-from-prepared can all write).
+function Use-FileLock([string]$LockPath, [scriptblock]$Body, [int]$TimeoutSec = 30) {
+    $deadline = (Get-Date).AddSeconds($TimeoutSec); $stream = $null
+    while (-not $stream) {
+        try { $stream = [IO.File]::Open($LockPath, [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None) }
+        catch [IO.IOException] {
+            if ((Get-Date) -gt $deadline) { throw "[CAUSE:LOCK_BUSY] $([IO.Path]::GetFileName($LockPath)) is held by another process; try again in a few seconds." }
+            Start-Sleep -Milliseconds 150
+        }
+    }
+    try { return (& $Body) } finally { $stream.Dispose() }
+}
+function Use-PreparedLock([string]$Dir, [scriptblock]$Body) { return (Use-FileLock ((Get-PreparedFile $Dir) + '.lock') $Body) }
+# The scenes of the READY rows of every project, as { hash, url, where } like Get-UsedScenes: a prepared scene counts as used.
+function Get-PreparedUsedScenes {
+    $found = New-Object Collections.Generic.List[object]
+    foreach ($projectDir in @(Get-ChildItem -LiteralPath $ScanRoot -Directory -ErrorAction SilentlyContinue)) {
+        $file = Get-PreparedFile $projectDir.FullName
+        if (-not (Test-Path -LiteralPath $file)) { continue }
+        foreach ($row in @(Read-PreparedRows $projectDir.FullName | Where-Object { $_.status -eq 'ready' })) {
+            $library = @(Get-LibraryPhotos ([string]$row.group))
+            foreach ($name in @(([string]$row.scenes) -split '\|' | Where-Object { $_ })) {
+                $photo = @($library | Where-Object { $_.name -eq $name } | Select-Object -First 1)
+                if (-not $photo.Count) { continue }
+                $hash = Get-LibraryPhotoHash ([string]$row.group) $photo[0]
+                if ($hash) { $found.Add([pscustomobject]@{ hash = $hash; url = [string]$row.product_url; where = "prepared ($($projectDir.Name))" }) }
+            }
+        }
+    }
+    return $found.ToArray()
+}
+# Checks the scene picks of one product like queue-add does (exists in the library, sha256, not two of the same picture, not used by another
+# product) and returns { ok, error, cause, photos = @{ name, file, sha256, md5 } }. Nothing is copied or written.
+function Test-SceneSet([string]$Url, [string]$LibraryGroup, [string[]]$Names, [string[]]$Sha256, [bool]$Reuse) {
+    $library = @(Get-LibraryPhotos $LibraryGroup)
+    if (-not $library.Count) { return [pscustomobject]@{ ok = $false; error = "No photos in group $LibraryGroup."; cause = 'UNKNOWN_GROUP' } }
+    $photos = @(); $seen = @(); $i = 0
+    foreach ($name in $Names) {
+        $photo = @($library | Where-Object { $_.name -eq $name })
+        if (-not $photo.Count) { return [pscustomobject]@{ ok = $false; error = "No photo '$name' in group $LibraryGroup (use the names from the scenes list)."; cause = 'UNKNOWN_SCENE' } }
+        $file = Get-LibraryPhotoFile $LibraryGroup $photo[0]
+        $sha = Get-FileHashText $file 'SHA256'
+        if ($photo[0].sha256 -and $photo[0].sha256 -ne $sha) { return [pscustomobject]@{ ok = $false; error = "$name does not match the sha256 of the library catalog."; cause = 'SCENE_HASH' } }
+        if ($Sha256 -and $Sha256.Count -gt $i -and $Sha256[$i] -and $Sha256[$i] -ne $sha) { return [pscustomobject]@{ ok = $false; error = "$name changed since it was prepared (sha256 differs)."; cause = 'SCENE_HASH' } }
+        if (@($photos | Where-Object { $_.sha256 -eq $sha }).Count) { return [pscustomobject]@{ ok = $false; error = 'Two of the scenes are the same picture; pick different ones.'; cause = 'SAME_SCENE' } }
+        $hash = Get-PHash $file ("lib:$LibraryGroup/$($photo[0].name):$($photo[0].md5)")
+        foreach ($other in $seen) {
+            $distance = Get-PHashDistance $hash $other.hash
+            if ($distance -le $SceneSameDistance) { return [pscustomobject]@{ ok = $false; error = "[CAUSE:SCENE_DUPLICATE] $name and $($other.name) are visually the same picture (hash distance $distance of 256); pick a different scene for one of them."; cause = 'SCENE_DUPLICATE' } }
+        }
+        if (-not $Reuse) {
+            $reused = @(Find-UsedScenes $hash $Url)
+            if ($reused.Count) { return [pscustomobject]@{ ok = $false; error = "[CAUSE:SCENE_REUSED] $name is already used by another product ($($reused[0].where): $($reused[0].url)); pick a scene no product uses (scenes list: used_count 0), or pass -AllowReuse."; cause = 'SCENE_REUSED' } }
+        }
+        $seen += [pscustomobject]@{ name = $name; hash = $hash }
+        $photos += [pscustomobject]@{ name = $name; file = $file; sha256 = $sha; md5 = [string]$photo[0].md5 }
+        $i++
+    }
+    return [pscustomobject]@{ ok = $true; photos = $photos }
+}
+# The rows of products.csv a queue / prep command works on: -Collection, -UnusedOnly, with a project photo on disk, in table order.
+function Get-ProjectCandidates([string]$Dir) {
+    return @(Read-ScanRows (Join-Path $Dir 'products.csv') | Where-Object {
+            (-not $Collection -or $_.collection -eq $Collection) -and (-not $UnusedOnly -or -not (Test-UsedFlag $_.used)) -and
+            $_.product_image -and (Test-Path -LiteralPath (Join-Path (Join-Path $Dir 'images') $_.product_image))
+        })
 }
 
 function Convert-ToUsedFlag([string]$Value) {
@@ -524,7 +615,112 @@ try {
             Save-PHashCache
             Write-ScanJson ([ordered]@{ project = $ProjectId; url = $row[0].product_url; product_file = $productFile; scenes = @($picked | ForEach-Object { $_.file }) })
         }
-        default { Fail-Scan "Unknown command '$Command'. Use: start | known | add | add-many | set-menu | status | finish | projects | project | set-used | reviews-todo | set-reviews | queue-direct | queue-todo | scenes | scene-get | queue-add" 'BAD_COMMAND' }
+        'prep-todo' {
+            # The products still to prepare: the project's rows (same filters as queue-todo), not queued, with no row in prepared.csv yet; -Limit caps it.
+            $dir = Get-ScanDir $ProjectId
+            $queued = Get-QueuedKeys
+            $have = New-Object System.Collections.Generic.HashSet[string]
+            foreach ($pr in @(Read-PreparedRows $dir)) { [void]$have.Add((Get-ScanUrlKey $pr.product_url)) }
+            $todo = @(Get-ProjectCandidates $dir | Where-Object { -not $queued.Contains((Get-ScanUrlKey $_.product_url)) -and -not $have.Contains((Get-ScanUrlKey $_.product_url)) })
+            if ($Limit -gt 0) { $todo = @($todo | Select-Object -First $Limit) }
+            Write-ScanJson ([ordered]@{ project = $ProjectId; count = $todo.Count; products = @($todo | ForEach-Object { [ordered]@{ url = $_.product_url; title = $_.title; collection = $_.collection; image = (Join-Path (Join-Path $dir 'images') $_.product_image) } }) })
+        }
+        'prep-add' {
+            # Stores the scene picks of ONE product in prepared.csv the moment they are made (-Group, -SceneNames a.jpg,b.jpg, -SceneCount S), or notes it as
+            # skipped:no-fit with -Skip [-Reason text]. Same checks as queue-add; nothing is copied and urls.txt / references.json are not touched.
+            Import-QueueLibs
+            $dir = Get-ScanDir $ProjectId
+            if (-not $Url) { Fail-Scan '-Url is required.' 'BAD_URL' }
+            $key = Get-ScanUrlKey $Url
+            $row = @(Read-ScanRows (Join-Path $dir 'products.csv') | Where-Object { (Get-ScanUrlKey $_.product_url) -eq $key })
+            if (-not $row.Count) { Fail-Scan "The link is not in project $ProjectId." 'UNKNOWN_URL' }
+            if ((Get-QueuedKeys).Contains($key)) { Fail-Scan 'This link is already in the queue; nothing to prepare.' 'ALREADY_QUEUED' }
+            $record = [pscustomobject]@{ product_url = $row[0].product_url; group = ''; scenes = ''; scene_sha256 = ''; scene_count = ''; prepared_at = (Get-Stamp); status = ''; consumed_at = ''; consumed_by = '' }
+            if ($Skip) {
+                $record.status = 'skipped:no-fit'; if ($Reason) { $record.group = ($Reason -replace '\s+', ' ').Trim() }
+            } else {
+                if (-not $Group) { Fail-Scan '-Group is required (the library group the scenes come from).' 'BAD_GROUP' }
+                $wanted = @($SceneNames -split '[,|]' | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+                if ($wanted.Count -lt 1 -or $wanted.Count -gt 4 -or @($wanted | Sort-Object -Unique).Count -ne $wanted.Count) { Fail-Scan 'Pass 1 to 4 different photos: -SceneNames a.jpg,b.jpg.' 'BAD_SCENES' }
+                if ($SceneCount -gt 0 -and $SceneCount -ne $wanted.Count) { Fail-Scan "Pass exactly $SceneCount photos in -SceneNames (got $($wanted.Count))." 'BAD_SCENES' }
+                $check = Test-SceneSet $Url $Group $wanted @() ([bool]$AllowReuse)
+                Save-PHashCache
+                if (-not $check.ok) { Fail-Scan $check.error $check.cause }
+                $record.group = $Group; $record.scenes = (@($check.photos | ForEach-Object { $_.name }) -join '|'); $record.scene_sha256 = (@($check.photos | ForEach-Object { $_.sha256 }) -join '|')
+                $record.scene_count = [string]$check.photos.Count; $record.status = 'ready'
+            }
+            $result = Use-PreparedLock $dir {
+                $rows = @(Read-PreparedRows $dir)
+                $existing = @($rows | Where-Object { (Get-ScanUrlKey $_.product_url) -eq $key })
+                if (@($existing | Where-Object { $_.status -in @('ready', 'consumed') }).Count) { return [pscustomobject]@{ ok = $false; error = 'This product is already prepared (ready or consumed); it was left as it is.'; cause = 'ALREADY_PREPARED' } }
+                $rows = @($rows | Where-Object { (Get-ScanUrlKey $_.product_url) -ne $key }) + @($record)
+                Write-PreparedRows $dir $rows
+                return [pscustomobject]@{ ok = $true }
+            }
+            if (-not $result.ok) { Fail-Scan $result.error $result.cause }
+            Write-ScanJson ([ordered]@{ project = $ProjectId; url = $record.product_url; status = $record.status; group = $record.group; scenes = $record.scenes })
+        }
+        'prep-status' {
+            # Counts for the project (narrowed by -Collection / -UnusedOnly): products, ready, skipped, consumed, still to prepare.
+            $dir = Get-ScanDir $ProjectId
+            $queued = Get-QueuedKeys
+            $candidates = @(Get-ProjectCandidates $dir | Where-Object { -not $queued.Contains((Get-ScanUrlKey $_.product_url)) })
+            $prepared = @(Read-PreparedRows $dir)
+            $byKey = @{}; foreach ($pr in $prepared) { $byKey[(Get-ScanUrlKey $pr.product_url)] = $pr }
+            $ready = @($candidates | Where-Object { $byKey.ContainsKey((Get-ScanUrlKey $_.product_url)) -and $byKey[(Get-ScanUrlKey $_.product_url)].status -eq 'ready' }).Count
+            $skipped = @($candidates | Where-Object { $byKey.ContainsKey((Get-ScanUrlKey $_.product_url)) -and ([string]$byKey[(Get-ScanUrlKey $_.product_url)].status).StartsWith('skipped') }).Count
+            Write-ScanJson ([ordered]@{ project = $ProjectId; products = $candidates.Count; ready = $ready; skipped = $skipped; to_prepare = ($candidates.Count - $ready - $skipped)
+                    consumed_total = @($prepared | Where-Object { $_.status -eq 'consumed' }).Count; ready_total = @($prepared | Where-Object { $_.status -eq 'ready' }).Count })
+        }
+        'queue-from-prepared' {
+            # Puts up to -Limit READY rows of prepared.csv into the queue instantly (no agent): the project's products in table order (same filters as queue-todo),
+            # not queued yet. Every row is re-validated first (scene files exist, sha256 matches, scene not used by another product); a row that no longer
+            # validates is dropped back to "not prepared"; a queued row becomes consumed. -SceneCount S takes only rows with at least S scenes and queues the first S.
+            Import-QueueLibs
+            $dir = Get-ScanDir $ProjectId
+            if ($Limit -lt 1) { Fail-Scan '-Limit must be 1 or more.' 'BAD_LIMIT' }
+            $session = if ($env:PR_SESSION) { $env:PR_SESSION } else { 'default' }
+            $sceneDir = Join-Path (Get-SessionWorkspaceDir $ProjectRoot) "reference-inputs/$ProjectId-scenes"
+            $answer = Use-PreparedLock $dir {
+                $rows = @(Read-PreparedRows $dir)
+                $queued = Get-QueuedKeys
+                $byKey = @{}; foreach ($pr in $rows) { $byKey[(Get-ScanUrlKey $pr.product_url)] = $pr }
+                $queuedUrls = @(); $dropped = @(); $drop = @{}
+                foreach ($candidate in @(Get-ProjectCandidates $dir)) {
+                    if ($queuedUrls.Count -ge $Limit) { break }
+                    $k = Get-ScanUrlKey $candidate.product_url
+                    if ($queued.Contains($k) -or -not $byKey.ContainsKey($k)) { continue }
+                    $pr = $byKey[$k]
+                    if ($pr.status -ne 'ready') { continue }
+                    $names = @(([string]$pr.scenes) -split '\|' | Where-Object { $_ }); $shas = @(([string]$pr.scene_sha256) -split '\|' | Where-Object { $_ })
+                    if ($SceneCount -gt 0 -and $names.Count -lt $SceneCount) { continue }
+                    if ($SceneCount -gt 0) { $names = @($names | Select-Object -First $SceneCount); $shas = @($shas | Select-Object -First $SceneCount) }
+                    $check = $null
+                    try { $check = Test-SceneSet $candidate.product_url ([string]$pr.group) $names $shas $false } catch { $check = [pscustomobject]@{ ok = $false; error = $_.Exception.Message; cause = 'TOOL_ERROR' } }
+                    if (-not $check.ok) { $drop[$k] = $true; $dropped += [ordered]@{ url = $candidate.product_url; cause = $check.cause; reason = ($check.error -replace '^\[CAUSE:[A-Z_]+\]\s*', '') }; continue }
+                    $handle = Get-Slug (([Uri]$candidate.product_url).Segments[-1].Trim('/')) 80
+                    New-Item -ItemType Directory -Force -Path $sceneDir | Out-Null
+                    $picked = @(); $n = 0; $copyFailed = ''
+                    foreach ($photo in $check.photos) {
+                        $n++
+                        $target = Join-Path $sceneDir ("$handle-scene$n" + [IO.Path]::GetExtension($photo.file).ToLowerInvariant())
+                        Copy-Item -LiteralPath $photo.file -Destination $target -Force
+                        if ((Get-FileHashText $target 'SHA256') -ne $photo.sha256) { $copyFailed = "Copy of $($photo.name) is damaged." }
+                        $picked += [pscustomobject]@{ file = $target; sha256 = $photo.sha256 }
+                    }
+                    if ($copyFailed) { $dropped += [ordered]@{ url = $candidate.product_url; cause = 'SCENE_COPY'; reason = $copyFailed }; continue }
+                    [void](Add-QueueEntry $dir $candidate $picked)
+                    $pr.status = 'consumed'; $pr.consumed_at = (Get-Stamp); $pr.consumed_by = $session
+                    $queuedUrls += $candidate.product_url
+                }
+                Write-PreparedRows $dir @($rows | Where-Object { -not $drop.ContainsKey((Get-ScanUrlKey $_.product_url)) })
+                return [ordered]@{ queued = $queuedUrls; dropped = $dropped }
+            }
+            Save-PHashCache
+            $remainingReady = @(Read-PreparedRows $dir | Where-Object { $_.status -eq 'ready' }).Count
+            Write-ScanJson ([ordered]@{ project = $ProjectId; requested = $Limit; queued = @($answer.queued).Count; shortfall = ($Limit - @($answer.queued).Count); urls = @($answer.queued); dropped = @($answer.dropped); ready_left = $remainingReady })
+        }
+        default { Fail-Scan "Unknown command '$Command'. Use: start | known | add | add-many | set-menu | status | finish | projects | project | set-used | reviews-todo | set-reviews | queue-direct | queue-todo | scenes | scene-get | queue-add | prep-todo | prep-add | prep-status | queue-from-prepared" 'BAD_COMMAND' }
     }
 } catch {
     Fail-Scan $_.Exception.Message 'TOOL_ERROR'

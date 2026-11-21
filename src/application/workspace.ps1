@@ -6,6 +6,23 @@ function Get-SessionWorkspaceDir([string]$ProjectRoot) {
     if ($env:PR_WORKSPACE) { return [IO.Path]::GetFullPath($env:PR_WORKSPACE) }
     return Join-Path ([IO.Path]::GetFullPath($ProjectRoot)) 'workspace'
 }
+# One short-lived OS mutex per session workspace guards every write of the run queue (urls.txt, references.json): the app, queue-add,
+# queue-from-prepared and the running batch (Remove-FromQueue) can write at the same time without losing an entry. The batch's own
+# urls.txt.lock (held for a whole run) is a different thing and is not touched.
+function Use-QueueMutex([string]$WorkspaceDir, [scriptblock]$Body, [int]$TimeoutSec = 30) {
+    $md5 = [Security.Cryptography.MD5]::Create()
+    try { $key = -join ($md5.ComputeHash([Text.Encoding]::UTF8.GetBytes(([IO.Path]::GetFullPath($WorkspaceDir)).ToLowerInvariant())) | ForEach-Object { $_.ToString('x2') }) } finally { $md5.Dispose() }
+    $mutex = New-Object Threading.Mutex($false, "Local\PRQ-$key")
+    $owned = $false
+    try {
+        try { $owned = $mutex.WaitOne([TimeSpan]::FromSeconds($TimeoutSec)) } catch [Threading.AbandonedMutexException] { $owned = $true }
+        if (-not $owned) { throw '[CAUSE:QUEUE_BUSY] Hàng chờ đang được chương trình khác ghi, thử lại sau vài giây.' }
+        return (& $Body)
+    } finally {
+        if ($owned) { try { $mutex.ReleaseMutex() } catch { } }
+        $mutex.Dispose()
+    }
+}
 function Initialize-ProjectWorkspace([string]$ProjectRoot) {
     $root = Get-SessionWorkspaceDir $ProjectRoot
     $paths = @{

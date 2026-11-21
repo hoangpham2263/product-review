@@ -10,3 +10,5 @@
 
 ## Nhiều cửa sổ (phiên)
 Mở thêm cửa sổ chạy dự án khác: nút "Các phiên" > "Mở cửa sổ mới" trong app, hoặc `start-app.cmd <tên-phiên>`. Mỗi phiên có hàng chờ, log và cổng riêng (`workspace-sessions/<tên>/`); cấu hình, danh sách dự án và ảnh nguồn dùng chung.
+
+Mở cửa sổ cho một dự án: "Các phiên" > chọn dự án. "Chuẩn bị trước" (popup Dự án) cho Claude chọn sẵn ảnh bối cảnh theo từng sản phẩm; "Thêm vào hàng chờ" sau đó lấy ngay từ kho đã chuẩn bị, chỉ phần thiếu mới cần Claude.

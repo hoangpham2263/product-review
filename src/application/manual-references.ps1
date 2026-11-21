@@ -67,10 +67,18 @@ function Get-ManualScenes($Entry) {
 }
 
 function Save-ManualMapEntry([string]$MapPath,$Map,$Entry) {
-    $Map.entries=@($Map.entries|Where-Object{$_.product_url -ne $Entry.product_url -and (@(Get-ManualScenes $_).Count -or $_.product_file)})
-    if(@(Get-ManualProducts $Entry).Count){$Map.entries=@($Map.entries)+@($Entry)}
-    New-Item -ItemType Directory -Path (Split-Path $MapPath -Parent) -Force|Out-Null
-    Write-FeedbackJson $MapPath $Map
+    # The map is re-read INSIDE the queue mutex and the entry merged into that fresh copy, so two writers (the app, queue-from-prepared, queue-add)
+    # never overwrite each other's entry. (-Map is only the fallback when the file cannot be read.)
+    $ws = Split-Path (Split-Path ([IO.Path]::GetFullPath($MapPath)) -Parent) -Parent
+    [void](Use-QueueMutex $ws {
+        $fresh = $Map
+        if (Test-Path -LiteralPath $MapPath) { try { $fresh = Read-ManualReferenceMap $MapPath } catch { $fresh = $Map } }
+        $fresh.entries=@($fresh.entries|Where-Object{$_.product_url -ne $Entry.product_url -and (@(Get-ManualScenes $_).Count -or $_.product_file)})
+        if(@(Get-ManualProducts $Entry).Count){$fresh.entries=@($fresh.entries)+@($Entry)}
+        New-Item -ItemType Directory -Path (Split-Path $MapPath -Parent) -Force|Out-Null
+        Write-FeedbackJson $MapPath $fresh
+        $true
+    })
 }
 
 # Removes one review image. ProductIndex picks the product image; -1 counts across the whole link.

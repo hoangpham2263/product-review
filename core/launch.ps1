@@ -1,7 +1,7 @@
 ﻿# Opens Product Review. macOS and Windows show the same web page from the same Node server (src/mac/server.mjs):
 # start-app.command gets the entry to start printed (-Mac); on Windows this script starts it and shows it in one app
 # window (WinForms with WebView2, core/webview2): no browser or address bar.
-param([switch]$Mac, [string]$Session = '')
+param([switch]$Mac, [string]$Session = '', [string]$Project = '')
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
 $entry = [IO.Path]::GetFullPath((Join-Path $root 'src/mac/server.mjs'))
@@ -10,10 +10,13 @@ if ($Mac) { return $entry }
 # Sessions: several windows from this one source, each with its own workspace (queue, runs, logs, output), port and agent.
 # The default session ('') is the existing workspace/. Shared state (config, projects, source photos, Chrome profile) stays in workspace/.
 $Session = ([string]$Session).Trim().ToLowerInvariant()
-if ($Session -and $Session -notmatch '^[a-z0-9][a-z0-9-]{0,29}$') { $Session = '' }
+if ($Session -and $Session -notmatch '^[a-z0-9][a-z0-9-]{0,59}$') { $Session = '' }
+$Project = ([string]$Project).Trim().ToLowerInvariant()
+if ($Project -notmatch '^[a-z0-9][a-z0-9-]{1,60}$') { $Project = '' }
 $sessionLabel = if ($Session) { $Session } else { 'default' }
 $sessionWs = if ($Session) { Join-Path $root "workspace-sessions/$Session" } else { Join-Path $root 'workspace' }
 $env:PR_SESSION = $Session
+$env:PR_PROJECT = $Project
 $env:PR_WORKSPACE = $sessionWs
 
 Add-Type -AssemblyName System.Windows.Forms, System.Drawing

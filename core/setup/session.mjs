@@ -7,7 +7,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync, renameSync, rmSync, readdirSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 
-export const SESSION_RE = /^[a-z0-9][a-z0-9-]{0,29}$/;
+export const SESSION_RE = /^[a-z0-9][a-z0-9-]{0,59}$/; // a session named after a project id can be as long as one
 export const GROUP_COLORS = ["blue", "red", "yellow", "green", "pink", "purple", "cyan", "orange"];
 
 // "" = the default session.
@@ -82,12 +82,13 @@ export function unregisterSession(root, session, pid = process.pid) {
 // ----- locks (a project, or the own Chrome profile) -----
 const lockFile = (root, kind, name) => join(configDir(root), "locks", `${kind}-${String(name).replace(/[^a-z0-9._-]/gi, "_")}.json`);
 // ok:false + holder when ANOTHER live session holds it. The same session may re-claim.
-export function claimLock(root, kind, name, session, pid = process.pid) {
+// tag: which runner of the session holds it ("main" or "light"); releaseLocks(..., tag) frees only that runner's locks.
+export function claimLock(root, kind, name, session, pid = process.pid, tag = "") {
   const file = lockFile(root, kind, name);
   return withLock(file, () => {
     const cur = readJson(file, null);
     if (cur && alive(cur.pid) && !(cur.session === session && cur.pid === pid)) return { ok: false, holder: cur };
-    writeJson(file, { kind, name, session, pid, at: new Date().toISOString() });
+    writeJson(file, { kind, name, session, pid, tag, at: new Date().toISOString() });
     return { ok: true };
   });
 }
@@ -95,14 +96,24 @@ export function lockHolder(root, kind, name, session, pid = process.pid) {
   const cur = readJson(lockFile(root, kind, name), null);
   return cur && alive(cur.pid) && !(cur.session === session && cur.pid === pid) ? cur : null;
 }
-export function releaseLocks(root, session, pid = process.pid) {
+export function releaseLocks(root, session, pid = process.pid, tag = "") {
   const dir = join(configDir(root), "locks");
   let files = []; try { files = readdirSync(dir).filter((f) => f.endsWith(".json")); } catch { return; }
   for (const f of files) {
     const cur = readJson(join(dir, f), null);
-    if (cur && cur.session === session && cur.pid === pid) { try { rmSync(join(dir, f), { force: true }); } catch {} }
+    if (cur && cur.session === session && cur.pid === pid && (!tag || cur.tag === tag)) { try { rmSync(join(dir, f), { force: true }); } catch {} }
   }
 }
+
+// ----- projects: a window "has" the project selected in its Dự án popup (registry field project); a run on it holds a lock -----
+// null when free; else { session, via: "window" | "run" } of ANOTHER live session using it.
+export function projectBusyBy(root, project, session, pid = process.pid) {
+  const s = listSessions(root).find((e) => e.project === project && !(e.session === session && e.pid === pid));
+  if (s) return { session: s.session, via: "window" };
+  const h = lockHolder(root, "project", project, session, pid);
+  return h ? { session: h.session, via: "run" } : null;
+}
+export function setSessionProject(root, session, pid, project) { return updateSession(root, session, pid, { project: project || "" }); }
 
 // ----- Chrome tab group of a run: "Product Review · <session> · #<n> · HH:mm" -----
 const counterFile = (workspace) => join(workspace, "runs", "group-counter.json");
@@ -118,7 +129,7 @@ export function takeGroup(workspace, session, now = new Date()) {
 }
 
 // Text of the window title and header badge.
-export const sessionTitle = ({ stt, session, profileLabel }) => `Product Review · #${stt || "?"} · ${sessionLabel(session)} · ${profileLabel || ""}`.replace(/ · $/, "");
+export const sessionTitle = ({ stt, session, profileLabel, project = "" }) => `Product Review · #${stt || "?"} · ${sessionLabel(session)} · ${profileLabel || ""}`.replace(/ · $/, "") + (project && project !== session ? ` · ${project}` : "");
 export const profileLabelOf = (browser, profiles = []) => {
   if (!browser || browser.mode === "own") return "Chrome riêng";
   const p = profiles.find((x) => x.folder === browser.profile);

@@ -3,7 +3,10 @@
 cd "$(dirname "$0")" || exit 1
 # Optional first argument = session name (another window with its own workspace, see AGENTS.md "Phiên").
 session=$(printf "%s" "$1" | tr "[:upper:]" "[:lower:]")
-printf "%s" "$session" | grep -Eq "^[a-z0-9][a-z0-9-]{0,29}$" || session=""
+printf "%s" "$session" | grep -Eq "^[a-z0-9][a-z0-9-]{0,59}$" || session=""
+project=$(printf "%s" "$2" | tr "[:upper:]" "[:lower:]")
+printf "%s" "$project" | grep -Eq "^[a-z0-9][a-z0-9-]{1,60}$" || project=""
+export PR_PROJECT="$project"
 export PR_SESSION="$session"
 if [ -n "$session" ]; then export PR_WORKSPACE="$PWD/workspace-sessions/$session"; else export PR_WORKSPACE="$PWD/workspace"; fi
 export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.dotnet/tools:$PATH"

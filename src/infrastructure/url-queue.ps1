@@ -23,10 +23,14 @@ function Read-UrlQueue([string]$Path) {
 
 # Remove the first occurrence of a finished URL (and blank lines) from the queue file.
 function Remove-FromQueue([string]$Path, [string]$Url) {
-    $removed = $false
-    $remaining = @(foreach ($entry in @(Get-Content -LiteralPath $Path -Encoding UTF8)) {
-        if (-not $removed -and $entry.Trim() -ceq $Url) { $removed = $true; continue }
-        if ($entry.Trim()) { $entry }
+    # Read and rewrite under the queue mutex: a link appended meanwhile (queue-from-prepared, queue-add) is never lost.
+    [void](Use-QueueMutex (Split-Path ([IO.Path]::GetFullPath($Path)) -Parent) {
+        $removed = $false
+        $remaining = @(foreach ($entry in @(Get-Content -LiteralPath $Path -Encoding UTF8)) {
+            if (-not $removed -and $entry.Trim() -ceq $Url) { $removed = $true; continue }
+            if ($entry.Trim()) { $entry }
+        })
+        Write-Lines $Path $remaining
+        $true
     })
-    Write-Lines $Path $remaining
 }

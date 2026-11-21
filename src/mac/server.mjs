@@ -13,7 +13,7 @@ import { randomUUID, createHash } from "node:crypto";
 import { createConfigApi } from "../../core/setup/config-api.mjs";
 import { createAgentRunner, buildPrompt, newRunId, readFlowAccount } from "../../core/setup/agent-run.mjs";
 import { readFlowBrowser, saveFlowBrowser, localChromeProfiles } from "../../core/setup/flow-browser.mjs";
-import { currentSession, sessionLabel, sessionWorkspace, sharedWorkspace, registerSession, updateSession, unregisterSession, listSessions, lockHolder, releaseLocks, peekGroup, sessionTitle, profileLabelOf, SESSION_RE } from "../../core/setup/session.mjs";
+import { currentSession, sessionLabel, sessionWorkspace, sharedWorkspace, registerSession, updateSession, unregisterSession, listSessions, lockHolder, releaseLocks, peekGroup, sessionTitle, profileLabelOf, projectBusyBy, setSessionProject, SESSION_RE } from "../../core/setup/session.mjs";
 import { createFlowLogin, profileDirOf, profileGoogleAccounts, findChrome, flowOpenUrl } from "../../core/setup/flow-login.mjs";
 import { PWSH, toolEnv, psFile, psCommand, killTree, appWindow, chooseFiles } from "../../core/platform.mjs";
 
@@ -31,7 +31,9 @@ const logs = join(workspace, "logs");
 const uploads = join(workspace, "temp", "mac-uploads");
 const configApi = createConfigApi({ hubRoot: root, pwsh: PWSH, env: toolEnv });
 // Agent mode: Claude Code drives Google Flow and writes the reviews (core/setup/agent-run.mjs, docs/agent-prompt.md).
-const agent = createAgentRunner({ toolRoot: root, workspace, profileDir: profileDirOf(sharedWs), getBrowser: () => readFlowBrowser(sharedWs), session });
+const agent = createAgentRunner({ toolRoot: root, workspace, profileDir: profileDirOf(sharedWs), getBrowser: () => readFlowBrowser(sharedWs), session, kind: "main" });
+// The light runner: queue and prep runs (no browser, no Chrome profile, own state files runs/prep-run.*): they go on while Bắt đầu runs.
+const light = createAgentRunner({ toolRoot: root, workspace, profileDir: profileDirOf(sharedWs), session, kind: "light" });
 // Quét web: the project of a run is the one whose session.json names the run (src/scan.ps1 start -Run); older scans keep a scan.json.
 // Paths use "/" for the window.
 const readJsonFile = (p) => JSON.parse(readFileSync(p, "utf8").replace(/^\uFEFF/, ""));
@@ -207,6 +209,15 @@ const allowedFile = (p) => {
 const body = async (req) => { const chunks = []; for await (const c of req) chunks.push(c); return Buffer.concat(chunks); };
 const send = (res, status, data) => { res.writeHead(status, { "content-type": "application/json; charset=utf-8", "cache-control": "no-store" }); res.end(JSON.stringify(data)); };
 
+// Runs src/scan.ps1 in this session (PR_WORKSPACE) and returns its one JSON line.
+function runScan(args, timeout = 180000) {
+  return new Promise((resolveScan) => execFile(PWSH, psFile(join(root, "src", "scan.ps1"), args), { cwd: root, env: toolEnv, timeout, windowsHide: true, encoding: "utf8" }, (err, out) => {
+    let r = null; try { r = JSON.parse(String(out || "").trim().split(String.fromCharCode(10)).pop()); } catch { /* below */ }
+    resolveScan(r || { ok: false, error: (err && err.message) || "Không đọc được kết quả của src/scan.ps1." });
+  }));
+}
+const projectArgs = (given) => [...(String(given.category || "").trim() ? ["-Collection", String(given.category).trim()] : []), ...(given.unused_only ? ["-UnusedOnly"] : [])];
+
 async function handle(req, res) {
   const url = new URL(req.url, "http://localhost");
   const path = url.pathname;
@@ -218,7 +229,30 @@ async function handle(req, res) {
     const b = JSON.parse((await body(req)).toString("utf8") || "{}");
     const name = String(b.name ?? "").trim().toLowerCase();
     if (name && !SESSION_RE.test(name)) return send(res, 400, { error: "Tên phiên chỉ gồm chữ thường, số và dấu gạch ngang (tối đa 30 ký tự)." });
+    // A window opened for a project is named after it; a project another live session uses is refused (nothing is opened).
+    const project = String(b.project || "").trim().toLowerCase();
+    if (project) {
+      if (!/^[a-z0-9][a-z0-9-]{1,60}$/.test(project) || !existsSync(join(sharedWs, "projects", project, "project.json"))) return send(res, 400, { error: "Chọn một dự án có sẵn." });
+      const busy = projectBusyBy(root, project, project);
+      if (busy) return send(res, 409, { error: "Dự án " + project + " đang được phiên \"" + sessionLabel(busy.session) + "\" dùng. Chọn dự án khác hoặc đóng phiên đó trước." });
+      touchRecent(project);
+      return send(res, 200, openSessionWindow(project, project));
+    }
     return send(res, 200, openSessionWindow(name));
+  }
+  if (path === "/api/sessions/projects" && req.method === "GET") return send(res, 200, { projects: projectChoices() });
+  // The project selected in this window's Dự án popup is the one this window uses: another live session cannot take it.
+  if (path === "/api/session/project" && req.method === "POST") {
+    const b = JSON.parse((await body(req)).toString("utf8") || "{}");
+    const project = String(b.project || "").trim().toLowerCase();
+    if (project) {
+      if (!/^[a-z0-9][a-z0-9-]{1,60}$/.test(project) || !existsSync(join(sharedWs, "projects", project, "project.json"))) return send(res, 400, { error: "Chọn một dự án có sẵn." });
+      const busy = projectBusyBy(root, project, session);
+      if (busy) return send(res, 409, { error: "Dự án " + project + " đang được phiên \"" + sessionLabel(busy.session) + "\" dùng. Chọn dự án khác hoặc đóng phiên đó trước." });
+    }
+    setSessionProject(root, session, process.pid, project);
+    if (project) touchRecent(project);
+    return send(res, 200, { ok: true, project });
   }
   // Errors in the window (app.js), kept like the Windows window's.
   if (path === "/api/client-error" && req.method === "POST") {
@@ -365,6 +399,8 @@ async function handle(req, res) {
   }
   // Dự án: put products of a project into the run queue (urls.txt + references.json) with 2 library scenes each chosen by Claude
   // (docs/queue-prompt.md). Prepares only: no image creation, no review text. One agent run at a time, like the other modes.
+  // "Thêm vào hàng chờ": first the READY rows of prepared.csv go into the queue instantly (src/scan.ps1 queue-from-prepared, no agent); only for the
+  // shortfall a Claude queue run starts on the light runner (no browser, so it may run while Bắt đầu runs).
   if (path === "/api/project/queue/run" && req.method === "POST") {
     const given = JSON.parse((await body(req)).toString("utf8") || "{}");
     const id = String(given.project || "").trim();
@@ -372,11 +408,40 @@ async function handle(req, res) {
     const count = Math.min(200, Math.max(1, Math.round(Number(given.count)) || 10));
     const scenes = Math.min(4, Math.max(1, Math.round(Number(given.scenes)) || 2));
     const category = String(given.category || "").replace(/[\r\n"]+/g, " ").trim().slice(0, 120);
-    if (run.proc) return send(res, 409, { error: "Đang chạy." });
-    if (agent.isActive()) return send(res, 409, { error: "Đã có một lượt Claude đang chạy (Flow, quét hoặc cập nhật). Chờ xong hoặc bấm Dừng." });
-    const options = `category: ${category ? `"${category}"` : "(all categories)"}; only unused (used = F): ${given.unused_only ? "T" : "F"}; products to queue: ${count}; scenes per product: ${scenes}`;
-    const r = agent.start({ run: "queue-" + newRunId().slice(6), mode: "queue", project: id, options });
+    const fast = await runScan(["queue-from-prepared", "-Project", id, "-Limit", String(count), "-SceneCount", String(scenes), ...projectArgs({ ...given, category })]);
+    if (!fast.ok) return send(res, 500, { error: fast.error || "Chưa lấy được từ kho đã chuẩn bị." });
+    const got = Number(fast.queued) || 0, need = count - got, dropped = fast.dropped || [];
+    if (need <= 0) return send(res, 200, { ok: true, from_prepared: got, needs_claude: 0, dropped, finished: true });
+    if (light.isActive()) return send(res, 200, { ok: true, from_prepared: got, needs_claude: need, started: false, dropped, message: "Đang có một lượt Claude chuẩn bị / thêm hàng chờ chạy: chờ xong hoặc bấm Dừng rồi thêm tiếp phần còn thiếu." });
+    const options = `category: ${category ? `"${category}"` : "(all categories)"}; only unused (used = F): ${given.unused_only ? "T" : "F"}; products to queue: ${need}; scenes per product: ${scenes}`;
+    const r = light.start({ run: "queue-" + newRunId().slice(6), mode: "queue", project: id, options });
+    return send(res, r.ok ? 200 : r.status, r.ok ? { ok: true, from_prepared: got, needs_claude: need, started: true, run: r.run_id, dropped } : { error: r.error, from_prepared: got, needs_claude: need });
+  }
+  // "Chuẩn bị trước": Claude picks the scenes of every not-yet-prepared product and stores them in prepared.csv (docs/prep-prompt.md); no queue write.
+  if (path === "/api/project/prep/run" && req.method === "POST") {
+    const given = JSON.parse((await body(req)).toString("utf8") || "{}");
+    const id = String(given.project || "").trim();
+    if (!/^[a-z0-9][a-z0-9-]{1,60}$/.test(id) || !existsSync(join(sharedWs, "projects", id, "project.json"))) return send(res, 400, { error: "Chọn một dự án có sẵn." });
+    const scenes = Math.min(4, Math.max(1, Math.round(Number(given.scenes)) || 2));
+    const category = String(given.category || "").replace(/[\r\n"]+/g, " ").trim().slice(0, 120);
+    const limit = Math.min(500, Math.max(0, Math.round(Number(given.limit)) || 0));
+    if (light.isActive()) return send(res, 409, { error: "Đã có một lượt Claude chuẩn bị / thêm hàng chờ đang chạy. Chờ xong hoặc bấm Dừng." });
+    const options = `category: ${category ? `"${category}"` : "(all categories)"}; only unused (used = F): ${given.unused_only ? "T" : "F"}; products to prepare: ${limit || "all"}; scenes per product: ${scenes}`;
+    const r = light.start({ run: "prep-" + newRunId().slice(6), mode: "prep", project: id, options });
     return send(res, r.status, r.ok ? { ok: true, run: r.run_id, started: r.started } : { error: r.error });
+  }
+  // "Đã chuẩn bị: X sẵn sàng / Y sản phẩm" for a project (and the category / only-unused filter of the popup).
+  if (path === "/api/project/prepared" && req.method === "GET") {
+    const id = String(url.searchParams.get("project") || "").trim();
+    if (!/^[a-z0-9][a-z0-9-]{1,60}$/.test(id) || !existsSync(join(sharedWs, "projects", id, "project.json"))) return send(res, 400, { error: "Chọn một dự án có sẵn." });
+    const r = await runScan(["prep-status", "-Project", id, ...projectArgs({ category: url.searchParams.get("category"), unused_only: url.searchParams.get("unused_only") === "1" })], 60000);
+    return send(res, r.ok ? 200 : 500, r.ok ? r : { error: r.error });
+  }
+  // Status of the light runner (queue and prep runs): its own file runs/prep-run.json.
+  if (path === "/api/light/status" && req.method === "GET") return send(res, 200, { ...light.status(), light: true });
+  if ((path === "/api/project/queue/stop" || path === "/api/project/prep/stop") && req.method === "POST") {
+    if (!light.isActive()) return send(res, 409, { error: "Không có lượt chuẩn bị / thêm vào hàng chờ nào đang chạy." });
+    const r = light.stop(); return send(res, r.status, r.ok ? { ok: true } : { error: r.error });
   }
   // Scenes box = 0: no Claude run. The first N products in table order (category / only-unused filter) go into the queue with only their link and
   // project photo (src/scan.ps1 queue-direct, the same writer as queue-add).
@@ -392,15 +457,7 @@ async function handle(req, res) {
       send(res, 500, { error: r?.error || (err && err.message) || "Chưa thêm vào hàng chờ được." });
     });
   }
-  if (path === "/api/project/queue/status" && req.method === "GET") {
-    const st = agent.status();
-    if (st.mode !== "queue") return send(res, 200, { mode: st.mode, queue_run: false, other_active: st.active, active: false, status: "idle", tail: [] });
-    return send(res, 200, { ...st, queue_run: true, other_active: false });
-  }
-  if (path === "/api/project/queue/stop" && req.method === "POST") {
-    if (agent.status().mode !== "queue") return send(res, 409, { error: "Không có lượt thêm vào hàng chờ nào đang chạy." });
-    const r = agent.stop(); return send(res, r.status, r.ok ? { ok: true } : { error: r.error });
-  }
+  if (path === "/api/project/queue/status" && req.method === "GET") return send(res, 200, { ...light.status(), light: true });
   // Own Chrome sign-in for Claude (Flow): status (short headless check), open (normal Chrome window for the person to sign in).
   // Which browser Claude (Flow) drives: everyday Chrome (a profile chosen from this machine) or the tool's own Chrome.
   if (path === "/api/flow-browser" && req.method === "GET") return send(res, 200, { ...readFlowBrowser(sharedWs), ...localChromeProfiles() });
@@ -479,7 +536,7 @@ function startMenuBar() {
   menuBar = spawn("osascript", ["-l", "JavaScript", join(here, "menubar.js")], { env: { ...process.env, PR_PORT: String(PORT) }, stdio: "ignore" });
   menuBar.on("error", () => { menuBar = null; });
 }
-process.on("exit", () => { try { menuBar?.kill(); } catch {} try { agent.shutdown(); } catch {} try { releaseLocks(root, session); unregisterSession(root, session); } catch {} });
+process.on("exit", () => { try { menuBar?.kill(); } catch {} try { agent.shutdown(); } catch {} try { light.shutdown(); } catch {} try { releaseLocks(root, session); unregisterSession(root, session); } catch {} });
 for (const sig of ["SIGINT", "SIGTERM"]) process.on(sig, () => process.exit(0));
 
 // The Google accounts the Flow account combo may list: those signed in in the chosen Chrome profile (extension mode), or in the tool's own Chrome.
@@ -517,22 +574,61 @@ function openEverydayChrome(browser) {
 // ----- Sessions (several windows from one source) -----
 let self = null; // this window's registry entry, once the server listens
 function profileLabel() { try { const b = readFlowBrowser(sharedWs); return profileLabelOf(b, localChromeProfiles().profiles); } catch { return ""; } }
+function selfProject() { try { return listSessions(root).find((e) => e.pid === process.pid)?.project || ""; } catch { return ""; } }
 function sessionInfo() {
   const label = profileLabel();
   const group = peekGroup(workspace, session);
-  return { session, label: sessionLabel(session), stt: self?.stt || 0, port: PORT, pid: process.pid, profile_label: label, running: agent.isActive(),
-    next_group: group, title: sessionTitle({ stt: self?.stt, session, profileLabel: label }) };
+  const project = selfProject();
+  return { session, label: sessionLabel(session), stt: self?.stt || 0, port: PORT, pid: process.pid, profile_label: label, running: agent.isActive() || light.isActive(), project,
+    next_group: group, title: sessionTitle({ stt: self?.stt, session, profileLabel: label, project }) };
 }
 function sessionRows() {
   return listSessions(root).map((e) => ({ stt: e.stt, session: e.session, label: sessionLabel(e.session), port: e.port, pid: e.pid, profile_label: e.profile_label || "", running: !!e.running, project: e.project || "", current: e.pid === process.pid }));
 }
-function syncRegistry() { try { if (self) updateSession(root, session, process.pid, { profile_label: profileLabel(), running: agent.isActive() }); } catch {} }
+// The projects a new window can be opened for: every folder of workspace/projects with a project.json, and who uses it right now.
+// products.csv: how many rows and how many are still unused (column "used" is not T / true / 1 / x / y / yes). Quoted cells may hold commas.
+function csvCells(line) {
+  const out = []; let cur = "", q = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (q) { if (ch === '"') { if (line[i + 1] === '"') { cur += '"'; i++; } else q = false; } else cur += ch; }
+    else if (ch === '"') q = true; else if (ch === ",") { out.push(cur); cur = ""; } else cur += ch;
+  }
+  out.push(cur); return out;
+}
+function csvCounts(text) {
+  const lines = text.replace(/^\uFEFF/, "").split(/\r?\n/).filter((l) => l.trim());
+  if (lines.length < 2) return { products: 0, unused: 0 };
+  const used = csvCells(lines[0]).map((c) => c.trim().toLowerCase()).indexOf("used");
+  let unused = 0;
+  for (const l of lines.slice(1)) { const v = used >= 0 ? (csvCells(l)[used] || "").trim().toLowerCase() : ""; if (!/^(t|true|1|x|y|yes)$/.test(v)) unused++; }
+  return { products: lines.length - 1, unused };
+}
+// Which project was used last (a window opened for it or selected it): config/recent-projects.json, for the "recently used first" order.
+const recentFile = join(sharedWs, "config", "recent-projects.json");
+function readRecent() { try { return JSON.parse(readFileSync(recentFile, "utf8")); } catch { return {}; } }
+function touchRecent(id) { try { const all = readRecent(); all[id] = new Date().toISOString(); mkdirSync(join(recentFile, ".."), { recursive: true }); writeFileSync(recentFile, JSON.stringify(all, null, 2)); } catch {} }
+function projectChoices() {
+  const base = join(sharedWs, "projects");
+  let names = []; try { names = readdirSync(base); } catch { return []; }
+  const open = new Set(listSessions(root).map((e) => e.session));
+  return names.filter((n) => /^[a-z0-9][a-z0-9-]{1,60}$/.test(n) && existsSync(join(base, n, "project.json"))).map((n) => {
+    let info = {}; try { info = JSON.parse(readFileSync(join(base, n, "project.json"), "utf8").replace(/^\uFEFF/, "")); } catch {}
+    const busy = projectBusyBy(root, n, session);
+    let products = 0, unused = 0, scanned = false;
+    try { const t = csvCounts(readFileSync(join(base, n, "products.csv"), "utf8")); products = t.products; unused = t.unused; scanned = true; } catch {}
+    const recent = readRecent()[n] || info.updated || info.last_scan || "";
+    const window = listSessions(root).find((e) => e.session === n);
+    return { id: n, name: info.name || n, site: info.site || "", products, unused, scanned, recent, busy: busy ? busy.session : "", busy_via: busy ? busy.via : "", window_open: open.has(n), window_stt: window ? window.stt : 0, current: window ? window.pid === process.pid : false };
+  }).sort((a, b) => String(b.recent).localeCompare(String(a.recent)) || a.id.localeCompare(b.id));
+}
+function syncRegistry() { try { if (self) updateSession(root, session, process.pid, { profile_label: profileLabel(), running: agent.isActive() || light.isActive() }); } catch {} }
 // Opens (or refocuses, when it already runs) the window of a session: the launcher does it, so macOS and Windows behave alike.
-function openSessionWindow(name) {
+function openSessionWindow(name, project = "") {
   try {
     const windows = process.platform === "win32";
     const cmd = windows ? "powershell.exe" : "bash";
-    const args = windows ? ["-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File", join(root, "core", "launch.ps1"), "-Session", name] : [join(root, "start-app.command"), name];
+    const args = windows ? ["-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-File", join(root, "core", "launch.ps1"), "-Session", name, "-Project", project] : [join(root, "start-app.command"), name, project];
     const child = spawn(cmd, args, { cwd: root, detached: true, stdio: "ignore", windowsHide: true });
     child.on("error", () => {});
     child.unref();
@@ -562,7 +658,7 @@ function listen(attempt = 0) {
     }
     throw e;
   });
-  server.listen(PORT, "127.0.0.1", () => { try { self = registerSession(root, { session, port: PORT, extra: { profile_label: profileLabel(), running: false } }); setInterval(syncRegistry, 5000).unref(); } catch (e) { logError("Sessions", e.message); } startMenuBar(); if (!process.argv.includes("--no-open")) openWindow(); });
+  server.listen(PORT, "127.0.0.1", () => { try { self = registerSession(root, { session, port: PORT, extra: { profile_label: profileLabel(), running: false, project: /^[a-z0-9][a-z0-9-]{1,60}$/.test(process.env.PR_PROJECT || "") ? process.env.PR_PROJECT : "" } }); setInterval(syncRegistry, 5000).unref(); } catch (e) { logError("Sessions", e.message); } startMenuBar(); if (!process.argv.includes("--no-open")) openWindow(); });
 }
 startRpc();
 listen();

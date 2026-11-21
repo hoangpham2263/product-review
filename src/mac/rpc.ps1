@@ -22,7 +22,8 @@ $workspace = Initialize-ProjectWorkspace $root
 . (Join-Path $srcDir 'application/progress.ps1')
 $mapPath = Join-Path $workspace.Root 'reference-inputs/references.json'
 $libraryRoot = Join-Path $root 'workspace/source-photos'
-$projectsRoot = Join-Path $workspace.Root 'projects'
+# The project store is SHARED by every session (always the literal workspace/projects of the install), never the session's own workspace.
+$projectsRoot = Join-Path $root 'workspace/projects'
 
 function Test-HttpUrl([string]$Url) { $uri = $null; [Uri]::TryCreate($Url, [UriKind]::Absolute, [ref]$uri) -and $uri.Scheme -in @('http', 'https') }
 function Get-EntryInfo([string]$MapFile, [string]$Url) {

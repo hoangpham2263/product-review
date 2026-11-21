@@ -14,6 +14,9 @@ export const DEFAULT_MINUTES = 0;
 export const MAX_LINE = 300, LOG_LINES = 2000, TAIL_LINES = 30;
 export const PLAYWRIGHT_TOOLS = ["browser_tabs", "browser_navigate", "browser_snapshot", "browser_click", "browser_type", "browser_press_key", "browser_wait_for", "browser_run_code_unsafe", "browser_take_screenshot", "browser_evaluate", "browser_file_upload"].map((n) => "mcp__playwright__" + n);
 export const ALLOWED_TOOLS = ["Bash", "Read", "Write", "Edit", "Glob", "Grep", ...PLAYWRIGHT_TOOLS];
+// queue / prep runs only look at photos and call src/scan.ps1: no browser, no Playwright MCP, no Chrome profile.
+export const LIGHT_TOOLS = ["Bash", "Read", "Write", "Edit", "Glob", "Grep"];
+export const LIGHT_MODES = ["queue", "prep"];
 
 const SCRUBS = [
   [/\bBearer\s+\S+/gi, "Bearer [hidden]"],
@@ -131,7 +134,7 @@ export function checkExtensionProfile(profile, { profiles = localChromeProfiles(
 export const newRunId = (d = new Date()) => "agent-" + d.toISOString().replace(/\D/g, "").slice(0, 14);
 
 // The text block of docs/agent-prompt.md (mode "flow") or docs/scan-prompt.md (mode "scan"), placeholders filled.
-export const PROMPT_FILES = { flow: "agent-prompt.md", scan: "scan-prompt.md", reviews: "reviews-count-prompt.md", queue: "queue-prompt.md" };
+export const PROMPT_FILES = { flow: "agent-prompt.md", scan: "scan-prompt.md", reviews: "reviews-count-prompt.md", queue: "queue-prompt.md", prep: "prep-prompt.md" };
 export function buildPrompt({ toolRoot, run, options = "defaults", mode = "flow", site = "", max = 20, project = "" }) {
   const file = PROMPT_FILES[mode];
   if (!file) throw new Error("Unknown run mode: " + mode);
@@ -169,9 +172,12 @@ export function findClaude(plat = osPlatform()) {
   } catch { return { found: false, path: "" }; }
 }
 
-export function createAgentRunner({ toolRoot, workspace, profileDir = join(workspace, "chrome-profile"), headless = process.env.PR_FLOW_HEADLESS === "1", getBrowser = () => ({ mode: "extension", profile: "Profile 1" }), session = "", checkProfile = checkExtensionProfile, findCli = findClaude, plat = osPlatform(), spawnFn = spawn, killTree = (c) => defaultKill(c, plat), npxOk = () => defaultNpx(plat), now = () => Date.now(), graceMs = 4000, minutes = DEFAULT_MINUTES, maxTurns = 0 }) {
+export function createAgentRunner({ toolRoot, workspace, profileDir = join(workspace, "chrome-profile"), headless = process.env.PR_FLOW_HEADLESS === "1", getBrowser = () => ({ mode: "extension", profile: "Profile 1" }), session = "", kind = "main", checkProfile = checkExtensionProfile, findCli = findClaude, plat = osPlatform(), spawnFn = spawn, killTree = (c) => defaultKill(c, plat), npxOk = () => defaultNpx(plat), now = () => Date.now(), graceMs = 4000, minutes = DEFAULT_MINUTES, maxTurns = 0 }) {
   const runsDir = join(workspace, "runs"), tmpDir = join(workspace, "tmp");
-  const stateFile = join(runsDir, "agent-run.json"), logFile = join(runsDir, "agent-run.log");
+  // Two runner instances per server: "main" (Flow images + reviews, scan, review count) and "light" (queue, prep: no browser). Own state and log files,
+  // so a prep / queue run goes on while Bắt đầu runs; two light runs at once stay forbidden (each runner is one run at a time).
+  const stateName = kind === "light" ? "prep-run" : "agent-run";
+  const stateFile = join(runsDir, stateName + ".json"), logFile = join(runsDir, stateName + ".log");
   let cur = null, last = null;
 
   const readState = () => { try { return JSON.parse(readFileSync(stateFile, "utf8")); } catch { return null; } };
@@ -215,7 +221,7 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
     clearTimeout(run.timer);
     if (run.buf.trim()) handleLine(run, run.buf.trim());
     try { rmSync(run.cfg, { force: true }); } catch {}
-    try { releaseLocks(toolRoot, session); } catch {}
+    try { releaseLocks(toolRoot, session, process.pid, kind); } catch {}
     // An image run (mode "flow") that finished its process cleanly but produced nothing for ANY of its items (no image, no result) is a failed run,
     // not a success: the final state must not look like "done, 0 errors" when 0 of N items were completed.
     let nothing = "";
@@ -246,43 +252,46 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
   // One run at a time for all: they share the one Chrome profile.
   function start({ run: runId = newRunId(), options = "defaults", mode = "flow", site = "", max = 20, project = "" } = {}) {
     if (!/^[\w.-]{3,64}$/.test(runId)) return { ok: false, status: 400, error: "Invalid run id." };
+    const lightMode = LIGHT_MODES.includes(mode);
+    if ((kind === "light") !== lightMode) return { ok: false, status: 400, error: `Mode ${mode} does not run on this runner.` };
     if (cur) return { ok: false, status: 409, error: `An agent run is already active (started ${cur.state.started}). Wait for it or press Stop.` };
     const found = findCli();
     if (!found?.found) return { ok: false, status: 400, error: "Claude CLI not found: install Claude Code, or set PR_CLAUDE_CLI to its path." };
-    if (!npxOk()) return { ok: false, status: 400, error: "npx is not available (it comes with Node.js): the Playwright MCP cannot start." };
+    if (!lightMode && !npxOk()) return { ok: false, status: 400, error: "npx is not available (it comes with Node.js): the Playwright MCP cannot start." };
     let prompt;
     try { prompt = buildPrompt({ toolRoot, run: runId, options, mode, site, max, project }); } catch (e) { return { ok: false, status: 500, error: sanitize(e.message) }; }
     mkdirSync(tmpDir, { recursive: true }); mkdirSync(runsDir, { recursive: true });
     const cfg = join(tmpDir, `mcp-${runId}-${randomBytes(3).toString("hex")}.json`);
-    const bc = getBrowser() || {}, ext = bc.mode !== "own";
+    const bc = lightMode ? {} : (getBrowser() || {}), ext = !lightMode && bc.mode !== "own";
     if (ext) { const chk = checkProfile(bc.profile, { account: mode === "flow" ? readFlowAccount(toolRoot) : "" }); if (!chk.ok) return { ok: false, status: 409, error: chk.error }; }
     // Sessions (several windows): the own Chrome profile and a project are used by one live session at a time.
     const holderText = (h) => "phiên \"" + sessionLabel(h.session) + "\"";
-    if (!ext) {
-      const c = claimLock(toolRoot, "chrome", "own", session);
+    if (!lightMode && !ext) {
+      const c = claimLock(toolRoot, "chrome", "own", session, process.pid, kind);
       if (!c.ok) return { ok: false, status: 409, error: "Chrome riêng của tool đang được " + holderText(c.holder) + " dùng. Chọn Chrome thật (profile có sẵn trên máy) hoặc đợi phiên đó chạy xong." };
     }
     let projectId = project;
     if (!projectId && mode === "scan" && site) { try { projectId = new URL(site).hostname.replace(/^www\./, "").replace(/\./g, "-"); } catch {} }
     if (projectId) {
-      const c = claimLock(toolRoot, "project", projectId, session);
-      if (!c.ok) { releaseLocks(toolRoot, session); return { ok: false, status: 409, error: "Dự án " + projectId + " đang được " + holderText(c.holder) + " dùng. Chọn dự án khác hoặc đợi phiên đó xong để khỏi ghi đè dữ liệu của nhau." }; }
+      const c = claimLock(toolRoot, "project", projectId, session, process.pid, kind);
+      if (!c.ok) { releaseLocks(toolRoot, session, process.pid, kind); return { ok: false, status: 409, error: "Dự án " + projectId + " đang được " + holderText(c.holder) + " dùng. Chọn dự án khác hoặc đợi phiên đó xong để khỏi ghi đè dữ liệu của nhau." }; }
     }
     const group = ext ? takeGroup(workspace, session) : null;
-    writeFileSync(cfg, JSON.stringify(mcpConfig({ plat, profile: profileDir, headless, extension: ext ? { profile: bc.profile, name: group.name, color: group.color } : null })));
-    if (!ext) mkdirSync(profileDir, { recursive: true });
-    const args = ["-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "default", ...(maxTurns > 0 ? ["--max-turns", String(maxTurns)] : []), "--allowedTools", ALLOWED_TOOLS.join(","), "--add-dir", toolRoot, "--mcp-config", cfg];
+    if (!lightMode) writeFileSync(cfg, JSON.stringify(mcpConfig({ plat, profile: profileDir, headless, extension: ext ? { profile: bc.profile, name: group.name, color: group.color } : null })));
+    if (!lightMode && !ext) mkdirSync(profileDir, { recursive: true });
+    const args = ["-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "default", ...(maxTurns > 0 ? ["--max-turns", String(maxTurns)] : []), "--allowedTools", (lightMode ? LIGHT_TOOLS : ALLOWED_TOOLS).join(","), "--add-dir", toolRoot, ...(lightMode ? ["--strict-mcp-config"] : ["--mcp-config", cfg])];
     const env = { ...process.env };
     const cmd = plat === "win32" && /\.(cmd|bat)$/i.test(found.path) ? ["cmd", ["/c", found.path, ...args]] : [found.path, args];
     let child;
     try { child = spawnFn(cmd[0], cmd[1], { cwd: toolRoot, env, windowsHide: true, detached: false, stdio: ["pipe", "pipe", "pipe"] }); }
-    catch (e) { try { rmSync(cfg, { force: true }); } catch {} try { releaseLocks(toolRoot, session); } catch {} return { ok: false, status: 500, error: sanitize(e.message) }; }
+    catch (e) { try { rmSync(cfg, { force: true }); } catch {} try { releaseLocks(toolRoot, session, process.pid, kind); } catch {} return { ok: false, status: 500, error: sanitize(e.message) }; }
     const started = new Date(now()).toISOString();
     const run = { child, cfg, lines: [], buf: "", written: 0, stderr: [], ended: false, forced: "", result: null, timer: null,
       state: { run_id: runId, mode, project, pid: child.pid ?? null, started, updated: started, status: "running", exit_code: null, last_text: "", turns: 0, error: "" } };
     cur = run;
     try { writeFileSync(logFile, ""); } catch {}
-    addLine(run, mode === "scan" ? "Bắt đầu: Claude quét " + site + " (mã lượt " + runId + ")"
+    addLine(run, mode === "prep" ? "Bắt đầu: Claude chuẩn bị trước ảnh bối cảnh cho các sản phẩm của dự án " + project + " (mã lượt " + runId + ")"
+      : mode === "scan" ? "Bắt đầu: Claude quét " + site + " (mã lượt " + runId + ")"
       : mode === "queue" ? "Bắt đầu: Claude thêm sản phẩm của dự án " + project + " vào hàng chờ (mã lượt " + runId + ")"
       : mode === "reviews" ? "Bắt đầu: Claude đọc số review trên các trang sản phẩm của dự án " + project + " (mã lượt " + runId + ")"
       : "Bắt đầu: Claude điều khiển Google Flow (mã lượt " + runId + ")");
@@ -292,7 +301,9 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
     child.on("error", (e) => finish(run, null, e.message));
     child.on("close", (code) => finish(run, code));
     child.stdin?.on("error", () => {});
-    const note = mode === "queue"
+    const note = mode === "prep"
+      ? "RUN-NOW NOTE: this run only PREPARES scene picks in advance (no browser needed, do not open any page): look at photos with the Read tool and use the scan.ps1 prep commands. It never touches the queue, never starts image creation and never writes review text.\n\n"
+      : mode === "queue"
       ? "RUN-NOW NOTE: this run only PREPARES the queue (no browser needed, do not open any page): look at photos with the Read tool and use the scan.ps1 queue commands. It never starts image creation and never writes review text.\n\n"
       : mode === "reviews"
       ? "RUN-NOW NOTE: this run uses the tool's OWN Chrome (a dedicated profile, no sign-in needed to read a product page)" + (headless ? ", running in the background (headless)" : "") + ". There is no Connect step and no extension: ignore any instruction to click Connect or wait for the person; start with browser_tabs or browser_navigate. If a page shows a login wall or captcha, stop and report it (never sign in for the person). The run is READ ONLY: never write, submit or change any review.\n\n"
