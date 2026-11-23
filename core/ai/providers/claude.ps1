@@ -40,10 +40,10 @@ function Invoke-ClaudeText([string]$Prompt, [string[]]$Images, [string]$ResultFi
     # --tools Read: the only tool there is. --strict-mcp-config with no --mcp-config: no MCP server at all.
     # --no-session-persistence: nothing is kept in the user's Claude history. The prompt goes in on stdin.
     $commandArgs = @('-p', '--output-format', 'json', '--tools', 'Read', '--allowedTools', 'Read', '--strict-mcp-config', '--permission-mode', 'default', '--no-session-persistence', '--max-turns', '12')
-    # No model given: this window's choice (workspace/config/run-settings.json claudeModel / claudeEffort, default claude-sonnet-4-5), alias or full id as stored.
+    # No model given: this window's choice (workspace/config/run-settings.json claudeModel / claudeEffort, default claude-sonnet-4-6), alias or full id as stored.
     $effort = ''
     if (-not $Model) {
-        $Model = 'claude-sonnet-4-5'
+        $Model = 'claude-sonnet-4-6'
         try {
             $ws = if ($env:PR_WORKSPACE) { $env:PR_WORKSPACE } else { Join-Path $PSScriptRoot '../../../workspace' }
             $rs = Get-Content -LiteralPath (Join-Path $ws 'config/run-settings.json') -Raw -Encoding UTF8 | ConvertFrom-Json

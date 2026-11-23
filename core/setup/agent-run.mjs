@@ -154,9 +154,9 @@ const flowFocus = (_flow, text) => text;
 // has it". So a chosen profile without the extension (or missing) refuses to start; another profile is never used instead.
 // The Google account chosen for Flow (workspace/config/run-settings.json flowAccount), "" when none.
 // PER SESSION: the Flow account of THIS window (its workspace/config/run-settings.json, seeded from the default session's file).
-// The Claude model + effort of this window (run-settings.json claudeModel: any listed alias / full id or a custom id, DEFAULT claude-sonnet-4-5;
+// The Claude model + effort of this window (run-settings.json claudeModel: any listed alias / full id or a custom id, DEFAULT claude-sonnet-4-6;
 // claudeEffort: a `claude --effort` level, "" = no flag). The value is passed to `claude --model` exactly as stored.
-export const CLAUDE_DEFAULT_MODEL = "claude-sonnet-4-5";
+export const CLAUDE_DEFAULT_MODEL = "claude-sonnet-4-6";
 export const CLAUDE_MODEL_RE = /^[A-Za-z0-9._\-\[\]]{1,60}$/;
 const fam = (name, note, items) => ({ family: name, note, models: items.map(([id, label]) => ({ id, label })) });
 // All ids verified with `claude --model <id>` on CLI 2.1.323. Not offered: claude-opus-4-1 / -4-0 (remapped), claude-sonnet-4-0 (retired), claude-haiku-3-5 (unknown).
