@@ -40,7 +40,7 @@ function Get-ReviewDraftIssue([string]$Text, $Samples) {
         for ($i = 0; $i -le $tokens.Count - 8; $i++) {
             $phrase = $tokens[$i..($i + 7)] -join ' '
             if ((' ' + $normalized + ' ').Contains(' ' + $phrase + ' ')) {
-                return 'The draft reused eight consecutive words from a reference review. Write original wording based on the attached photo.'
+                return 'The draft reused eight consecutive words from a reference review: "' + $phrase + '". Rewrite that part in your own words, and make sure no run of eight words matches the reference, based on the attached photo.'
             }
         }
     }

@@ -94,6 +94,7 @@ The reviewed product is: $($context.product). Visible details to draw from: $($c
 
 STEP 2 - STYLE AND LENGTH
 $sampleText
+The reference above only shows the tone and the length: write your own sentences about the photo and never reuse eight words in a row from it (a draft that does is rejected).
 
 STEP 3 - RULES (every review follows all of them)
 $rules
