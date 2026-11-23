@@ -94,13 +94,16 @@ export function friendlyTool(name, input = {}, mode = "flow") {
       if (/set-used/i.test(cmd)) return "Đánh dấu link đã dùng";
       return "Kiểm tra bảng dự án";
     }
-    if (/register-image/i.test(cmd)) return "Lưu ảnh Flow vừa tạo vào kết quả";
-    if (/flow-brief/i.test(cmd)) return "Chuẩn bị nội dung gửi Flow cho sản phẩm";
-    if (/set-sign-text/i.test(cmd)) return "Lưu chữ trên biển đã chọn cho sản phẩm";
-    if (/sign-brief/i.test(cmd)) return "Chọn chữ trên biển theo cảnh";
-    if (/agent\.ps1\s+(review-brief|write-review)/i.test(cmd)) return "Ghi review cho sản phẩm";
-    if (/agent\.ps1\s+finish/i.test(cmd)) return "Hoàn tất sản phẩm (tải kết quả)";
-    if (/flow-pace\.mjs\s+gate/i.test(cmd)) return "Chờ nhịp gửi prompt Flow";
+    // Every per-item step names its item ("Mục 035 · ...") so the progress line tells at a glance what is happening to which item.
+    const item = (cmd.match(/-Item\s+["']?(\d{3})/i) || cmd.match(/--tag\s+["']?(\d{3})/i) || [])[1];
+    const m = (t) => (item ? `Mục ${item} · ${t}` : t);
+    if (/register-image/i.test(cmd)) return m(/-SignRead/i.test(cmd) ? "Lưu ảnh Flow + kiểm chữ trên biển" : "Lưu ảnh Flow vừa tạo vào kết quả");
+    if (/flow-brief/i.test(cmd)) return m(/-Safe\b/i.test(cmd) ? "Flow từ chối → thử lại 1 lần bằng mô tả an toàn" : "Chuẩn bị nội dung gửi Flow");
+    if (/set-sign-text/i.test(cmd)) return m("Lưu chữ trên biển đã chọn");
+    if (/sign-brief/i.test(cmd)) return m("Chọn chữ trên biển theo cảnh");
+    if (/agent\.ps1\s+(review-brief|write-review)/i.test(cmd)) return m("Viết review");
+    if (/agent\.ps1\s+finish/i.test(cmd)) return m("Hoàn tất (tải kết quả lên kho)");
+    if (/flow-pace\.mjs\s+gate/i.test(cmd)) return m("Chờ nhịp rồi gửi prompt Flow");
     if (/flow-pace\.mjs\s+download-lock/i.test(cmd)) return "Khóa / mở khóa tải ảnh";
     return "Chạy lệnh của công cụ";
   }

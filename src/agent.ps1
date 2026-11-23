@@ -6,7 +6,7 @@ param(
     [Parameter(Position = 0)][string]$Command = '',
     [string]$Run = '', [string]$Item = '', [string]$File = '', [string]$From = '',
     [int]$Limit = 0, [string]$List = '',
-    [string]$Text = '', [string]$Reason = '', [string]$SignRead = '',
+    [string]$Text = '', [string]$Reason = '', [string]$SignRead = '', [switch]$Safe,
     [Parameter(ValueFromRemainingArguments = $true)]$Rest
 )
 
@@ -285,12 +285,14 @@ function Get-FlowAspect([string]$ImagePath) {
 
 # $SignText: optional wording for a made-to-order lettered product (references.json scene.sign_text, " | " = line break).
 # Same rule as the Codex path (02-create-image.ps1): the sample lettering of the product photo is replaced entirely.
-function Get-CondensedFlowPrompt($Context, [string]$SignText = '') {
+function Get-CondensedFlowPrompt($Context, [string]$SignText = '', [bool]$SafeArt = $false) {
     $details = ([string]$Context.details -replace '\s+', ' ').Trim()
     # Exact wording: the details must not quote the sample words ("Your Name") as something to copy.
     $exactSign = [bool]@(Get-SignWordingLines $SignText).Count
     $productName = [string]$Context.product
     if ($exactSign) { $details = Remove-SampleLettering $details $Context; $productName = Remove-SampleLettering $productName $Context }
+    # -Safe (after Flow refused the item for "policy"): a human figure on the product is described as printed artwork, never as a person.
+    if ($SafeArt) { foreach ($v in @('details', 'productName')) { $t = Get-Variable -Name $v -ValueOnly; $t = [regex]::Replace($t, "(?i)\b(?:a |an |the )?(?:young |pretty |beautiful |sexy )?(?:woman|women|man|men|girl|girls|boy|boys|lady|ladies|female|male|person|people|model)(?:'s)?\s+(?:face|head|portrait|profile)\b", 'an illustrated figure'); $t = [regex]::Replace($t, "(?i)\b(?:a |an |the )?(?:young |pretty |beautiful |sexy )?(?:woman|women|man|men|girl|girls|boy|boys|lady|ladies|female|male|person|people|model)(?:'s)?\b", 'an illustrated figure'); $t = [regex]::Replace($t, '(?i)\b(?:faces?|lips|bod(?:y|ies))\b', 'drawn portrait'); Set-Variable -Name $v -Value $t } }
     if ($details.Length -gt 600) {
         # Cut at a sentence boundary (never mid-word); no sentence end in the first 600 characters = the last whole word.
         $head = $details.Substring(0, 600)
@@ -326,8 +328,9 @@ function Get-CondensedFlowPrompt($Context, [string]$SignText = '') {
     }
     @(
         $first
-        "Image 2 is the ONLY source for the product's design: $($Context.product). Copy its shape, proportions, colors, pattern, material and every visible detail exactly; its background and props are not part of the result."
+        "Image 2 is the ONLY source for the product's design: $productName. Copy its shape, proportions, colors, pattern, material and every visible detail exactly; its background and props are not part of the result."
         "Key details of image 2 (the picture wins if it differs): $details"
+        $(if ($SafeArt) { 'The figure on the product is a flat printed illustration that belongs to the sign artwork, not a real person: no real person is shown, added or edited; only the product is placed into image 1.' } else { '' })
         'Photo style: a quick casual snapshot taken with a phone camera, an everyday angle, available light only, natural color, a slight touch of image noise. Do not over-smooth or retouch; no studio lighting, no strong background blur, nothing that feels like an advertisement. Keep the original setting and the product design unchanged.'
         $lastRule
     ) -join ' '
@@ -377,7 +380,7 @@ function Invoke-AgentFlowBrief {
     }
     $cmd = "powershell -NoProfile -ExecutionPolicy Bypass -File src/agent.ps1 register-image -Run $($script:Batch.Id) -Item $($entry.id) -From <downloaded file>"
     if ($signText) { $cmd += ' -SignRead "<what the sign in the image reads, '' | '' between lines>"' }
-    $out = [ordered]@{ ok = $true; run = $script:Batch.Id; item = $entry.id; prompt_file = $promptFile; condensed_prompt = (Get-CondensedFlowPrompt $context $signText)
+    $out = [ordered]@{ ok = $true; run = $script:Batch.Id; item = $entry.id; prompt_file = $promptFile; condensed_prompt = (Get-CondensedFlowPrompt $context $signText ([bool]$Safe)); safe = [bool]$Safe
         aspect = (Get-FlowAspect $request.Images[0]); uploads = $uploads; register_command = $cmd }
     if ($signText) { $out.sign_text = $signText }
     Write-AgentJson $out
