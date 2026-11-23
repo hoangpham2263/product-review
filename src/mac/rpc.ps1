@@ -85,6 +85,7 @@ function Invoke-Rpc([string]$Cmd, $A) {
         }
         'draftRemoveScene' { Assert-DraftRoot $A.root; Remove-ManualScene (Join-Path $A.root 'workspace/reference-inputs/references.json') ([string]$A.url) ([int]$A.index) ([int]$A.productIndex); return $true }
         'draftSignText' { Assert-DraftRoot $A.root; Set-ManualSignText (Join-Path $A.root 'workspace/reference-inputs/references.json') ([string]$A.url) ([int]$A.productIndex) ([string]$A.text); return $true }
+        'draftClearProduct' { Assert-DraftRoot $A.root; Clear-ManualProductImage (Join-Path $A.root 'workspace/reference-inputs/references.json') ([string]$A.url) ([int]$A.productIndex); return $true }
         'draftRemoveProduct' { Assert-DraftRoot $A.root; Remove-ManualProduct (Join-Path $A.root 'workspace/reference-inputs/references.json') ([string]$A.url) ([int]$A.productIndex); return $true }
         'draftSave' {
             # Same rules as Save-ProductQueueDraft in the Windows window.

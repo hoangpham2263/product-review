@@ -1236,18 +1236,19 @@ async function showProductDialog(target = null) {
 
   // Paste and drop go to the row last used; -1 means "a new product image".
   let products = [], active = -1;
-  const attach = async (files, productIndex) => {
+  const attach = async (files, productIndex, asProduct = false) => {
     files = imageFiles(files);
     if (!files.length) return;
-    try { await attachPaths(await Promise.all(files.map(upload)), productIndex); } catch (e) { fail(e); }
+    try { await attachPaths(await Promise.all(files.map(upload)), productIndex, asProduct); } catch (e) { fail(e); }
   };
-  const attachPaths = async (paths, productIndex) => {
+  // asProduct: the picture becomes the product image of row productIndex (replacing it; the row's review images stay).
+  const attachPaths = async (paths, productIndex, asProduct = false) => {
     try {
       if (!paths.length) return;
-      const role = productIndex < 0 ? "Product" : "Scene";
+      const role = productIndex < 0 || asProduct ? "Product" : "Scene";
       const url = await api("draftAttach", { root, url: urlBox.value.trim(), paths, role, productIndex });
       if (url !== urlBox.value.trim()) urlBox.value = url;
-      if (role === "Product") active = Number.MAX_SAFE_INTEGER;
+      if (role === "Product" && !asProduct) active = Number.MAX_SAFE_INTEGER;
       await refresh();
     } catch (e) { fail(e); }
   };
@@ -1277,9 +1278,14 @@ async function showProductDialog(target = null) {
       // Product image, arrow, then its reviews; many reviews wrap onto more lines so the add tiles stay visible.
       const row = el("div", "", { style: { display: "flex", flexWrap: "wrap", alignItems: "flex-start", gap: "6px", padding: "6px", borderBottom: "1px solid var(--line)" } });
       if (i === active) row.style.background = "var(--hover)";
+      // X on the product image clears ONLY that image (its review images stay); the empty slot then offers + / Dán to put a new one in.
       const product = p.file
-        ? thumb(p.file, p.ok, async () => { await api("draftRemoveProduct", { root, url, productIndex: i }).catch(fail); refresh(); }, `Ảnh gốc #${i + 1}`)
-        : el("div", "label muted", { text: "Ảnh từ link", style: { position: "static", width: "56px", whiteSpace: "normal", fontSize: "10px" } });
+        ? thumb(p.file, p.ok, async () => { await api("draftClearProduct", { root, url, productIndex: i }).catch(fail); refresh(); }, `Ảnh gốc #${i + 1}`)
+        : el("div", "", { style: { position: "static", display: "flex", gap: "6px", flex: "none" } });
+      if (!p.file) {
+        product.title = "Thêm ảnh gốc cho dòng này (ảnh review giữ nguyên)";
+        product.append(addTile("+", async () => { active = i; attachPaths(await chooseImages(""), i, true); }), addTile("Dán", () => { active = i; pasteButton(i, true); }));
+      }
       const arrow = el("div", "label muted", { text: "→", style: { position: "static", width: "16px", height: "56px", lineHeight: "56px", textAlign: "center", flex: "none" } });
       product.style.flex = "none";
       const reviews = el("div", "", { style: { display: "flex", flexWrap: "wrap", gap: "6px", flex: "1", minWidth: "0" } });
@@ -1312,7 +1318,7 @@ async function showProductDialog(target = null) {
   };
   // Clipboard: an image goes to the active row (or becomes a product image when none); text in the link box stays text.
   // Nút Dán: images from the clipboard (the browser asks once for clipboard access).
-  const pasteButton = async (productIndex) => {
+  const pasteButton = async (productIndex, asProduct = false) => {
     const files = [];
     try {
       for (const item of await navigator.clipboard.read()) {
@@ -1321,7 +1327,7 @@ async function showProductDialog(target = null) {
       }
     } catch {}
     if (!files.length) return fail(new Error("Clipboard chưa có ảnh."));
-    attach(files, productIndex);
+    attach(files, productIndex, asProduct);
   };
   // Cmd/Ctrl+V anywhere while this popup is on top, even before anything in it has focus.
   const onPaste = (e) => {

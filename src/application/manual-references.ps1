@@ -102,6 +102,18 @@ function Remove-ManualScene([string]$MapPath,[string]$Url,[int]$Index,[int]$Prod
     }
 }
 
+# Clears only the product image of row ProductIndex; its review images stay (the row waits for a new product image).
+function Clear-ManualProductImage([string]$MapPath,[string]$Url,[int]$ProductIndex) {
+    $map=Read-ManualReferenceMap $MapPath
+    foreach($entry in @($map.entries|Where-Object product_url -eq $Url)){
+        $products=@(Get-ManualProducts $entry)
+        if($ProductIndex -lt 0 -or $ProductIndex -ge $products.Count){return}
+        $products[$ProductIndex]=[pscustomobject]@{file='';sha256='';scenes=@($products[$ProductIndex].scenes)}
+        Set-ManualProducts $entry $products
+        Save-ManualMapEntry $MapPath $map $entry
+    }
+}
+
 # Removes a product image together with its review images.
 function Remove-ManualProduct([string]$MapPath,[string]$Url,[int]$ProductIndex) {
     $map=Read-ManualReferenceMap $MapPath
@@ -152,6 +164,8 @@ function Save-ManualReference([string]$ProjectRoot,[string]$Url,[string]$ImagePa
     # The same picture twice is kept once.
     if($Role -eq 'Product'){
         if(@($products|Where-Object sha256 -eq $hash).Count){Remove-Item -LiteralPath $dest -Force}
+        # A row index = replace that row's product image only; its review images stay.
+        elseif($ProductIndex -ge 0 -and $ProductIndex -lt $products.Count){$products[$ProductIndex]=[pscustomobject]@{file=$dest;sha256=$hash;scenes=@($products[$ProductIndex].scenes)}}
         else{$products.Add([pscustomobject]@{file=$dest;sha256=$hash;scenes=@()})}
     }else{
         if(-not $products.Count){$products.Add([pscustomobject]@{file='';sha256='';scenes=@()})}
