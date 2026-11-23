@@ -605,7 +605,10 @@ function runLines(rs) {
   if (!rs) return [];
   if (rs.running && rs.running.length) return rs.running.map((r) => "Đang chạy: " + r.feature + (r.project ? " · " + r.project : "") + " · " + mmss(r.elapsed_s || 0) + (r.last_text ? " · " + r.last_text.replace(/\s+/g, " ").slice(0, 140) : ""));
   const l = rs.last;
-  return ["Không có lượt nào đang chạy" + (l ? " · Lượt trước: " + l.feature + (l.project ? " · " + l.project : "") + " · " + (l.status === "done" ? "xong" : l.status === "stopped" ? "đã dừng" : "lỗi") + " lúc " + hhmm(l.updated || l.started) + (l.status !== "done" && l.error ? " (" + l.error.slice(0, 120) + ")" : "") : "")];
+  if (!l) return ["Đang rảnh: không có lượt nào đang chạy"];
+  const what = l.feature + (l.project ? " · " + l.project : ""), at = " lúc " + hhmm(l.updated || l.started);
+  const result = l.status === "done" ? "đã xong" : l.status === "stopped" ? "đã dừng" : "dừng vì lỗi";
+  return ["Đang rảnh · Lượt trước: " + what + " · " + result + at + (l.status !== "done" && l.status !== "stopped" && l.error ? " (" + l.error.slice(0, 120) + ")" : "")];
 }
 async function refreshRunLine() {
   const rs = await fetch("/api/runs/status").then((x) => x.json()).catch(() => null);
@@ -613,7 +616,7 @@ async function refreshRunLine() {
   const lines = runLines(rs);
   ui.runLine.textContent = lines.join("  |  ");
   ui.runLine.title = lines.join("\n");
-  ui.runLine.style.color = rs.running && rs.running.length ? "var(--accent)" : rs.last && rs.last.status !== "done" ? "var(--error)" : "var(--muted)";
+  ui.runLine.style.color = rs.running && rs.running.length ? "var(--accent)" : !rs.last ? "var(--muted)" : rs.last.status === "done" ? "var(--ok)" : rs.last.status === "stopped" ? "var(--muted)" : "var(--error)";
   return rs;
 }
 setInterval(refreshRunLine, 3000);
