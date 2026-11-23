@@ -285,7 +285,21 @@ function Get-FlowAspect([string]$ImagePath) {
 
 # $SignText: optional wording for a made-to-order lettered product (references.json scene.sign_text, " | " = line break).
 # Same rule as the Codex path (02-create-image.ps1): the sample lettering of the product photo is replaced entirely.
-function Get-CondensedFlowPrompt($Context, [string]$SignText = '', [bool]$SafeArt = $false) {
+# Worn items (clothing): not a copy of the sample photo. Each item gets its own close framing and aspect, picked from the run+item id;
+# about one in five may show a face, the rest are cropped so no face is visible (user 2026-11-23).
+function Get-WornVariation([string]$Key) {
+    $sum = 0; foreach ($c in $Key.ToCharArray()) { $sum = ($sum * 31 + [int]$c) % 100003 }
+    $v = @(
+        @{ aspect = '3:4'; face = $false; look = 'a close crop from the chin down to the waist, the garment filling most of the frame' },
+        @{ aspect = '1:1'; face = $false; look = 'a tight close-up of the chest, collar and shoulders, the garment detail filling the frame' },
+        @{ aspect = '4:3'; face = $false; look = 'a horizontal shot of the shoulders and torso from a slight side angle, cropped below the chin' },
+        @{ aspect = '9:16'; face = $false; look = 'a tall vertical shot from the neck down to the hips, the garment hanging naturally' },
+        @{ aspect = '3:4'; face = $true; look = 'a relaxed half-body shot, the face may be partly visible' }
+    )
+    $v[$sum % $v.Count]
+}
+
+function Get-CondensedFlowPrompt($Context, [string]$SignText = '', [bool]$SafeArt = $false, [string]$VariationKey = '') {
     # Custom-logo product (STEP 3C): the sample logo is replaced by one small fictional symbol; -Safe (a retry after Flow refused) stays neutral.
     $customLogo = $Context.PSObject.Properties['custom_logo'] -and $Context.custom_logo -eq $true
     $logoPh = if ($customLogo -and $Context.PSObject.Properties['logo_placeholder']) { [string]$Context.logo_placeholder } else { '' }
@@ -307,7 +321,8 @@ function Get-CondensedFlowPrompt($Context, [string]$SignText = '', [bool]$SafeAr
     if ($replaceLogo -and $logoPh) { $logoCtx = [pscustomobject]@{ sample_text = $logoPh }; $details = Remove-SampleLettering $details $logoCtx 'the sample logo'; $productName = Remove-SampleLettering $productName $logoCtx 'the sample logo' }
     $worn = -not $Context.presentation -or $Context.presentation -eq 'worn'
     $first = if ($worn) {
-        'Edit image 1 (the review photo) into ONE photorealistic photo: keep its people, pose, framing, camera and background exactly as they are, and replace only the target garment with the product from image 2. If no person is shown, keep the existing folded or laid-out presentation; do not add a model.'
+        $wv = Get-WornVariation $VariationKey
+        'Edit image 1 (the review photo) into ONE photorealistic customer photo of the garment from image 2 worn by a person of the same kind, in a similar room and light as image 1, but do NOT copy its framing, pose or crop: shoot it as ' + $wv.look + '. ' + $(if ($wv.face) { 'A face may show naturally.' } else { 'No face is visible: crop out or turn away the head.' }) + ' Replace the old garment completely with the product from image 2; keep unrelated objects as they are.'
     } else {
         'Edit image 1 (the base photo) into ONE photorealistic photo: keep its exact room or surroundings, camera, perspective, lighting and all unrelated objects unchanged, and place only the product from image 2 (replacing the old item, if any) at true relative scale.'
     }
@@ -387,8 +402,8 @@ function Invoke-AgentFlowBrief {
     }
     $cmd = "powershell -NoProfile -ExecutionPolicy Bypass -File src/agent.ps1 register-image -Run $($script:Batch.Id) -Item $($entry.id) -From <downloaded file>"
     if ($signText) { $cmd += ' -SignRead "<what the sign in the image reads, '' | '' between lines>"' }
-    $out = [ordered]@{ ok = $true; run = $script:Batch.Id; item = $entry.id; prompt_file = $promptFile; condensed_prompt = (Get-CondensedFlowPrompt $context $signText ([bool]$Safe)); safe = [bool]$Safe; logo_mode = $(if ($context.PSObject.Properties['custom_logo'] -and $context.custom_logo -eq $true) { if ($Safe) { 'neutral (after a refusal)' } else { 'replace with a fictional symbol' } } else { 'none' })
-        aspect = (Get-FlowAspect $request.Images[0]); uploads = $uploads; register_command = $cmd }
+    $out = [ordered]@{ ok = $true; run = $script:Batch.Id; item = $entry.id; prompt_file = $promptFile; condensed_prompt = (Get-CondensedFlowPrompt $context $signText ([bool]$Safe) "$($script:Batch.Id)-$($entry.id)"); safe = [bool]$Safe; logo_mode = $(if ($context.PSObject.Properties['custom_logo'] -and $context.custom_logo -eq $true) { if ($Safe) { 'neutral (after a refusal)' } else { 'replace with a fictional symbol' } } else { 'none' })
+        aspect = $(if (-not $context.presentation -or $context.presentation -eq 'worn') { (Get-WornVariation "$($script:Batch.Id)-$($entry.id)").aspect } else { Get-FlowAspect $request.Images[0] }); uploads = $uploads; register_command = $cmd }
     if ($signText) { $out.sign_text = $signText }
     Write-AgentJson $out
 }
