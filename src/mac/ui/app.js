@@ -1725,7 +1725,8 @@ function updateActionAvailability() {
   // Claude (Flow) cannot start until its own Chrome is signed in to Google Flow.
   if (ui.cmbBackend?.value === "agent" && !flowExtensionMode() && flowLogin.state !== "logged_in") ui.btnRun.disabled = true;
   ui.btnStop.disabled = !run.active;
-  if (ui.btnResume) ui.btnResume.disabled = busy || !ui.resumeRun || ui.btnRun.disabled;
+  // Chạy tiếp continues a Claude (Flow) run, so it is only offered when Tạo ảnh = Claude (Flow); with Codex, Bắt đầu already continues (finished links leave the queue).
+  if (ui.btnResume) ui.btnResume.disabled = busy || !ui.resumeRun || ui.btnRun.disabled || ui.cmbBackend?.value !== "agent";
   ui.numThr.enabled = !busy;
   ui.cmbText.disabled = busy;
   if (ui.cmbModel) ui.cmbModel.disabled = busy;
@@ -1957,6 +1958,7 @@ async function refreshResumable() {
 }
 async function resumeRun() {
   if (!ui.resumeRun) return;
+  if (ui.cmbBackend?.value !== "agent") return appendLog("Chạy tiếp chỉ dùng cho Tạo ảnh = Claude (Flow). Với Codex, bấm Bắt đầu: các link đã xong tự rời hàng chờ.");
   if (!(await flowPreflight())) return;
   ui.txtLog.value = "";
   const r = await fetch("/api/agent/run", { method: "POST", body: JSON.stringify({ run: ui.resumeRun }) });
