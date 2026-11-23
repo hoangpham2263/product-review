@@ -79,11 +79,18 @@ function Invoke-AgentReviewBrief([Parameter(Mandatory)][string]$Run, [Parameter(
     } else { 'Write a brief plain comment about what is visible.' }
     Save-AgentJsonFile $p.Sources @($samples)
     $rules = (@($script:Config.WritingStyle.review_rules) | ForEach-Object -Begin { $n = 0 } -Process { $n++; "$n. $_" }) -join [Environment]::NewLine
+    # Lettered product with a chosen wording (agent-items.json sign_text, set-sign-text): same note as New-Review (03-write-review.ps1).
+    $signNote = ''
+    $itemsFile = Join-Path $script:Batch.Dir 'agent-items.json'
+    if (Test-Path -LiteralPath $itemsFile) {
+        $signEntry = @(@(Get-Content -LiteralPath $itemsFile -Raw -Encoding UTF8 | ConvertFrom-Json) | ForEach-Object { $_ } | Where-Object { $_.id -eq $Item -and $_.PSObject.Properties['sign_text'] -and $_.sign_text } | Select-Object -First 1)
+        if ($signEntry.Count) { $signNote = [Environment]::NewLine + "The sign in the attached photo reads: $(([string]$signEntry[0].sign_text) -replace ' *[|] *', ' / ') (this wording replaces any sample text in the details; it is the real text in the photo). The review may mention it, but only as the wording the sign shows." }
+    }
     $promptText = @"
 TASK: write one short English review draft (demo data) about the attached photo, suitable for a 4 or 5 star rating.
 
 STEP 1 - PRODUCT
-The reviewed product is: $($context.product). Visible details to draw from: $($context.details)
+The reviewed product is: $($context.product). Visible details to draw from: $($context.details)$signNote
 
 STEP 2 - STYLE AND LENGTH
 $sampleText

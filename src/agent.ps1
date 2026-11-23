@@ -1,11 +1,12 @@
 ﻿# Agent mode: Claude Code drives Google Flow itself (Playwright MCP); these commands do only the mechanical parts.
 # Usage: powershell -NoProfile -ExecutionPolicy Bypass -File src/agent.ps1 <command> [-Run r] [-Item id] [-File f] [-From f] [-Limit n]
 # Every command prints exactly one JSON line: {"ok":true,...} or {"ok":false,"error":"...","cause":"..."} (exit 1).
-# Commands: prepare, context-brief, context, flow-brief, register-image; review-brief, write-review, finish (src/agent-review.ps1).
+# Commands: prepare, context-brief, context, sign-brief, set-sign-text, flow-brief, register-image; review-brief, write-review, finish (src/agent-review.ps1).
 param(
     [Parameter(Position = 0)][string]$Command = '',
     [string]$Run = '', [string]$Item = '', [string]$File = '', [string]$From = '',
     [int]$Limit = 0, [string]$List = '',
+    [string]$Text = '', [string]$Reason = '', [string]$SignRead = '',
     [Parameter(ValueFromRemainingArguments = $true)]$Rest
 )
 
@@ -98,6 +99,21 @@ function Get-AgentItem([string]$Id) {
     if (-not $found.Count) { throw "Item not found in run $($script:Batch.Id): $Id" }
     $found[0]
 }
+# Run flags (agent-run.json), written by prepare when it creates the run's item list. sign_wording = 'exact': the agent chooses
+# every lettered item's wording itself (set-sign-text) before flow-brief, and register-image checks what the sign reads.
+# A run without the file (created before 2026-11-23) keeps the old behaviour: Flow picks the wording (prompts/sign-wording-auto.txt).
+function Get-AgentRunFlagsPath { Join-Path $script:Batch.Dir 'agent-run.json' }
+function Test-ExactSignRun {
+    $path = Get-AgentRunFlagsPath
+    if (-not (Test-Path -LiteralPath $path)) { return $false }
+    try { return ([string](Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json).sign_wording -eq 'exact') } catch { return $false }
+}
+function Get-AgentItemSignText($Entry) { if ($Entry -and $Entry.PSObject.Properties['sign_text'] -and $Entry.sign_text) { ([string]$Entry.sign_text).Trim() } else { '' } }
+function Test-ContextLettered($Context) { [bool]($Context -and $Context.PSObject.Properties['lettered'] -and $Context.lettered -eq $true) }
+function Get-AgentContextOrNull([string]$Id) { $path = Join-Path $script:Batch.Logs "$Id-context.json"; if (Test-Path -LiteralPath $path) { Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json } else { $null } }
+# Writes one {ok:false,...} line with extra fields and ends the command (exit 1).
+function Stop-AgentWith([Collections.Specialized.OrderedDictionary]$Value) { if (-not $Value.Contains('ok')) { $Value.Insert(0, 'ok', $false) }; Write-AgentJson $Value; exit 1 }
+
 # Loads the saved context of an item (written by the context command).
 function Get-AgentContext([string]$Id) {
     $path = Join-Path $script:Batch.Logs "$Id-context.json"
@@ -112,6 +128,10 @@ function Invoke-AgentPrepare {
     if (-not (Test-Path -LiteralPath $queuePath)) { throw "URL list not found: $queuePath" }
     $queue = Read-UrlQueue $queuePath
     $existing = @(Read-AgentItems)
+    # A new run (no items yet) uses exact sign wording; a run that already has items keeps the mode it was created with.
+    if (-not $existing.Count -and -not (Test-Path -LiteralPath (Get-AgentRunFlagsPath))) {
+        [IO.File]::WriteAllText((Get-AgentRunFlagsPath), (ConvertTo-Json -InputObject ([ordered]@{ sign_wording = 'exact'; created = (Get-Date).ToString('s') })), $script:Utf8)
+    }
     $jobs = @(Expand-SceneJobs @($queue.Items))
     $result = New-Object Collections.Generic.List[object]
     $all = New-Object Collections.Generic.List[object]
@@ -167,7 +187,7 @@ function Invoke-AgentContextBrief {
     Open-AgentRun $Run
     $entry = Get-AgentItem $Item
     Write-AgentJson ([ordered]@{ ok = $true; run = $script:Batch.Id; item = $entry.id; product_image = $entry.product_image; prompt = (Get-ProductContextPrompt $entry.handle)
-            file_format = '{"product":"...","presentation":"worn|held|placed|vehicle","details":"numbered visible details","lettered":true|false (true = the product photo shows SAMPLE customer lettering such as Your Name / YOUR LOGO; false = fixed words or no text),"source_categories":["category-key"]} (an id is optional; a raw classification with category_key/existing_profile is accepted too)' })
+            file_format = '{"product":"...","presentation":"worn|held|placed|vehicle","details":"numbered visible details","lettered":true|false (true = the product photo shows SAMPLE customer lettering such as Your Name / YOUR LOGO; false = fixed words or no text),"sample_text":"when lettered: that sample lettering exactly as shown, top to bottom, '' | '' between lines (e.g. Your Name | Est. 2024); else empty","source_categories":["category-key"]} (an id is optional; a raw classification with category_key/existing_profile is accepted too)' })
 }
 
 function Invoke-AgentContext {
@@ -179,14 +199,74 @@ function Invoke-AgentContext {
     # Reduce to the raw classification and validate it with the same code as the AI step.
     $category = if ($in.category_key) { [string]$in.category_key } elseif (@($in.source_categories).Count) { [string]@($in.source_categories)[0] } elseif ($in.id) { [string]$in.id } else { '' }
     $profile = if ($in.existing_profile) { [string]$in.existing_profile } else { [string]$in.id }
-    $raw = [ordered]@{ category_key = $category; existing_profile = $profile; product = $in.product; presentation = $in.presentation; details = $in.details; lettered = ($in.lettered -eq $true) }
+    $raw = [ordered]@{ category_key = $category; existing_profile = $profile; product = $in.product; presentation = $in.presentation; details = $in.details; lettered = ($in.lettered -eq $true); sample_text = $(if ($in.sample_text -is [string]) { $in.sample_text } else { '' }) }
     $context = ConvertFrom-ProductClassification ($raw | ConvertTo-Json -Depth 4)
     $cats = @($in.source_categories | ForEach-Object { [string]$_ } | Where-Object { $_ })
     if ($cats.Count) { $context | Add-Member source_categories $cats -Force }
     # Where the AI step keeps its reply (logs/<id>-context.txt), plus the resolved context for the next commands.
     [IO.File]::WriteAllText((Join-Path $script:Batch.Logs "$($entry.id)-context.txt"), ($raw | ConvertTo-Json -Depth 4), $script:Utf8)
     [IO.File]::WriteAllText((Join-Path $script:Batch.Logs "$($entry.id)-context.json"), ($context | ConvertTo-Json -Depth 8), $script:Utf8)
-    Write-AgentJson ([ordered]@{ ok = $true; run = $script:Batch.Id; item = $entry.id; context = $context })
+    $out = [ordered]@{ ok = $true; run = $script:Batch.Id; item = $entry.id; context = $context }
+    if ((Test-ContextLettered $context) -and -not (Get-AgentItemSignText $entry) -and (Test-ExactSignRun)) { $out.next = "sign-brief -Run $($script:Batch.Id) -Item $($entry.id) (choose the sign wording before flow-brief)" }
+    Write-AgentJson $out
+}
+
+# --- 2b. sign-brief / set-sign-text (lettered products: the agent chooses the exact wording BEFORE the image) ------------
+# The two photos of an item: the archived copies once flow-brief ran (refs/<id>/01-* scene, 02-* product), else the prepared ones.
+function Get-AgentItemPhotos($Entry) {
+    $folder = Join-Path $script:Batch.Refs $Entry.id
+    if (Test-Path -LiteralPath (Join-Path $folder 'manifest.json')) {
+        return [ordered]@{ review_photo = @(Get-ChildItem -LiteralPath $folder -Filter '01-*' | Select-Object -First 1)[0].FullName; product_photo = @(Get-ChildItem -LiteralPath $folder -Filter '02-*' | Select-Object -First 1)[0].FullName }
+    }
+    [ordered]@{ review_photo = [string]$Entry.review_photo; product_photo = [string]$Entry.product_image }
+}
+
+function Get-OtherSignTexts([string]$Id) { @(Read-AgentItems | Where-Object { $_.id -ne $Id } | ForEach-Object { Get-AgentItemSignText $_ } | Where-Object { $_ }) }
+
+# What the agent needs to choose the wording: the photos to LOOK at, the sample lettering, the wording other items already use, the rule.
+function Get-AgentSignBrief($Entry, $Context, $Photos) {
+    $sample = Get-ContextSampleText $Context
+    $sampleLines = @(Get-SignWordingLines $sample)
+    $taken = @(Get-OtherSignTexts $Entry.id)
+    $set = "powershell -NoProfile -ExecutionPolicy Bypass -File src/agent.ps1 set-sign-text -Run $($script:Batch.Id) -Item $($Entry.id) -Text ""<line 1 | line 2>"" -Reason ""<scene> -> <wording>"""
+    $template = Get-Content -LiteralPath (Join-Path $ProjectRoot 'prompts/sign-choice.txt') -Raw -Encoding UTF8
+    $rule = $template.Replace('{{REVIEW_PHOTO}}', [string]$Photos.review_photo).Replace('{{PRODUCT_PHOTO}}', [string]$Photos.product_photo).Replace('{{SAMPLE}}', $(if ($sample) { '"' + $sample + '"' } else { 'see image 2' })).Replace('{{LINES}}', $(if ($sampleLines.Count) { [string]$sampleLines.Count } else { 'the same number of' })).Replace('{{TAKEN}}', $(if ($taken.Count) { ($taken | ForEach-Object { '"' + $_ + '"' }) -join ', ' } else { 'none' })).Replace('{{SET_COMMAND}}', $set)
+    [ordered]@{ run = $script:Batch.Id; item = $Entry.id; review_photo = $Photos.review_photo; product_photo = $Photos.product_photo; sample_text = $sample; sample_lines = $(if ($sampleLines.Count) { $sampleLines.Count } else { $null }); taken = $taken; instruction = (($rule -split '\r?\n' | Where-Object { $_.Trim() }) -join "`n"); set_command = $set }
+}
+
+function Invoke-AgentSignBrief {
+    Open-AgentRun $Run
+    $entry = Get-AgentItem $Item
+    $context = Get-AgentContext $entry.id
+    if (-not (Test-ContextLettered $context)) { Write-AgentJson ([ordered]@{ ok = $true; run = $script:Batch.Id; item = $entry.id; lettered = $false; note = 'Not a lettered product: no sign wording to choose.' }); return }
+    $brief = Get-AgentSignBrief $entry $context (Get-AgentItemPhotos $entry)
+    $brief.Insert(0, 'ok', $true)
+    $brief.sign_text = Get-AgentItemSignText $entry
+    Write-AgentJson $brief
+}
+
+function Invoke-AgentSetSignText {
+    Open-AgentRun $Run
+    $entry = Get-AgentItem $Item
+    $context = Get-AgentContext $entry.id
+    if (-not (Test-ContextLettered $context)) { throw "[CAUSE:NOT_LETTERED] Item $($entry.id) is not a lettered product (context lettered=false). Fix the context first if the product photo shows sample lettering." }
+    if (Test-Path -LiteralPath (Join-Path $script:Batch.Images "$($entry.id).png")) { throw "[CAUSE:ALREADY_IMAGED] Item $($entry.id) already has an image; its wording can no longer change." }
+    if (-not $Reason -or -not $Reason.Trim()) { throw '[CAUSE:BAD_SIGN_TEXT] -Reason is required: one line "scene -> wording", e.g. "home gym with racks -> gym name".' }
+    $check = Test-SignTextChoice $Text (Get-ContextSampleText $context) @(Get-OtherSignTexts $entry.id)
+    if (-not $check.ok) { throw "[CAUSE:$($check.cause)] $($check.error)" }
+    $value = (@($check.lines) -join ' | ')
+    $reasonLine = ($Reason -replace '\s+', ' ').Trim()
+    $items = @(Read-AgentItems)
+    foreach ($it in $items) {
+        if ($it.id -ne $entry.id) { continue }
+        $it | Add-Member sign_text $value -Force
+        $it | Add-Member sign_reason $reasonLine -Force
+        $it | Add-Member sign_source 'agent' -Force
+    }
+    Save-AgentItems $items
+    $log = [ordered]@{ item = $entry.id; sign_text = $value; reason = $reasonLine; sample_text = (Get-ContextSampleText $context); at = (Get-Date).ToString('s') }
+    [IO.File]::WriteAllText((Join-Path $script:Batch.Logs "$($entry.id)-sign-text.json"), ($log | ConvertTo-Json), $script:Utf8)
+    Write-AgentJson ([ordered]@{ ok = $true; run = $script:Batch.Id; item = $entry.id; sign_text = $value; lines = @($check.lines); reason = $reasonLine; warnings = @($check.warnings) })
 }
 
 # --- 3. flow-brief ---------------------------------------------------------------------------------------------
@@ -207,6 +287,10 @@ function Get-FlowAspect([string]$ImagePath) {
 # Same rule as the Codex path (02-create-image.ps1): the sample lettering of the product photo is replaced entirely.
 function Get-CondensedFlowPrompt($Context, [string]$SignText = '') {
     $details = ([string]$Context.details -replace '\s+', ' ').Trim()
+    # Exact wording: the details must not quote the sample words ("Your Name") as something to copy.
+    $exactSign = [bool]@(Get-SignWordingLines $SignText).Count
+    $productName = [string]$Context.product
+    if ($exactSign) { $details = Remove-SampleLettering $details $Context; $productName = Remove-SampleLettering $productName $Context }
     if ($details.Length -gt 600) {
         # Cut at a sentence boundary (never mid-word); no sentence end in the first 600 characters = the last whole word.
         $head = $details.Substring(0, 600)
@@ -219,6 +303,19 @@ function Get-CondensedFlowPrompt($Context, [string]$SignText = '') {
         'Edit image 1 (the review photo) into ONE photorealistic photo: keep its people, pose, framing, camera and background exactly as they are, and replace only the target garment with the product from image 2. If no person is shown, keep the existing folded or laid-out presentation; do not add a model.'
     } else {
         'Edit image 1 (the base photo) into ONE photorealistic photo: keep its exact room or surroundings, camera, perspective, lighting and all unrelated objects unchanged, and place only the product from image 2 (replacing the old item, if any) at true relative scale.'
+    }
+    $style = 'Photo style: a quick casual snapshot taken with a phone camera, an everyday angle, available light only, natural color, a slight touch of image noise. Do not over-smooth or retouch; no studio lighting, no strong background blur, nothing that feels like an advertisement. Keep the original setting and the product design unchanged.'
+    if ($exactSign) {
+        # The exact wording comes right after the product line, before the details, so it wins over "copy every detail".
+        $signRule = Get-SignWordingRule $SignText 2 'the product text, the key details and the no-text rule'
+        return (@(
+                $first
+                "Image 2 is the ONLY source for the product's design: $productName. Copy its shape, proportions, colors, pattern, material and every visible detail exactly, EXCEPT the words of the lettering, which SIGN WORDING below replaces; its background and props are not part of the result."
+                $signRule
+                "Key details of image 2 (the picture wins if it differs, except the lettering): $details"
+                $style
+                'The only text in the image is the SIGN WORDING above; no brand name, logo, label or watermark. Do not add objects, people or props that image 1 does not have. One single frame: no collage, split screen or multiple views.'
+            ) -join ' ')
     }
     # The wording rule is the shared template prompts/sign-wording.txt (src/domain/sign-wording.ps1), also used by the Codex path.
     $signRule = Get-ItemSignRule $SignText $Context 2 'the product text and the no-text rule'
@@ -243,6 +340,10 @@ function Invoke-AgentFlowBrief {
     $script:Config.ActiveProductUrl = $entry.url
     # This item's OWN review photo (a link with 2 scenes = 2 items): with $null Get-ReviewPhoto falls back to the link's FIRST scene and both items get the same room.
     $script:Config.ActiveScene = if ($entry.review_photo) { [pscustomobject]@{ file = [string]$entry.review_photo; sha256 = [string]$entry.review_sha256 } } else { $null }
+    $signText = Get-AgentItemSignText $entry
+    $needsSign = (Test-ContextLettered $context) -and -not $signText -and (Test-ExactSignRun)
+    # The full prompt (prompt_file, same builder as Codex) carries the same exact wording.
+    if ($signText -and $script:Config.ActiveScene) { $script:Config.ActiveScene | Add-Member sign_text $signText -Force }
     $folder = Join-Path $script:Batch.Refs $entry.id
     if (Test-Path -LiteralPath (Join-Path $folder 'manifest.json')) {
         # Already archived: use the archived copies (01 = review photo, 02 = product).
@@ -267,9 +368,19 @@ function Invoke-AgentFlowBrief {
         Copy-Item -LiteralPath $src -Destination $dest -Force
         $uploads += $dest
     }
+    if ($needsSign) {
+        # Exact-wording run: no prompt until the agent has chosen this item's wording (never a silent fall-back to Flow's own wording).
+        $brief = Get-AgentSignBrief $entry $context ([ordered]@{ review_photo = $request.Images[0]; product_photo = $request.Images[1] })
+        $out = [ordered]@{ ok = $false; error = "Item $($entry.id) is a lettered product without sign_text: look at review_photo and product_photo, choose the wording, run set_command, then run flow-brief again."; cause = 'NEEDS_SIGN_TEXT'; needs_sign_text = $true }
+        foreach ($k in $brief.Keys) { $out[$k] = $brief[$k] }
+        Stop-AgentWith $out
+    }
     $cmd = "powershell -NoProfile -ExecutionPolicy Bypass -File src/agent.ps1 register-image -Run $($script:Batch.Id) -Item $($entry.id) -From <downloaded file>"
-    Write-AgentJson ([ordered]@{ ok = $true; run = $script:Batch.Id; item = $entry.id; prompt_file = $promptFile; condensed_prompt = (Get-CondensedFlowPrompt $context $(if ($entry.PSObject.Properties['sign_text']) { [string]$entry.sign_text } else { '' }))
-            aspect = (Get-FlowAspect $request.Images[0]); uploads = $uploads; register_command = $cmd })
+    if ($signText) { $cmd += ' -SignRead "<what the sign in the image reads, '' | '' between lines>"' }
+    $out = [ordered]@{ ok = $true; run = $script:Batch.Id; item = $entry.id; prompt_file = $promptFile; condensed_prompt = (Get-CondensedFlowPrompt $context $signText)
+        aspect = (Get-FlowAspect $request.Images[0]); uploads = $uploads; register_command = $cmd }
+    if ($signText) { $out.sign_text = $signText }
+    Write-AgentJson $out
 }
 
 # --- 4. register-image -----------------------------------------------------------------------------------------
@@ -280,6 +391,7 @@ function Invoke-AgentRegisterImage {
     $id = $entry.id
     $output = Join-Path $script:Batch.Images "$id.png"
     $statusPath = Join-Path $script:Batch.Logs "$id-review-status.json"
+    $signCheck = Test-AgentSignRead $entry
     $attempt = 1
     if (Test-Path -LiteralPath $statusPath) { try { $attempt = [int](Get-Content -LiteralPath $statusPath -Raw -Encoding UTF8 | ConvertFrom-Json).generation_attempt + 1 } catch { $attempt = 2 } }
     if (Test-Path -LiteralPath $output) {
@@ -299,12 +411,55 @@ function Invoke-AgentRegisterImage {
     $bytes = [IO.File]::ReadAllBytes($output)
     $hash = Get-BytesHash $bytes
     $status = [ordered]@{ status = 'awaiting_user_review'; ai_image_qa_performed = $false; generation_attempt = $attempt; output = $output; engine = 'claude-flow' }
+    if ($signCheck) { $status.sign_check = $signCheck }
     [IO.File]::WriteAllText($statusPath, ($status | ConvertTo-Json), $script:Utf8)
     $duplicates = @(Get-ChildItem -LiteralPath $script:Batch.Images -Filter '*.png' | Where-Object { $_.FullName -ne $output -and (Get-BytesHash ([IO.File]::ReadAllBytes($_.FullName))) -eq $hash } | ForEach-Object { $_.BaseName })
     $info = Get-ImageSize $bytes
     $out = [ordered]@{ ok = $true; run = $script:Batch.Id; item = $id; image = $output; size = [ordered]@{ width = $info.Width; height = $info.Height; bytes = $bytes.Length }; sparkle = $sparkle; sha256 = $hash }
     if ($duplicates.Count) { $out.warning = "Same image hash as: $($duplicates -join ', ')"; $out.duplicate_of = $duplicates }
+    if ($signCheck) { $out.sign_check = $signCheck }
     Write-AgentJson $out
+}
+
+# SIGN CHECK before an image of a lettered item is registered: the agent LOOKS at the image and passes -SignRead (what the sign reads);
+# it must equal sign_text (case / spacing / punctuation tolerant). A mismatch is not registered: redo the image (at most 2 redos),
+# the 3rd mismatch is final (logs/<id>-agent-error.txt = [CAUSE:SIGN_TEXT], shown by run-summary).
+# Returns $null when there is nothing to check (no sign_text, or a run created before exact wording without -SignRead).
+function Test-AgentSignRead($Entry) {
+    $id = $Entry.id
+    $expected = Get-AgentItemSignText $Entry
+    $exact = Test-ExactSignRun
+    if (-not $expected) {
+        if ($exact -and (Test-ContextLettered (Get-AgentContextOrNull $id))) { throw "[CAUSE:NEEDS_SIGN_TEXT] Item $id is lettered but has no sign_text: choose it with set-sign-text, then flow-brief again (the image must come from that prompt)." }
+        return $null
+    }
+    if (-not $SignRead) {
+        if ($exact) { throw "[CAUSE:SIGN_READ_MISSING] Look at the image and pass -SignRead ""<what the sign reads, ' | ' between lines>"" (expected: $expected)." }
+        return $null
+    }
+    $path = Join-Path $script:Batch.Logs "$id-sign-check.json"
+    $state = if (Test-Path -LiteralPath $path) { try { Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json } catch { $null } } else { $null }
+    $misses = if ($state -and $state.misses) { [int]$state.misses } else { 0 }
+    $tries = @(if ($state -and $state.tries) { $state.tries })
+    $ok = (ConvertTo-SignCompareText $SignRead) -eq (ConvertTo-SignCompareText $expected)
+    $tries += [pscustomobject]@{ read = $SignRead; ok = $ok; at = (Get-Date).ToString('s') }
+    if (-not $ok) {
+        $misses++
+        if (Test-Path -LiteralPath $From) { Copy-Item -LiteralPath $From -Destination (Join-Path $script:Batch.Logs "$id-sign-miss-$misses$([IO.Path]::GetExtension($From))") -Force }
+    }
+    [IO.File]::WriteAllText($path, (ConvertTo-Json -InputObject ([ordered]@{ expected = $expected; misses = $misses; tries = $tries }) -Depth 4), $script:Utf8)
+    if ($ok) {
+        # A match after an earlier final mismatch clears that error.
+        $err = Join-Path $script:Batch.Logs "$id-agent-error.txt"
+        if ((Test-Path -LiteralPath $err) -and (Get-Content -LiteralPath $err -Raw -Encoding UTF8) -match '^\[CAUSE:SIGN_TEXT\]') { Remove-Item -LiteralPath $err -Force }
+        return [ordered]@{ expected = $expected; read = $SignRead; ok = $true; misses = $misses }
+    }
+    if ($misses -le 2) {
+        Stop-AgentWith ([ordered]@{ ok = $false; error = "The sign reads '$SignRead' but sign_text is '$expected'. Not registered. Redo this item in Flow with the same condensed_prompt (redo $misses of 2), then register-image again with -SignRead."; cause = 'SIGN_TEXT_MISMATCH'; item = $id; expected = $expected; read = $SignRead; redo = $true; redos_left = (2 - $misses) })
+    }
+    $msg = "[CAUSE:SIGN_TEXT] The sign still reads '$SignRead' instead of '$expected' after $misses tries."
+    [IO.File]::WriteAllText((Join-Path $script:Batch.Logs "$id-agent-error.txt"), $msg, $script:Utf8)
+    Stop-AgentWith ([ordered]@{ ok = $false; error = "$msg Not registered; the item is reported as an error. Go on with the next item."; cause = 'SIGN_TEXT'; item = $id; expected = $expected; read = $SignRead; redo = $false; final = $true })
 }
 
 # --- dispatcher ------------------------------------------------------------------------------------------------
@@ -327,6 +482,8 @@ try {
         'prepare' { Invoke-AgentPrepare }
         'context-brief' { Invoke-AgentContextBrief }
         'context' { Invoke-AgentContext }
+        'sign-brief' { Invoke-AgentSignBrief }
+        'set-sign-text' { Invoke-AgentSetSignText }
         'flow-brief' { Invoke-AgentFlowBrief }
         'register-image' { Invoke-AgentRegisterImage }
         { $_ -in @('review-brief', 'write-review', 'finish', 'run-summary') } {
@@ -337,7 +494,7 @@ try {
             if ($Limit) { $splat['Limit'] = $Limit }
             & $fn @splat
         }
-        default { throw "Unknown command '$Command'. Use: prepare | context-brief | context | flow-brief | register-image | review-brief | write-review | finish | run-summary" }
+        default { throw "Unknown command '$Command'. Use: prepare | context-brief | context | sign-brief | set-sign-text | flow-brief | register-image | review-brief | write-review | finish | run-summary" }
     }
 } catch {
     Fail-Agent $_.Exception.Message

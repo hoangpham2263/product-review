@@ -96,6 +96,8 @@ export function friendlyTool(name, input = {}, mode = "flow") {
     }
     if (/register-image/i.test(cmd)) return "Lưu ảnh Flow vừa tạo vào kết quả";
     if (/flow-brief/i.test(cmd)) return "Chuẩn bị nội dung gửi Flow cho sản phẩm";
+    if (/set-sign-text/i.test(cmd)) return "Lưu chữ trên biển đã chọn cho sản phẩm";
+    if (/sign-brief/i.test(cmd)) return "Chọn chữ trên biển theo cảnh";
     if (/agent\.ps1\s+(review-brief|write-review)/i.test(cmd)) return "Ghi review cho sản phẩm";
     if (/agent\.ps1\s+finish/i.test(cmd)) return "Hoàn tất sản phẩm (tải kết quả)";
     if (/flow-pace\.mjs\s+gate/i.test(cmd)) return "Chờ nhịp gửi prompt Flow";

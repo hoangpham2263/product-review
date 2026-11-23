@@ -40,6 +40,7 @@ Leave out what is unclear or hidden and say which parts are unclear.
 
 STEP 3B - LETTERING
 lettered: true only when the product is a made-to-order lettered item whose photo shows SAMPLE customer lettering that a buyer would replace (e.g. neon name/logo/wedding/gym/shop sign reading "Your Name", "YOUR LOGO", "Your Shop Name"). false when the words are fixed art of the design (BEER, DJ, OPEN, Karaoke) or there is no text.
+sample_text: when lettered is true, that sample lettering exactly as the photo shows it, top to bottom, with " | " between lines (e.g. "Your Name | Est. 2024"); otherwise "".
 
 STEP 4 - LIMITS
 Do not invent brand names, ownership, specifications, performance or customer experiences.
@@ -64,6 +65,9 @@ function ConvertFrom-ProductClassification($raw) {
     foreach ($field in @('product', 'details')) {
         if ($result.$field -isnot [string] -or -not $result.$field.Trim() -or $result.$field.Length -gt 1500) { throw "Invalid product classification field: $field" }
     }
+    # sample_text (optional): the sample lettering of a lettered product, " | " = line break; kept only for a lettered product.
+    $sample = if ($result.lettered -eq $true -and $result.PSObject.Properties['sample_text'] -and $result.sample_text -is [string]) { (($result.sample_text -replace '\s+', ' ').Trim()) } else { '' }
+    if ($sample.Length -gt 200) { $sample = '' }
     $profile = @($script:Config.ProductContexts | Where-Object { $_.id -eq $result.existing_profile -and $_.id -ne 'generic' } | Select-Object -First 1)
     # existing_profile is an actual apparel type, not the source photo's staging.
     # A polo photographed on a table must never select the furniture-edit pipeline.
@@ -73,9 +77,10 @@ function ConvertFrom-ProductClassification($raw) {
         $context.details = $result.details
         $context | Add-Member presentation 'worn' -Force
         $context | Add-Member lettered ($result.lettered -eq $true) -Force
+        if ($sample) { $context | Add-Member sample_text $sample -Force }
         return $context
     }
-    [pscustomobject]@{
+    $context = [pscustomobject]@{
         id = $result.category_key
         product = $result.product
         presentation = $result.presentation
@@ -83,4 +88,6 @@ function ConvertFrom-ProductClassification($raw) {
         lettered = ($result.lettered -eq $true)
         source_categories = @($result.category_key)
     }
+    if ($sample) { $context | Add-Member sample_text $sample -Force }
+    $context
 }
