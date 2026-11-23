@@ -134,6 +134,24 @@ async function downloadLock(action, args) {
   }
 }
 
+// The Flow project of each Chrome profile (user 2026-11-23: set the project up ONCE and reuse it every run, no new project and no new settings each time):
+// workspace/config/flow-projects.json { "<profile>": { "url": "https://flow.google.com/project/<id>", "saved": "<iso time>" } }.
+const PROJECTS_FILE = path.join(ROOT, 'workspace', 'config', 'flow-projects.json');
+const readProjects = () => { try { return JSON.parse(fs.readFileSync(PROJECTS_FILE, 'utf8').replace(/^﻿/, '')) || {}; } catch { return {}; } };
+function projectCmd(sub, args) {
+  const key = PROFILE || 'shared', all = readProjects();
+  if (sub === 'get') return out({ ok: true, profile: key, url: all[key]?.url || '', saved: all[key]?.saved || '', note: all[key]?.url ? 'Open this URL directly (it keeps its settings); only if it fails to open, create a new project and run: project set --url <new url>.' : 'No saved project for this profile: create one, then run: project set --url <its url>.' });
+  if (sub === 'set') {
+    const url = String(args.url || '').trim();
+    if (!/^https:\/\/flow\.google\.com\/(?:[a-z]{2}\/)?project\/[\w-]{8,}/i.test(url)) { out({ ok: false, error: 'project set --url <https://flow.google.com/project/<id>>' }); process.exit(1); }
+    all[key] = { url: url.split(/[?#]/)[0], saved: new Date().toISOString() };
+    fs.mkdirSync(path.dirname(PROJECTS_FILE), { recursive: true }); fs.writeFileSync(PROJECTS_FILE, JSON.stringify(all, null, 2));
+    return out({ ok: true, profile: key, url: all[key].url });
+  }
+  if (sub === 'clear') { delete all[key]; fs.mkdirSync(path.dirname(PROJECTS_FILE), { recursive: true }); fs.writeFileSync(PROJECTS_FILE, JSON.stringify(all, null, 2)); return out({ ok: true, profile: key, cleared: true }); }
+  out({ ok: false, error: 'Lệnh: project get | project set --url <url> | project clear' }); process.exit(1);
+}
+
 const [cmd, ...rest] = process.argv.slice(2);
 const args = {};
 const positional = [];
@@ -142,6 +160,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
   if (cmd === 'gate') await gate(args);
   else if (cmd === 'download-lock') await downloadLock(positional[0], args);
   else if (cmd === 'status') { const st = load(); out({ ok: true, profile: PROFILE || 'shared', file: FILE, in_group: st.in_group, group_size: st.group_size, last_2min: st.times.filter((t) => Date.now() - t < 120000).length, total_recorded: st.times.length }); }
+  else if (cmd === 'project') projectCmd(rest.find((x) => !x.startsWith('--')), args);
   else if (cmd === 'reset') { save({ times: [], in_group: 0, group_size: rnd(2, 3), tags: [] }); out({ ok: true, reset: true }); }
-  else { out({ ok: false, error: 'Lệnh: gate --tag <item id> | download-lock acquire|release --tag <id> | status | reset' }); process.exit(1); }
+  else { out({ ok: false, error: 'Lệnh: project get|set --url <url>|clear | gate --tag <item id> | download-lock acquire|release --tag <id> | status | reset' }); process.exit(1); }
 }

@@ -3,6 +3,7 @@
 Nhãn đúng như UI. Rút từ các lượt chạy thành công (khoảng 40 ảnh/lượt) và lượt chậm (mất 6-10 phút dò UI). Bổ sung bài học mới vào `workspace/flow-ui-lessons.md`.
 
 ## Thứ tự nhanh (mục đầu ~3 phút, mỗi mục sau ~2-3 phút)
+0. Dự án Flow dùng lại: `node core/flow-pace.mjs project get` (mỗi profile một dự án). Có url thì mở thẳng, cài đặt Hình ảnh / Nano Banana 2.1 / x1 vẫn còn, chỉ kiểm chip và đổi tỉ lệ nếu cần. Chưa có hoặc không mở được thì tạo mới (bước 3-4) rồi `project set --url <url>`. Làm các mục gom theo cùng tỉ lệ.
 1. Mỗi lệnh `browser_run_code_unsafe` mở đầu bằng `await page.bringToFront();`. Dùng `getByRole`/`aria-label`, KHÔNG click theo toạ độ chuột, KHÔNG đoán icon.
 2. Vào Flow: `browser_navigate` tới `https://accounts.google.com/AccountChooser?continue=https%3A%2F%2Fflow.google.com%2F`, chọn đúng tài khoản của app: `page.locator('[data-identifier="<email>"]').click({force:true})` (click thường hay hết giờ; fallback: `.focus()` rồi `keyboard.press('Enter')`). Xác nhận bằng nút "Thông tin về tài khoản". Không đổi tài khoản.
 3. Tạo dự án: nút "Dự án mới" (nếu có lớp phủ `.cdk-overlay-backdrop` thì click nó bằng force trước). URL thành `/project/<id>`. Tên dự án chỉ là tiêu đề, không gõ prompt vào đó.
