@@ -258,7 +258,7 @@ function buildMain() {
     return "";
   };
   const pickedInfo = () => ui.sessionPick.selectedOptions[0]?._info || null;
-  const refreshPickButton = () => {
+  const refreshPickButton = ui.refreshPickButton = () => { // also on ui: loadSessionPicker (outside this scope) calls it
     const info = pickedInfo(), isNew = !!info && info.value === "__new";
     ui.newNameBox.style.display = isNew ? "" : "none";
     if (isNew) {
@@ -609,7 +609,7 @@ async function loadSessionPicker() {
   let last = ""; try { last = localStorage.getItem("pr.sessions.last") || ""; } catch {}
   const wanted = selectable.find((it) => it.value === last) || free[0] || selectable[0] || items.find((it) => it.placeholder);
   ui.sessionPick.selectedIndex = Math.max(0, items.indexOf(wanted));
-  refreshPickButton();
+  ui.refreshPickButton?.();
 }
 setInterval(refreshSessionBadge, 5000);
 
@@ -1326,8 +1326,11 @@ async function showProductDialog(target = null) {
         if (type) files.push(new File([await item.getType(type)], type === "image/png" ? "clipboard.png" : "clipboard.jpg", { type }));
       }
     } catch {}
-    if (!files.length) return fail(new Error("Clipboard chưa có ảnh."));
-    attach(files, productIndex, asProduct);
+    if (files.length) return attach(files, productIndex, asProduct);
+    // WebView2 often sees no image: let Windows read the clipboard (picture or copied image files).
+    const paths = list(await api("clipboardImages").catch(() => []));
+    if (!paths.length) return fail(new Error("Clipboard chưa có ảnh (copy ảnh hoặc file ảnh rồi bấm Dán lại)."));
+    attachPaths(paths, productIndex, asProduct);
   };
   // Cmd/Ctrl+V anywhere while this popup is on top, even before anything in it has focus.
   const onPaste = (e) => {

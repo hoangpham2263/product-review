@@ -151,7 +151,10 @@ function Save-ManualReference([string]$ProjectRoot,[string]$Url,[string]$ImagePa
     if(-not [Uri]::TryCreate($Url,[UriKind]::Absolute,[ref]$uri) -or $uri.Scheme -notin @('http','https')){throw 'Invalid product URL.'}
     $extension=[IO.Path]::GetExtension($ImagePath).ToLowerInvariant()
     if($extension -notin @('.png','.jpg','.jpeg')){throw 'Choose a PNG or JPEG reference.'}
-    $folder=Join-Path (Get-SessionWorkspaceDir $ProjectRoot) 'reference-inputs'
+    # A draft of the product dialog (…/product-reference-<32 hex>) has its own map: write THERE, never to the session's
+    # (PR_WORKSPACE) map; otherwise "+ / Dán" in the dialog wrote to the live queue map and the dialog never showed the image.
+    $isDraft=(Split-Path $ProjectRoot -Leaf) -match '^product-reference-[0-9a-f]{32}$'
+    $folder=if($isDraft){Join-Path $ProjectRoot 'workspace/reference-inputs'}else{Join-Path (Get-SessionWorkspaceDir $ProjectRoot) 'reference-inputs'}
     New-Item -ItemType Directory -Path $folder -Force|Out-Null
     $mapPath=Join-Path $folder 'references.json'
     $map=Read-ManualReferenceMap $mapPath

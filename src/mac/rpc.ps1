@@ -73,6 +73,28 @@ function Invoke-Rpc([string]$Cmd, $A) {
             Write-FeedbackJson $draftMap (Read-ManualReferenceMap $mapPath)
             return $temp
         }
+        # Nút Dán fallback: Windows reads the clipboard itself (WebView2's navigator.clipboard.read often sees no image).
+        # A copied picture (screenshot, "Copy image") is saved as PNG; copied image FILES (Explorer) are returned as they are.
+        'clipboardImages' {
+            $dir = Join-Path $workspace.Root 'temp/mac-uploads'
+            New-Item -ItemType Directory -Path $dir -Force | Out-Null
+            $out = Join-Path $dir ('clipboard-' + [Guid]::NewGuid().ToString('N') + '.png')
+            # Clipboard needs an STA thread: a short separate Windows PowerShell -STA process does the read.
+            $script = @'
+Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+$ext = '.png', '.jpg', '.jpeg', '.webp', '.bmp', '.gif'
+if ([Windows.Forms.Clipboard]::ContainsFileDropList()) {
+    [Windows.Forms.Clipboard]::GetFileDropList() | Where-Object { $ext -contains [IO.Path]::GetExtension($_).ToLowerInvariant() }
+} elseif ([Windows.Forms.Clipboard]::ContainsImage()) {
+    $img = [Windows.Forms.Clipboard]::GetImage(); $img.Save($args[0], [Drawing.Imaging.ImageFormat]::Png); $img.Dispose(); $args[0]
+}
+'@
+            $tmp = Join-Path $dir ('clip-' + [Guid]::NewGuid().ToString('N') + '.ps1')
+            [IO.File]::WriteAllText($tmp, $script, [Text.UTF8Encoding]::new($true))
+            try { $paths = @(& powershell.exe -NoProfile -STA -ExecutionPolicy Bypass -File $tmp $out 2>$null | ForEach-Object { [string]$_ } | Where-Object { $_ -and (Test-Path -LiteralPath $_) }) }
+            finally { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue }
+            return ,$paths
+        }
         'draftInfo' { Assert-DraftRoot $A.root; return (Get-EntryInfo (Join-Path $A.root 'workspace/reference-inputs/references.json') ([string]$A.url)) }
         'draftAttach' {
             Assert-DraftRoot $A.root
