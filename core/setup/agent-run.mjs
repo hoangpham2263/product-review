@@ -113,6 +113,8 @@ export function friendlyTool(name, input = {}, mode = "flow") {
 // person's real Chrome, never --extension. A normal visible Chrome window by default (Google Flow flagged headless runs as "unusual activity"); PR_FLOW_HEADLESS=1 runs it in the background. This temp file is the only config.
 // extension = { profile: "Profile 1", name, color }: the person's everyday Chrome through the Playwright extension (the Chrome window of that
 // profile must be open; the person clicks Connect). The run's tabs go into one named Chrome tab group.
+// extension.background (default true): false for Flow image runs. Google Flow flagged prompts submitted in a hidden (background) tab as
+// "unusual activity" (2026-11-23), so a Flow run keeps the old visible-tab behaviour; scan / reviews runs stay in the background.
 export function mcpConfig({ plat = osPlatform(), profile, headless = true, extension = null } = {}) {
   if (extension) {
     // Background mode (PLAYWRIGHT_MCP_BACKGROUND=1 = the --background flag of Playwright MCP 0.0.86+, checked in its cdpRelay/browserModel
@@ -122,7 +124,7 @@ export function mcpConfig({ plat = osPlatform(), profile, headless = true, exten
     // every run pulled Chrome to the front while the person worked in other apps (worse with several windows running).
     const a = ["@playwright/mcp@latest", "--extension", ...(extension.profile ? ["--profile-dir-name", extension.profile] : []), "--session-name", extension.name || "Product Review", "--session-color", extension.color || "blue"];
     const server = plat === "win32" ? { command: "cmd", args: ["/c", "npx", ...a] } : { command: "npx", args: a };
-    server.env = { ...(extension.profile ? { PLAYWRIGHT_MCP_PROFILE_DIR_NAME: extension.profile } : {}), PLAYWRIGHT_MCP_BACKGROUND: "1" };
+    server.env = { ...(extension.profile ? { PLAYWRIGHT_MCP_PROFILE_DIR_NAME: extension.profile } : {}), ...(extension.background === false ? {} : { PLAYWRIGHT_MCP_BACKGROUND: "1" }) };
     return { mcpServers: { playwright: server } };
   }
   if (!profile) throw new Error("mcpConfig needs the own Chrome profile folder.");
@@ -133,7 +135,7 @@ export function mcpConfig({ plat = osPlatform(), profile, headless = true, exten
 
 // Note put in front of the prompt when the run drives the person's everyday Chrome (extension mode).
 // tokenSet: a Playwright extension token is saved for this profile, so the extension connects by itself (no Connect click to wait for).
-export const extensionNote = ({ groupName = "Product Review", session = "default", downloadsDir = "", tokenSet = false } = {}) => (tokenSet
+export const extensionNote = ({ groupName = "Product Review", session = "default", downloadsDir = "", tokenSet = false, flow = false } = {}) => flowFocus(flow, (tokenSet
   ? `RUN-NOW NOTE: this run uses the person's everyday Chrome through the Playwright extension. The extension token of this Chrome profile is set, so the connection is AUTOMATIC: there is no Connect click and nobody needs to click anything. Your tabs go into the Chrome tab group named "${groupName}" (session "${session}").
 If the browser tools fail at the start: the Chrome window of that profile may still be opening; call browser_tabs about every 10 seconds for up to 1 minute. Still nothing: stop and report that Chrome did not connect (CAUSE:BROWSER; the saved token may be outdated: the person can save the current one or clear it in the app).`
   : `RUN-NOW NOTE: this run uses the person's everyday Chrome through the Playwright extension, so the person is at the computer and will click Connect in Chrome. Your tabs go into the Chrome tab group named "${groupName}" (session "${session}").
@@ -143,7 +145,10 @@ CLEAN UP FIRST (once, at the very start): close only leftover tabs that clearly 
 Downloads (the Downloads folder is shared by EVERY window of this machine, so two windows must never download at the same moment): around EACH download hold the machine-wide download lock: "node core/flow-pace.mjs download-lock acquire --tag <item id>" (it blocks until free), click the download button, move the NEW file from the Downloads folder AT ONCE into ${downloadsDir || "your own session folder"} and rename it "<item id>.<ext>", check it is the right picture (expected size, the prompt tile you submitted), then "node core/flow-pace.mjs download-lock release --tag <item id>". Never take a file you did not just download yourself. This mode cannot use download.saveAs.
 HUMAN PACING: before EVERY prompt you submit in Google Flow run: node core/flow-pace.mjs gate --tag <item id> (it waits the human-like time by itself; submit right after it returns; never several prompts behind one gate).
 
-`;
+`);
+// Flow runs: the Flow tab must be VISIBLE while working in it (Google flags actions in a hidden tab); every other run never takes focus.
+const FLOW_FOCUS = "FLOW TAB VISIBLE (Google Flow flags work done in a hidden tab as unusual activity): this run is NOT in background mode. Before you upload, type, submit or download in Google Flow, make the Flow tab the visible tab with page.bringToFront() (in browser_run_code_unsafe) and keep it visible until that action is done. Use ONE Flow tab; open no new windows; outside Flow do not focus anything else.";
+const flowFocus = (flow, text) => (flow ? text.replace(/^NEVER STEAL FOCUS:.*$/m, FLOW_FOCUS) : text);
 // Extension mode only works on a profile that HAS the Playwright MCP Bridge extension: otherwise the MCP silently uses "the last used profile that
 // has it". So a chosen profile without the extension (or missing) refuses to start; another profile is never used instead.
 // The Google account chosen for Flow (workspace/config/run-settings.json flowAccount), "" when none.
@@ -315,7 +320,7 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
       if (!c.ok) { releaseLocks(toolRoot, session, process.pid, kind); return { ok: false, status: 409, error: "Kho ảnh đang được " + holderText(c.holder) + " gắn nhãn. Đợi lượt đó xong." }; }
     }
     const group = ext ? takeGroup(workspace, session) : null;
-    if (!lightMode) writeFileSync(cfg, JSON.stringify(mcpConfig({ plat, profile: profileDir, headless, extension: ext ? { profile: bc.profile, name: group.name, color: group.color } : null })));
+    if (!lightMode) writeFileSync(cfg, JSON.stringify(mcpConfig({ plat, profile: profileDir, headless, extension: ext ? { profile: bc.profile, name: group.name, color: group.color, background: mode !== "flow" } : null })));
     if (!lightMode && !ext) mkdirSync(profileDir, { recursive: true });
     const args = ["-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "default", ...(maxTurns > 0 ? ["--max-turns", String(maxTurns)] : []), "--allowedTools", (lightMode ? LIGHT_TOOLS : ALLOWED_TOOLS).join(","), "--add-dir", toolRoot, ...(lightMode ? ["--strict-mcp-config"] : ["--mcp-config", cfg])];
     // Optional per-profile Playwright extension token (shared workspace/playwright-tokens.json): only through this env, never in the MCP config file or a log.
@@ -354,7 +359,7 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
       : mode === "scan"
       ? "RUN-NOW NOTE: this run uses the tool's OWN Chrome (a dedicated profile, no sign-in needed to scan a shop)" + (headless ? ", running in the background (headless)" : "") + ". There is no Connect step and no extension: ignore any instruction to click Connect or wait for the person; start with browser_tabs or browser_navigate. If the site asks for a login or shows a captcha, stop and report it (never sign in for the person)." + "\n\n"
       : "RUN-NOW NOTE: this run uses the tool's OWN Chrome (a dedicated profile the person already signed in to Google Flow with)" + (headless ? ", running in the background (headless)" : "") + ". There is no Connect step and no extension: ignore any instruction to click Connect or wait for the person; start with browser_tabs or browser_navigate. If Flow shows a Google sign-in page, stop and report CAUSE:LOGIN (never sign in for the person)." + "\n\n";
-    try { child.stdin?.end((ext && mode !== "queue" ? extensionNote({ groupName: group.name, session: sessionLabel(session), downloadsDir: join(workspace, "tmp", "flow-downloads"), tokenSet: !!extToken }) : note) + prompt); } catch {}
+    try { child.stdin?.end((ext && mode !== "queue" ? extensionNote({ groupName: group.name, session: sessionLabel(session), downloadsDir: join(workspace, "tmp", "flow-downloads"), tokenSet: !!extToken, flow: mode === "flow" }) : note) + prompt); } catch {}
     if (minutes > 0) run.timer = setTimeout(() => { if (run.ended) return; run.forced = "timeout"; killTree(child); setTimeout(() => finish(run, null), graceMs).unref?.(); }, minutes * 60000);
     run.timer?.unref?.();
     return { ok: true, status: 200, run_id: runId, started };
