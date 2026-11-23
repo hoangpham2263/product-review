@@ -125,21 +125,22 @@ function Invoke-AgentWriteReview([Parameter(Mandatory)][string]$Run, [Parameter(
         $count = @($draft -split ' ' | Where-Object { $_ }).Count
         if ($count -gt $state.word_max -or $count -lt $state.word_min) { $issue = "The draft has $count words; allowed $($state.word_min)-$($state.word_max). Rewrite it to that length, dropping the least important detail instead of adding more." }
     }
-    if ($issue) {
+    if ($issue -and $attempt -lt 4) {
+        # Up to three repairs, each naming the problem (and the reused phrase). A review is never a reason to drop an item (user 2026-11-23).
         $state.attempt = $attempt + 1
-        $state.status = if ($attempt -ge 2) { 'review_failed' } else { 'needs_repair' }
+        $state.status = 'needs_repair'
         Save-AgentJsonFile $p.State $state
-        $result = [ordered]@{ ok = $false; item = $Item; problems = @($issue); final = ($attempt -ge 2) }
-        if ($attempt -lt 2) { $result.hint = 'Rewrite the draft fixing only these problems, keep its observations about the photo, then run write-review once more with the new file. This is the only repair allowed.' }
-        else { $result.error = "Review quality check failed: $issue"; $result.cause = 'REVIEW_QUALITY' }
+        $left = 4 - $attempt
+        $result = [ordered]@{ ok = $false; item = $Item; problems = @($issue); final = $false; repairs_left = $left }
+        $result.hint = 'Rewrite the draft fixing only these problems, keep its observations about the photo, then run write-review again with the new file (' + $left + ' more try/tries; after that the draft is kept as it is).'
         Write-Output (ConvertTo-Json -InputObject $result -Compress)
-        if ($attempt -ge 2) { exit 1 }
         return
     }
+    if ($issue) { $state | Add-Member quality_note ([string]$issue) -Force }  # 4th draft: kept anyway, the note stays in the state
     [IO.File]::WriteAllText($p.Draft, $draft, [Text.UTF8Encoding]::new($false))
     $state.status = 'review_ok'
     Save-AgentJsonFile $p.State $state
-    Write-AgentJson ([ordered]@{ item = $Item; review = $draft; review_file = $p.Draft; words = @($draft -split ' ').Count })
+    Write-AgentJson ([ordered]@{ item = $Item; review = $draft; review_file = $p.Draft; words = @($draft -split ' ').Count; kept_with_issue = $(if ($issue) { [string]$issue } else { '' }) })
 }
 
 function Invoke-AgentFinish([Parameter(Mandatory)][string]$Run, [Parameter(Mandatory)][string]$Item) {
