@@ -21,7 +21,19 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
-const FILE = process.env.PR_FLOW_PACE_FILE || path.join(ROOT, 'workspace', 'tmp', 'flow-pace.json'); // the env overrides are for smoke tests only
+// PER CHROME PROFILE (user 2026-11-23): Google rate-limits per account, and each Flow profile holds one account, so every profile has its
+// own pace (gaps, groups of 2-3, max 8 prompts in 2 minutes) and runs on different profiles no longer wait for each other. The state lives
+// in the OS temp folder (machine-wide), so both tools (product-review and social-autopilot) on the SAME profile still share one pace.
+// The profile: PLAYWRIGHT_MCP_PROFILE_DIR_NAME, else this session's config/flow-browser.json (PR_WORKSPACE); unknown = the old shared file.
+function flowProfile() {
+  if (process.env.PLAYWRIGHT_MCP_PROFILE_DIR_NAME) return process.env.PLAYWRIGHT_MCP_PROFILE_DIR_NAME;
+  try {
+    const fb = JSON.parse(fs.readFileSync(path.join(process.env.PR_WORKSPACE || path.join(ROOT, 'workspace'), 'config', 'flow-browser.json'), 'utf8').replace(/^﻿/, ''));
+    return fb.mode === 'own' ? 'own-chrome' : String(fb.profile || '');
+  } catch { return ''; }
+}
+const PROFILE = flowProfile();
+const FILE = process.env.PR_FLOW_PACE_FILE || (PROFILE ? path.join(os.tmpdir(), 'flow-pace', PROFILE.replace(/[^\w.-]+/g, '_') + '.json') : path.join(ROOT, 'workspace', 'tmp', 'flow-pace.json')); // the env overrides are for smoke tests only
 const DOWNLOAD_LOCK = process.env.PR_FLOW_DOWNLOAD_LOCK || path.join(os.tmpdir(), 'flow-download.lock');
 const rnd = (a, b) => Math.round(a + Math.random() * (b - a));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -129,7 +141,7 @@ for (let i = 0; i < rest.length; i++) { if (rest[i].startsWith('--')) { args[res
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   if (cmd === 'gate') await gate(args);
   else if (cmd === 'download-lock') await downloadLock(positional[0], args);
-  else if (cmd === 'status') { const st = load(); out({ ok: true, in_group: st.in_group, group_size: st.group_size, last_2min: st.times.filter((t) => Date.now() - t < 120000).length, total_recorded: st.times.length }); }
+  else if (cmd === 'status') { const st = load(); out({ ok: true, profile: PROFILE || 'shared', file: FILE, in_group: st.in_group, group_size: st.group_size, last_2min: st.times.filter((t) => Date.now() - t < 120000).length, total_recorded: st.times.length }); }
   else if (cmd === 'reset') { save({ times: [], in_group: 0, group_size: rnd(2, 3), tags: [] }); out({ ok: true, reset: true }); }
   else { out({ ok: false, error: 'Lệnh: gate --tag <item id> | download-lock acquire|release --tag <id> | status | reset' }); process.exit(1); }
 }
