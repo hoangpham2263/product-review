@@ -44,15 +44,21 @@ function Remove-SampleLettering([string]$Text, $Context, [string]$Replacement = 
     if (-not $Text) { return $Text }
     $q = '["''‘’“”]'
     $t = $Text
+    # Every line of words on a lettered sign is replaced, the design's own words included: no remark may call any lettering fixed or kept.
+    $t = [regex]::Replace($t, '(?i)\s*\((?:[^()]*\b(?:part of the design|fixed|kept)\b[^()]*)\)', '')
+    $t = [regex]::Replace($t, '(?i)\bfixed\s+(?:words?|text|wording|lettering)\b', 'customer lettering')
     foreach ($line in @(Get-SignWordingLines (Get-ContextSampleText $Context) | Where-Object { $_.Length -ge 3 })) {
-        $t = [regex]::Replace($t, "${q}?\s*" + [regex]::Escape($line) + "\s*${q}?", $Replacement, 'IgnoreCase')
+        $t = [regex]::Replace($t, "${q}?\s*" + [regex]::Escape($line) + "\s*${q}?", " $Replacement ", 'IgnoreCase')
     }
     # Quoted "Your ..." / 'YOUR LOGO', and unquoted Your Gamer Tag / YOUR GYM NAME (Your + up to 3 capitalised words).
-    $t = [regex]::Replace($t, "${q}\s*your\b[^""'‘’“”]{0,40}${q}", $Replacement, 'IgnoreCase')
+    $t = [regex]::Replace($t, "${q}\s*your\b[^""'‘’“”]{0,40}${q}", " $Replacement ", 'IgnoreCase')
     $t = [regex]::Replace($t, "\b(?:Your|YOUR)(?:\s+(?:[A-Z][A-Za-z'’]*|&)){1,3}", $Replacement)
     $t = [regex]::Replace($t, '(?i)\b(?:sample|placeholder)\s+(?:text|script|lettering|wording|words?|names?)\s*(?:reading|that reads|saying)?\s*', 'the ')
     $t = [regex]::Replace($t, '(?i)\bthe\s+the\b', 'the')
-    return $t
+    $t = [regex]::Replace($t, '(?i)(customer lettering)(\s+customer lettering)+', '$1')
+    $t = [regex]::Replace($t, '\s{2,}', ' ')
+    $t = [regex]::Replace($t, '\s+([,.;:])', '$1')
+    return $t.Trim()
 }
 
 # Case- and spacing-tolerant form of a sign wording, to compare what the sign reads with sign_text.

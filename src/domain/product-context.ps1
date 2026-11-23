@@ -39,8 +39,8 @@ details: what is clearly visible and must be preserved, in this order, and nothi
 Leave out what is unclear or hidden and say which parts are unclear.
 
 STEP 3B - LETTERING
-lettered: true only when the product is a made-to-order lettered item whose photo shows SAMPLE customer lettering that a buyer would replace (e.g. neon name/logo/wedding/gym/shop sign reading "Your Name", "YOUR LOGO", "Your Shop Name"). false when the words are fixed art of the design (BEER, DJ, OPEN, Karaoke) or there is no text.
-sample_text: when lettered is true, that sample lettering exactly as the photo shows it, top to bottom, with " | " between lines (e.g. "Your Name | Est. 2024"); otherwise "".
+lettered: true only when the product is a made-to-order lettered item whose photo shows SAMPLE customer lettering that a buyer would replace (e.g. neon name/logo/wedding/gym/shop sign reading "Your Name", "YOUR LOGO", "Your Shop Name"). A sign that MIXES sample customer lettering with the design's own words (e.g. top line "Last Call" or "Cocktail Hour" as printed art, bottom line "Your Bar Name") is lettered: true. false only when EVERY word is fixed art of the design (BEER, DJ, OPEN, Karaoke) and none is customer lettering, or there is no text.
+sample_text: when lettered is true, EVERY line of words on the sign exactly as the photo shows it, top to bottom, with " | " between lines, the design's own fixed words included (e.g. "Your Name | Est. 2024", or "Last Call | Your Bar Name"): all of them get new scene-fitting wording; otherwise "".
 
 STEP 4 - LIMITS
 Do not invent brand names, ownership, specifications, performance or customer experiences.
