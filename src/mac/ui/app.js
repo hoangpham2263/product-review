@@ -230,20 +230,20 @@ function buildMain() {
   // when it is already open. Closes on a click outside, Esc and right after a window is opened.
   ui.sessionsPanel = at(el("div", "card"), null, 52, 300, null, { right: 24, left: false });
   Object.assign(ui.sessionsPanel.style, { zIndex: "30", display: "none", padding: "12px", background: "var(--surface)", border: "1px solid var(--line)" });
-  const pickLabel = el("div", "muted", { text: "Dự án" }); Object.assign(pickLabel.style, { fontSize: "11px", marginBottom: "2px" });
+  const pickLabel = el("div", "muted", { text: "Dự án" }); Object.assign(pickLabel.style, { fontSize: "10px", marginBottom: "2px" });
   ui.sessionPick = combo();
   Object.assign(ui.sessionPick.style, { position: "static", display: "block", width: "100%", height: "32px", marginBottom: "8px" });
   // A typed name opens a BLANK session (not tied to a project): shown only when the last entry "＋ Phiên mới (đặt tên)…" is picked.
   ui.newNameBox = el("div"); Object.assign(ui.newNameBox.style, { display: "none", marginBottom: "8px" });
-  const nameLabel = el("div", "muted", { text: "Tên phiên mới" }); Object.assign(nameLabel.style, { fontSize: "11px", marginBottom: "2px" });
+  const nameLabel = el("div", "muted", { text: "Tên phiên mới" }); Object.assign(nameLabel.style, { fontSize: "10px", marginBottom: "2px" });
   ui.sessionName = el("input", "text", { placeholder: "vd: grenheim-2", maxlength: "30" });
   Object.assign(ui.sessionName.style, { position: "static", display: "block", width: "100%", height: "32px" });
-  ui.nameHint = el("div", "muted", { text: "Chữ thường a-z, số 0-9 và dấu -, tối đa 30 ký tự." }); Object.assign(ui.nameHint.style, { fontSize: "11px", marginTop: "3px", minHeight: "14px" });
+  ui.nameHint = el("div", "muted", { text: "Chữ thường a-z, số 0-9 và dấu -, tối đa 30 ký tự." }); Object.assign(ui.nameHint.style, { fontSize: "10px", marginTop: "3px", minHeight: "14px" });
   ui.newNameBox.append(nameLabel, ui.sessionName, ui.nameHint);
   ui.btnSessionOpen = button("Mở cửa sổ", true);
   Object.assign(ui.btnSessionOpen.style, { position: "static", display: "block", width: "100%", height: "32px" });
   // what is open right now (read-only, from live data): shown above the combo
-  ui.openLine = el("div", "muted"); Object.assign(ui.openLine.style, { fontSize: "11px", marginBottom: "8px", display: "none", lineHeight: "1.35" });
+  ui.openLine = el("div", "muted"); Object.assign(ui.openLine.style, { fontSize: "10px", marginBottom: "8px", display: "none", lineHeight: "1.35" });
   ui.sessionsPanel.append(ui.openLine, pickLabel, ui.sessionPick, ui.newNameBox, ui.btnSessionOpen);
   ui.openNames = new Set(); // names of the windows open now (sessions and projects), for the live check of a typed name
   ui.projectIds = new Set();
@@ -359,7 +359,7 @@ function buildMain() {
   ui.flowBrowserSaved = ""; ui.flowBrowserProfiles = [];
   ui.flowBrowser.addEventListener("wheel", (e) => { if (document.activeElement === ui.flowBrowser) e.preventDefault(); }, { passive: false });
   ui.btnInstallExt = at(button("Cài extension"), 112, 6, 98, 18);
-  Object.assign(ui.btnInstallExt.style, { fontSize: "11px", padding: "0 4px", lineHeight: "16px", minHeight: "0" });
+  Object.assign(ui.btnInstallExt.style, { fontSize: "10px", padding: "0 4px", lineHeight: "16px", minHeight: "0" });
   ui.btnInstallExt.title = "Cài extension vào profile này: mở trang Playwright MCP Bridge trên Chrome Web Store trong đúng profile đã chọn. Bạn tự bấm Thêm vào Chrome; tool không cài thay.";
   ui.btnInstallExt.hidden = true;
   // Optional Playwright extension token of the chosen profile (extension mode, profile with the extension): saved = runs connect without the Connect click.
@@ -369,10 +369,10 @@ function buildMain() {
   ui.tokenInput = at(el("input", "text", { type: "password", autocomplete: "off", placeholder: "Dán token của profile này" }), 14, 160, 126, 24);
   ui.tokenInput.style.fontSize = "12px";
   ui.tokenState = at(label("", "muted"), 14, 160, 126, 24);
-  Object.assign(ui.tokenState.style, { whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", fontSize: "12px", lineHeight: "24px" });
+  Object.assign(ui.tokenState.style, { whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", fontSize: "11px", lineHeight: "24px" });
   ui.btnTokenSave = at(button("Lưu"), 146, 160, 64, 24);
   ui.btnTokenClear = at(button("Xoá token"), 136, 160, 74, 24);
-  for (const b of [ui.btnTokenSave, ui.btnTokenClear]) Object.assign(b.style, { fontSize: "12px", padding: "0 4px", minHeight: "0", lineHeight: "22px" });
+  for (const b of [ui.btnTokenSave, ui.btnTokenClear]) Object.assign(b.style, { fontSize: "11px", padding: "0 4px", minHeight: "0", lineHeight: "22px" });
   const refreshTokenRow = () => {
     const p = ui.flowBrowserProfiles.find((x) => x.folder === ui.flowBrowser.value);
     const show = !!p && p.playwright_extension && ui.flowBrowser.value !== "own";
@@ -469,7 +469,7 @@ function buildMain() {
   // They shrink with the window (cut with …) so they never run under the pickers on the right.
   ui.lblTokens = at(label("", "muted"), 460, 25, null, 20, { right: 400 });
   ui.lblQuota = at(label("", "muted"), 460, 45, null, 20, { right: 400 });
-  for (const l of [ui.lblTokens, ui.lblQuota]) Object.assign(l.style, { fontSize: "12px", lineHeight: "20px" });
+  for (const l of [ui.lblTokens, ui.lblQuota]) Object.assign(l.style, { fontSize: "11px", lineHeight: "20px" });
   cardRun.append(ui.btnRun, ui.btnStop, ui.lblStatus, ui.lblTokens, ui.lblQuota, ui.lblText, ui.cmbText, ui.lblBackend, ui.cmbBackend, ui.lblThr, ui.numThr);
 
   // Tiến trình & thông báo (20,508 1060x282, all anchors).
@@ -477,7 +477,7 @@ function buildMain() {
   cardLog.append(at(label("Tiến trình & thông báo"), 14, 10, 150, 20));
   // always-visible run line: which feature runs (or ran last), for which project, since when, last step
   ui.runLine = at(label("", "muted"), 170, 10, null, 20, { right: 14 });
-  Object.assign(ui.runLine.style, { whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", fontSize: "12px", lineHeight: "20px" });
+  Object.assign(ui.runLine.style, { whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", fontSize: "11px", lineHeight: "20px" });
   cardLog.append(ui.runLine);
   setTimeout(refreshRunLine, 500);
   ui.bar = at(el("div", "progress"), 14, 36, null, 8, { right: 14 });
@@ -889,7 +889,7 @@ function showProjectsDialog(pick = "") {
   const oneLine = (style = {}) => Object.assign({ whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }, style);
   const listTitle = at(label("Dự án của bạn", "muted"), 16, 14, 150, 20);
   const unpick = at(button("Bỏ chọn dự án"), 160, 10, 106, 24);
-  Object.assign(unpick.style, { fontSize: "12px" });
+  Object.assign(unpick.style, { fontSize: "11px" });
   unpick.title = "Cửa sổ này thôi làm dự án đang chọn (nhả khóa dự án); tiêu đề về mặc định.";
   unpick.onclick = () => selectProject("");
   const projectLine = at(label("", "muted"), 282, 14, 602, 20);
@@ -907,7 +907,7 @@ function showProjectsDialog(pick = "") {
   countLabel.style.textAlign = "right";
   const COLS = "1fr 140px 44px 62px 96px";
   const head = el("div", "");
-  Object.assign(head.style, { display: "grid", gridTemplateColumns: COLS, gap: "6px", alignItems: "center", fontSize: "12px", color: "var(--muted)", padding: "0 6px", height: "22px", boxSizing: "border-box", position: "sticky", top: "0", background: "var(--smoke)", borderBottom: "1px solid var(--line)" });
+  Object.assign(head.style, { display: "grid", gridTemplateColumns: COLS, gap: "6px", alignItems: "center", fontSize: "11px", color: "var(--muted)", padding: "0 6px", height: "22px", boxSizing: "border-box", position: "sticky", top: "0", background: "var(--smoke)", borderBottom: "1px solid var(--line)" });
   head.append(...["Sản phẩm", "Danh mục", "Dùng", "Review", "Kiểm tra"].map((t) => el("div", "", { text: t, style: oneLine() })));
   const tableBox = at(el("div", "flow"), 282, 76, 602, 344);
   Object.assign(tableBox.style, { background: "#fff", border: "1px solid #000" });
@@ -940,11 +940,11 @@ function showProjectsDialog(pick = "") {
   const stop = at(button("Dừng"), 413, 556, 190, 32);
   const stopMain = at(button("Dừng"), 612, 556, 180, 32); stopMain.style.display = "none";
   const runBox = at(label("", "muted"), 16, 596, 868, 38);
-  Object.assign(runBox.style, { whiteSpace: "pre-line", lineHeight: "18px", fontSize: "12px", overflow: "hidden" });
+  Object.assign(runBox.style, { whiteSpace: "pre-line", lineHeight: "18px", fontSize: "11px", overflow: "hidden" });
   const close = at(button("Đóng"), 800, 556, 80, 32);
   // the scene library tag index (shared by every project): state line + its own button on the last row
   const indexLine = at(label("Kho ảnh: …", "muted"), 16, 646, 680, 20);
-  Object.assign(indexLine.style, oneLine({ fontSize: "12px" }));
+  Object.assign(indexLine.style, oneLine({ fontSize: "11px" }));
   const indexBtn = at(button("Gắn nhãn kho ảnh"), 720, 640, 160, 32);
   indexBtn.title = "Claude xem mỗi ảnh trong kho MỘT lần (trên tấm ảnh ghép) và gắn nhãn: nơi chốn, có người, ánh sáng, chỗ tường trống, hợp loại sản phẩm nào. Chuẩn bị trước và Thêm vào hàng chờ dùng nhãn này để chỉ xem ít ảnh hợp nhất. Chỉ gắn ảnh chưa có nhãn; chạy được khi Bắt đầu đang chạy.";
   view.body.append(listTitle, unpick, projectLine, listBox, addWeb, catLabel, catBox, unusedOnly, countLabel, tableBox, status, qTitle, qCountHint, queueCount, qSceneHint, sceneCount, queueBtn, divider, pTitle, retrySkipped, pCountHint, prepCount, pSceneHint, prepScenes, prepBtn, scanBtn, reviewsBtn, openDir, stop, stopMain, close, runBox, indexLine, indexBtn);
@@ -1009,14 +1009,14 @@ function showProjectsDialog(pick = "") {
       const item = el("div", "", { style: { padding: "8px 10px", borderBottom: "1px solid var(--line)", cursor: "pointer" } });
       if (p.id === current) item.style.background = "var(--hover)";
       item.append(
-        el("div", "", { text: p.name || p.id, style: oneLine({ fontSize: "13px" }) }),
-        el("div", "label muted", { text: `${p.products} sản phẩm · đã dùng ${p.used}/${p.products}`, style: oneLine({ position: "static", fontSize: "12px" }) }),
-        el("div", "label muted", { text: `Đã chuẩn bị: ${p.prepared || 0} sẵn sàng`, style: oneLine({ position: "static", fontSize: "12px" }) }),
-        el("div", "label muted", { text: `Quét: ${fmtStamp(p.last_scan)}`, style: oneLine({ position: "static", fontSize: "12px" }) }),
-        el("div", "label muted", { text: `Review: ${fmtStamp(p.last_reviews_check)}`, style: oneLine({ position: "static", fontSize: "12px" }) }),
+        el("div", "", { text: p.name || p.id, style: oneLine({ fontSize: "12px" }) }),
+        el("div", "label muted", { text: `${p.products} sản phẩm · đã dùng ${p.used}/${p.products}`, style: oneLine({ position: "static", fontSize: "11px" }) }),
+        el("div", "label muted", { text: `Đã chuẩn bị: ${p.prepared || 0} sẵn sàng`, style: oneLine({ position: "static", fontSize: "11px" }) }),
+        el("div", "label muted", { text: `Quét: ${fmtStamp(p.last_scan)}`, style: oneLine({ position: "static", fontSize: "11px" }) }),
+        el("div", "label muted", { text: `Review: ${fmtStamp(p.last_reviews_check)}`, style: oneLine({ position: "static", fontSize: "11px" }) }),
       );
       item.title = p.site;
-      if (p.heldBy) { item.style.opacity = "0.55"; item.style.cursor = "default"; item.append(el("div", "label muted", { text: "Đang mở ở cửa sổ " + p.heldBy, style: oneLine({ position: "static", fontSize: "12px" }) })); }
+      if (p.heldBy) { item.style.opacity = "0.55"; item.style.cursor = "default"; item.append(el("div", "label muted", { text: "Đang mở ở cửa sổ " + p.heldBy, style: oneLine({ position: "static", fontSize: "11px" }) })); }
       item.onclick = () => { if (!p.heldBy) selectProject(p.id); };
       return item;
     }) : [el("div", "label muted", { text: "Chưa có dự án. Bấm Thêm web mới để quét web đầu tiên.", style: { position: "static", padding: "10px", whiteSpace: "normal" } })]));
@@ -1028,7 +1028,7 @@ function showProjectsDialog(pick = "") {
     const rows = data.rows.filter((r) => (!cat || r.collection === cat) && (!only || !r.used));
     countLabel.textContent = `${rows.length}/${data.rows.length} sản phẩm`;
     tableBox.replaceChildren(head, ...rows.map((r) => {
-      const line = el("div", "", { style: { display: "grid", gridTemplateColumns: COLS, gap: "6px", alignItems: "center", fontSize: "12px", padding: "3px 6px", minHeight: "24px", boxSizing: "border-box", borderBottom: "1px solid var(--line)" } });
+      const line = el("div", "", { style: { display: "grid", gridTemplateColumns: COLS, gap: "6px", alignItems: "center", fontSize: "11px", padding: "3px 6px", minHeight: "24px", boxSizing: "border-box", borderBottom: "1px solid var(--line)" } });
       const name = el("div", "", { text: r.title || r.url, title: r.url, style: oneLine() });
       const group = el("div", "", { text: r.collection, title: r.collection, style: oneLine({ color: "var(--muted)" }) });
       const used = el("div", "", { text: r.used ? "T" : "F", title: r.used ? "Đã dùng: bấm để đổi về F" : "Chưa dùng: bấm để đổi thành T", style: { cursor: "pointer", textAlign: "center", color: r.used ? "var(--ok)" : "var(--muted)", border: "1px solid var(--line)", borderRadius: "3px", lineHeight: "18px" } });
@@ -1279,7 +1279,7 @@ async function showProductDialog(target = null) {
       if (i === active) row.style.background = "var(--hover)";
       const product = p.file
         ? thumb(p.file, p.ok, async () => { await api("draftRemoveProduct", { root, url, productIndex: i }).catch(fail); refresh(); }, `Ảnh gốc #${i + 1}`)
-        : el("div", "label muted", { text: "Ảnh từ link", style: { position: "static", width: "56px", whiteSpace: "normal", fontSize: "11px" } });
+        : el("div", "label muted", { text: "Ảnh từ link", style: { position: "static", width: "56px", whiteSpace: "normal", fontSize: "10px" } });
       const arrow = el("div", "label muted", { text: "→", style: { position: "static", width: "16px", height: "56px", lineHeight: "56px", textAlign: "center", flex: "none" } });
       product.style.flex = "none";
       const reviews = el("div", "", { style: { display: "flex", flexWrap: "wrap", gap: "6px", flex: "1", minWidth: "0" } });

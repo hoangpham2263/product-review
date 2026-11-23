@@ -9,16 +9,16 @@
 * { box-sizing: border-box; }
 /* hidden wins over a class that sets display (.btn), e.g. "← Menu" when there is no menu to go back to. */
 [hidden] { display: none !important; }
-body { margin: 0; background: var(--control); color: var(--ink); font: 13.33px/1.35 var(--font); -webkit-font-smoothing: antialiased; }
+body { margin: 0; background: var(--control); color: var(--ink); font: 12px/1.35 var(--font); -webkit-font-smoothing: antialiased; }
 /* The same frame as Product Review's window (1120 x 840 by default): 20px left, 24px right, 20px at the bottom,
    the 64px header, then 14px to the first group; groups 16px apart side by side and 12px apart above and below. */
 main { padding: 0 24px 20px 20px; }
 header + * { margin-top: 14px; }
 header { display: flex; align-items: center; gap: 12px; height: 64px; }
 header img { width: 32px; height: 32px; }
-h1 { font-size: 17.33px; font-weight: 400; margin: 0; }
+h1 { font-size: 16px; font-weight: 400; margin: 0; }
 .muted { color: var(--muted); }
-.small { font-size: 12px; }
+.small { font-size: 11px; }
 label { display: block; color: var(--ink); margin: 12px 0 4px; }
 input, textarea, select { width: 100%; font: inherit; color: var(--ink); background: #fff; border: 1px solid #7a7a7a; border-radius: 0; padding: 4px 5px; outline: none; }
 input:hover, textarea:hover, select:hover { border-color: #171717; }
@@ -53,7 +53,7 @@ textarea { resize: vertical; min-height: 110px; line-height: 1.3; }
 ::-webkit-scrollbar-thumb:hover { background: #a6a6a6; }
 .list .card:hover { background: var(--hover); }
 .list .card[aria-pressed="true"] { border-color: var(--accent); box-shadow: inset 3px 0 0 var(--accent); }
-pre.out { white-space: pre-wrap; word-break: break-word; background: #fff; border: 1px solid var(--line); padding: 10px 12px; max-height: 480px; overflow: auto; margin: 8px 0 0; font: 12.5px/1.5 Consolas, ui-monospace, Menlo, monospace; user-select: text; }
+pre.out { white-space: pre-wrap; word-break: break-word; background: #fff; border: 1px solid var(--line); padding: 10px 12px; max-height: 480px; overflow: auto; margin: 8px 0 0; font: 11.5px/1.5 Consolas, ui-monospace, Menlo, monospace; user-select: text; }
 .note { background: var(--surface); border: 1px solid var(--line); padding: 6px 10px; color: var(--muted); }
 details summary { cursor: default; color: var(--muted); }
 .toast { position: fixed; left: 50%; bottom: 24px; transform: translateX(-50%); background: rgb(30, 30, 30); color: #fff; padding: 8px 14px; opacity: 0; transition: opacity .2s; pointer-events: none; }
@@ -66,7 +66,7 @@ header .update { margin-left: auto; }
 header .config + .update { margin-left: 0; }
 /* Menu: whether Cấu hình is done (hub.js), above the tools; the tools need every step done. */
 .setup-status { display: flex; align-items: center; gap: 10px; min-height: 40px; padding: 8px 14px; margin-bottom: 12px; background: var(--surface); border: 1px solid var(--line); }
-.setup-status .mark { font-size: 15px; width: 18px; text-align: center; }
+.setup-status .mark { font-size: 14px; width: 18px; text-align: center; }
 .setup-status .text { flex: 1; min-width: 0; }
 .setup-status.ok { border-color: var(--accent); }
 .setup-status.ok .mark { color: darkgreen; }
@@ -74,7 +74,7 @@ header .config + .update { margin-left: 0; }
 .setup-status.todo .mark { color: #b06000; }
 .setup-status .btn { height: 28px; }
 /* Cấu hình page (core/setup/page.html): Chép mã beside Codex's one-time code. */
-.copy-code { margin: 0 2px; padding: 1px 8px; font-size: 12px; min-height: 0; height: auto; }
+.copy-code { margin: 0 2px; padding: 1px 8px; font-size: 11px; min-height: 0; height: auto; }
 /* Dialog (Cập nhật), like Product Review's small windows. */
 .shade { position: fixed; inset: 0; background: rgba(0, 0, 0, .25); display: flex; align-items: center; justify-content: center; }
 .dialog { width: 440px; background: var(--control); border: 1px solid var(--line); box-shadow: 0 8px 24px rgba(0, 0, 0, .2); padding: 20px; }
@@ -89,7 +89,7 @@ header .config + .update { margin-left: 0; }
 .layout { display: grid; grid-template-columns: minmax(0, 1fr) 224px; gap: 12px 16px; align-items: stretch; }
 .group { position: relative; background: var(--control); border: 1px solid var(--line); padding: 38px 14px 14px; min-width: 0; }
 .group.wide { grid-column: 1 / -1; }
-.group > h2 { position: absolute; top: 10px; left: 14px; margin: 0; font-size: 13.33px; font-weight: 400; color: var(--ink); }
+.group > h2 { position: absolute; top: 10px; left: 14px; margin: 0; font-size: 12px; font-weight: 400; color: var(--ink); }
 .group > label:first-of-type { margin-top: 0; }
 .actions-col { display: flex; flex-direction: column; gap: 8px; }
 .actions-col .btn { width: 100%; }
