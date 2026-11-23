@@ -154,6 +154,11 @@ const flowFocus = (_flow, text) => text;
 // has it". So a chosen profile without the extension (or missing) refuses to start; another profile is never used instead.
 // The Google account chosen for Flow (workspace/config/run-settings.json flowAccount), "" when none.
 // PER SESSION: the Flow account of THIS window (its workspace/config/run-settings.json, seeded from the default session's file).
+// The Claude model of this window (run-settings.json claudeModel: sonnet | opus | haiku), "" = the CLI default.
+export const CLAUDE_MODELS = ["sonnet", "opus", "haiku"];
+export function readClaudeModel(workspaceDir, seedDir = "") {
+  try { const f = (d) => join(d, "config", "run-settings.json"); const m = String(readSeededJson(f(workspaceDir), seedDir ? f(seedDir) : "", {}).claudeModel || ""); return CLAUDE_MODELS.includes(m) ? m : ""; } catch { return ""; }
+}
 export function readFlowAccount(workspaceDir, seedDir = "") {
   try {
     const f = (d) => join(d, "config", "run-settings.json");
@@ -323,7 +328,8 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
     const group = ext ? takeGroup(workspace, session) : null;
     if (!lightMode) writeFileSync(cfg, JSON.stringify(mcpConfig({ plat, profile: profileDir, headless, extension: ext ? { profile: bc.profile, name: group.name, color: group.color, background: mode !== "flow" } : null })));
     if (!lightMode && !ext) mkdirSync(profileDir, { recursive: true });
-    const args = ["-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "default", ...(maxTurns > 0 ? ["--max-turns", String(maxTurns)] : []), "--allowedTools", (lightMode ? LIGHT_TOOLS : ALLOWED_TOOLS).join(","), "--add-dir", toolRoot, ...(lightMode ? ["--strict-mcp-config"] : ["--mcp-config", cfg])];
+    const claudeModel = readClaudeModel(workspace || join(toolRoot, "workspace"), join(toolRoot, "workspace"));
+    const args = ["-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "default", ...(claudeModel ? ["--model", claudeModel] : []), ...(maxTurns > 0 ? ["--max-turns", String(maxTurns)] : []), "--allowedTools", (lightMode ? LIGHT_TOOLS : ALLOWED_TOOLS).join(","), "--add-dir", toolRoot, ...(lightMode ? ["--strict-mcp-config"] : ["--mcp-config", cfg])];
     // Optional per-profile Playwright extension token (shared workspace/playwright-tokens.json): only through this env, never in the MCP config file or a log.
     const extToken = ext ? extensionToken(join(toolRoot, "workspace"), bc.profile) : "";
     const env = { ...process.env, ...(extToken ? { PLAYWRIGHT_MCP_EXTENSION_TOKEN: extToken } : {}) };

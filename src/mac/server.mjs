@@ -412,6 +412,7 @@ async function handle(req, res) {
         if (Number.isInteger(given.threads) && given.threads >= 1 && given.threads <= 4) cur.threads = given.threads;
         if (["codex", "antigravity", "claude"].includes(given.textBackend)) cur.textBackend = given.textBackend;
         if (["codex", "agent"].includes(given.imageBackend)) cur.imageBackend = given.imageBackend;
+        if (typeof given.claudeModel === "string") { if (!given.claudeModel) delete cur.claudeModel; else if (["sonnet", "opus", "haiku"].includes(given.claudeModel)) cur.claudeModel = given.claudeModel; }
         if (typeof given.flowAccount === "string") { const v = given.flowAccount.trim(); if (!v) delete cur.flowAccount; else if (v.length <= 120 && /^[^\s@"<>]+@[^\s@"<>]+\.[^\s@"<>]+$/.test(v)) cur.flowAccount = v; }
         // the two separate pairs of the Dự án popup: Thêm vào hàng chờ (count 1-200, scenes 1-4) and Chuẩn bị trước (count 0-500, 0 = all; scenes 1-4)
         const int = (v, lo, hi) => (Number.isInteger(v) && v >= lo && v <= hi ? v : undefined);
