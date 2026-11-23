@@ -422,8 +422,8 @@ function Invoke-AgentRegisterImage {
 }
 
 # SIGN CHECK before an image of a lettered item is registered: the agent LOOKS at the image and passes -SignRead (what the sign reads);
-# it must equal sign_text (case / spacing / punctuation tolerant). A mismatch is not registered: redo the image (at most 2 redos),
-# the 3rd mismatch is final (logs/<id>-agent-error.txt = [CAUSE:SIGN_TEXT], shown by run-summary).
+# it must equal sign_text (case / spacing / punctuation tolerant). A first mismatch is not registered: redo the image once;
+# a second mismatch is registered anyway with sign_check.kept_anyway (the reviewer decides in Duyệt).
 # Returns $null when there is nothing to check (no sign_text, or a run created before exact wording without -SignRead).
 function Test-AgentSignRead($Entry) {
     $id = $Entry.id
@@ -454,12 +454,12 @@ function Test-AgentSignRead($Entry) {
         if ((Test-Path -LiteralPath $err) -and (Get-Content -LiteralPath $err -Raw -Encoding UTF8) -match '^\[CAUSE:SIGN_TEXT\]') { Remove-Item -LiteralPath $err -Force }
         return [ordered]@{ expected = $expected; read = $SignRead; ok = $true; misses = $misses }
     }
-    if ($misses -le 2) {
-        Stop-AgentWith ([ordered]@{ ok = $false; error = "The sign reads '$SignRead' but sign_text is '$expected'. Not registered. Redo this item in Flow with the same condensed_prompt (redo $misses of 2), then register-image again with -SignRead."; cause = 'SIGN_TEXT_MISMATCH'; item = $id; expected = $expected; read = $SignRead; redo = $true; redos_left = (2 - $misses) })
+    # User 2026-11-23: ONE redo; if the redo is still wrong, keep the image anyway (registered, flagged sign_mismatch so the
+    # reviewer sees it in Duyệt) and go on. Never an error that drops the item.
+    if ($misses -le 1) {
+        Stop-AgentWith ([ordered]@{ ok = $false; error = "The sign reads '$SignRead' but sign_text is '$expected'. Not registered. Redo this item ONCE in Flow with the same condensed_prompt, then register-image again with -SignRead (if it is still wrong then, it is kept anyway)."; cause = 'SIGN_TEXT_MISMATCH'; item = $id; expected = $expected; read = $SignRead; redo = $true; redos_left = 1 })
     }
-    $msg = "[CAUSE:SIGN_TEXT] The sign still reads '$SignRead' instead of '$expected' after $misses tries."
-    [IO.File]::WriteAllText((Join-Path $script:Batch.Logs "$id-agent-error.txt"), $msg, $script:Utf8)
-    Stop-AgentWith ([ordered]@{ ok = $false; error = "$msg Not registered; the item is reported as an error. Go on with the next item."; cause = 'SIGN_TEXT'; item = $id; expected = $expected; read = $SignRead; redo = $false; final = $true })
+    return [ordered]@{ expected = $expected; read = $SignRead; ok = $false; misses = $misses; kept_anyway = $true; note = "sign_mismatch: reads '$SignRead' instead of '$expected' after $misses tries; kept for review" }
 }
 
 # --- dispatcher ------------------------------------------------------------------------------------------------
