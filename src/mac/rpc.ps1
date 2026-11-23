@@ -54,6 +54,7 @@ function Invoke-Rpc([string]$Cmd, $A) {
         'sourceFiles' { return (Get-SourcePickerFiles $libraryRoot ([string]$A.group)) }
         'quotaSummary' { . (Join-Path $srcDir '../core/setup/quota.ps1'); return (Get-QuotaSummary) }
         'aiModels' { return [pscustomobject]@{ settings = (Get-AiSettings $root); models = @(Get-AiModels) } }
+        'aiSummary' { return (Get-AiModelSummary $root) }
         'aiSettingsSet' { Set-AiSettings $root ([string]$A.model) ([string]$A.effort); return $true }
         'sourceDefault' { return (Get-DefaultSourceGroup $root) }
         'sourceDefaultSet' { Set-DefaultSourceGroup $root ([string]$A.group); return $true }

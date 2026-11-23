@@ -206,5 +206,16 @@
     fill(model, ["", ...models.map((m) => m.slug)], ["Model mặc định của Codex", ...models.map((m) => m.name)], saved.model || "");
     fillEfforts(saved.effort || "");
   }).catch(() => { fill(model, [""], ["Model mặc định của Codex"], ""); fillEfforts(""); });
+  // Model AI của Claude: run-settings.json of THIS window (claudeModel haiku | sonnet | opus, default haiku; claudeEffort = claude --effort, "" = no flag).
+  const cmodel = $(".cmodel"), ceffort = $(".ceffort");
+  const CM = [["haiku", "Haiku · claude-haiku-5-5"], ["sonnet", "Sonnet · claude-sonnet-5-5"], ["opus", "Opus · claude-opus-5-5"]];
+  fill(cmodel, CM.map((x) => x[0]), CM.map((x) => x[1]), "haiku");
+  const CE = ["", "low", "medium", "high", "xhigh", "max"];
+  fill(ceffort, CE, CE.map((e) => (e ? effortNames[e] : "Mức suy nghĩ mặc định")), "");
+  cmodel.onchange = ceffort.onchange = async () => {
+    const r = await post("/api/run-settings", { claudeModel: cmodel.value, claudeEffort: ceffort.value });
+    if (r.error) alert(r.error);
+  };
+  fetch("/api/run-settings").then((r) => r.json()).then((r) => { fill(cmodel, CM.map((x) => x[0]), CM.map((x) => x[1]), r.claudeModel || "haiku"); fill(ceffort, CE, CE.map((e) => (e ? effortNames[e] : "Mức suy nghĩ mặc định")), r.claudeEffort || ""); }).catch(() => {});
   check();
 })();

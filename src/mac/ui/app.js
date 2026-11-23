@@ -3,6 +3,7 @@
 "use strict";
 
 // ---------- helpers ----------
+const modelInfo = { claude: {}, codex: "" };
 const api = async (cmd, args = {}) => {
   const r = await fetch("/api/rpc", { method: "POST", body: JSON.stringify({ cmd, args }) });
   const body = await r.json();
@@ -476,12 +477,9 @@ function buildMain() {
   ui.lblThr = at(label("Luồng:", "muted"), null, 47, 56, 24, { right: 88, left: false });
   ui.numThr = at(numeric(1, 4, 2), null, 44, 64, 24, { right: 22, left: false });
   ui.lblThr.style.lineHeight = "24px";
-  // Model of the Claude runs (Flow images, reviews, scans): run-settings.json claudeModel, passed as --model to the claude CLI.
-  ui.lblModel = at(label("Model:", "muted"), null, 20, 56, 22, { right: 88, left: false });
-  ui.lblModel.style.lineHeight = "22px";
-  ui.cmbModel = at(combo(), null, 20, 64, 22, { right: 22, left: false });
-  ui.cmbModel.setItems(["sonnet", "opus", "haiku"], ["Sonnet", "Opus", "Haiku"]);
-  ui.cmbModel.value = "sonnet";
+  // What the next run uses (read-only; model and effort are chosen in Cấu hình): one compact line under the two pickers.
+  ui.lblModel = at(label("", "muted"), null, 70, 376, 16, { right: 22, left: false });
+  Object.assign(ui.lblModel.style, { fontSize: "11px", lineHeight: "16px", textAlign: "right" });
   // Which AI does the work: Codex, or the sites in the tools' own Chrome (signed in from Cấu hình). Viết review covers
   // every text step; Tạo ảnh the photo. Remembered on this machine.
   const picker = (text, y, key, values, labels) => {
@@ -499,14 +497,14 @@ function buildMain() {
   // Luồng, Viết review and Tạo ảnh are kept in workspace/config/run-settings.json (the server), so they are the same next time.
   const saveRunSettings = (part) => fetch("/api/run-settings", { method: "POST", body: JSON.stringify(part) }).catch(() => {});
   ui.numThr.onchange = () => saveRunSettings({ threads: ui.numThr.value });
-  ui.cmbModel.onchange = () => saveRunSettings({ claudeModel: ui.cmbModel.value });
   fetch("/api/run-settings").then((r) => r.json()).then((saved) => {
     if (saved.threads) ui.numThr.value = saved.threads;
-    if (["sonnet", "opus", "haiku"].includes(saved.claudeModel)) ui.cmbModel.value = saved.claudeModel; else saveRunSettings({ claudeModel: ui.cmbModel.value });
+    modelInfo.claude = saved;
     loadFlowAccounts();
     if (["codex", "antigravity", "claude"].includes(saved.textBackend)) ui.cmbText.value = saved.textBackend;
     if (["codex", "agent"].includes(saved.imageBackend)) ui.cmbBackend.value = saved.imageBackend;
     updateUsage();
+    refreshModelInfo();
     updateAgentControls();
     resumeAgent();
   }).catch(() => {});
@@ -515,7 +513,7 @@ function buildMain() {
   ui.lblTokens = at(label("", "muted"), 460, 25, null, 20, { right: 400 });
   ui.lblQuota = at(label("", "muted"), 460, 45, null, 20, { right: 400 });
   for (const l of [ui.lblTokens, ui.lblQuota]) Object.assign(l.style, { fontSize: "11px", lineHeight: "20px" });
-  cardRun.append(ui.btnRun, ui.btnResume, ui.btnStop, ui.lblStatus, ui.lblTokens, ui.lblQuota, ui.lblText, ui.cmbText, ui.lblBackend, ui.cmbBackend, ui.lblThr, ui.numThr, ui.lblModel, ui.cmbModel);
+  cardRun.append(ui.btnRun, ui.btnResume, ui.btnStop, ui.lblStatus, ui.lblTokens, ui.lblQuota, ui.lblText, ui.cmbText, ui.lblBackend, ui.cmbBackend, ui.lblThr, ui.numThr, ui.lblModel);
 
   // Tiến trình & thông báo (20,508 1060x282, all anchors).
   const cardLog = at(el("div", "card"), 20, 568, null, null, { right: 24, bottom: 10 });
@@ -1729,7 +1727,6 @@ function updateActionAvailability() {
   if (ui.btnResume) ui.btnResume.disabled = busy || !ui.resumeRun || ui.btnRun.disabled || ui.cmbBackend?.value !== "agent";
   ui.numThr.enabled = !busy;
   ui.cmbText.disabled = busy;
-  if (ui.cmbModel) ui.cmbModel.disabled = busy;
   // Both modes keep image generation enabled.
   ui.cmbBackend.disabled = busy;
   ui.flow.style.pointerEvents = busy ? "none" : "";
@@ -1771,7 +1768,30 @@ const formatCount = (n) => Number(n).toLocaleString("vi-VN");
 // the Google account's own, shown on its site. Codex's tokens and quota only show when Codex is used.
 const CALL_NAMES = { antigravity: ["Antigravity", "lượt"], claude: ["Claude", "lượt"] };
 const LIMIT_NAMES = { antigravity: "hạn mức Antigravity", claude: "hạn mức Claude" };
+// The model line of the run card: Claude (exact version id from Cấu hình) and/or Codex, for the selected backends.
+const CLAUDE_VERSIONS = { haiku: ["Haiku 5.5", "claude-haiku-5-5"], sonnet: ["Sonnet 5.5", "claude-sonnet-5-5"], opus: ["Opus 5.5", "claude-opus-5-5"] };
+function updateModelLine() {
+  if (!ui.lblModel || !ui.cmbText) return;
+  const text = ui.cmbText.value, image = ui.cmbBackend.value;
+  const parts = [];
+  if (text === "claude" || image === "agent") {
+    const [name, id] = CLAUDE_VERSIONS[modelInfo.claude.claudeModel] || CLAUDE_VERSIONS.haiku;
+    const effort = { low: "thấp", medium: "vừa", high: "cao", xhigh: "rất cao", max: "tối đa" }[modelInfo.claude.claudeEffort] || "mặc định";
+    parts.push(`Claude ${name} (${id}) · mức: ${effort}`);
+  }
+  if (text === "codex" || image === "codex") parts.push(`Codex ${modelInfo.codex || "model mặc định"}`);
+  if (text === "antigravity") parts.push("Antigravity CLI");
+  ui.lblModel.textContent = parts.join("  |  ");
+  ui.lblModel.title = ui.lblModel.textContent;
+}
+async function refreshModelInfo() {
+  try { const r = await (await fetch("/api/run-settings")).json(); modelInfo.claude = r; } catch {}
+  try { modelInfo.codex = String(await api("aiSummary")).replace(/ ((chọn trong Cấu hình|mặc định của Codex))/, ""); } catch {}
+  updateModelLine();
+}
+window.addEventListener("focus", refreshModelInfo);
 function updateUsage() {
+  updateModelLine();
   if (!ui.lblTokens || !ui.cmbText) return;
   const t = run.tokens || { in: 0, cached: 0, out: 0 };
   const [text, image] = run.active ? [run.text, run.image] : [ui.cmbText.value, ui.cmbBackend.value];
