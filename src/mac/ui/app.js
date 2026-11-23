@@ -1122,7 +1122,7 @@ function showProjectsDialog(pick = "") {
     if (ui.sessionsPanel && ui.sessionsPanel.style.display !== "none") loadSessionPicker(); // and so does an open Các phiên panel
   };
   async function loadProjects(select = "", quiet = false) {
-    try { projects = list(await api("projects")).filter((p) => !lockedProject || p.id === lockedProject); } catch (e) { projects = []; say(e.message, "var(--error)"); }
+    try { projects = list(await api("projects")).filter((p) => !lockedProject || p.id === lockedProject); window.__prProjectsCache = projects; } catch (e) { projects = []; say(e.message, "var(--error)"); }
     // the counts shown everywhere come from ONE server function (/api/sessions/projects -> projectCounts), not from a second computation
     try { const c = await fetch("/api/sessions/projects").then((x) => x.json()); for (const p of projects) { const m = (c.projects || []).find((x) => x.id === p.id); if (m) { p.products = m.products; p.used = m.used; p.heldBy = m.window_open && !m.current ? "#" + m.window_stt : m.busy && !m.current ? m.busy : ""; } } } catch {}
     // the focus decides: "Lẻ" stays Lẻ, a project stays itself (never the first of the list by accident)
@@ -1253,6 +1253,9 @@ function showProjectsDialog(pick = "") {
   view.onClose = () => { if (timer) { clearInterval(timer); timer = null; } };
   view.cancel = close.onclick = () => view.close();
   refreshButtons();
+  // Never an empty box while the list loads: the last known list at once (refreshed right after), else a loading line.
+  if (window.__prProjectsCache && window.__prProjectsCache.length) { projects = window.__prProjectsCache.filter((p) => !lockedProject || p.id === lockedProject); renderList(); }
+  else listBox.replaceChildren(el("div", "label muted", { text: "Đang tải danh sách dự án…", style: { position: "static", padding: "10px", whiteSpace: "normal" } }));
   loadProjects(pick || sessionState.project || "").then(() => watch());
 }
 

@@ -26,8 +26,21 @@ $libraryRoot = Join-Path $root 'workspace/source-photos'
 $projectsRoot = Join-Path $root 'workspace/projects'
 
 function Test-HttpUrl([string]$Url) { $uri = $null; [Uri]::TryCreate($Url, [UriKind]::Absolute, [ref]$uri) -and $uri.Scheme -in @('http', 'https') }
+# The parsed references map is kept until the file changes (path + write time + size): reading it took ~1.2 s and every link of the queue re-read it.
+# Read-only callers only (Get-EntryInfo, state); every writer reads the file fresh and writes it, which changes the stamp.
+$script:MapCache = @{}
+function Get-CachedMap([string]$MapFile) {
+    $fi = Get-Item -LiteralPath $MapFile -ErrorAction SilentlyContinue
+    if (-not $fi) { return Read-ManualReferenceMap $MapFile }
+    $stamp = "$($fi.LastWriteTimeUtc.Ticks)-$($fi.Length)"
+    $hit = $script:MapCache[$fi.FullName]
+    if ($hit -and $hit.stamp -eq $stamp) { return $hit.map }
+    $map = Read-ManualReferenceMap $MapFile
+    $script:MapCache[$fi.FullName] = @{ stamp = $stamp; map = $map }
+    return $map
+}
 function Get-EntryInfo([string]$MapFile, [string]$Url) {
-    $entry = @((Read-ManualReferenceMap $MapFile).entries | Where-Object product_url -eq $Url)
+    $entry = @((Get-CachedMap $MapFile).entries | Where-Object product_url -eq $Url)
     $image = { param($file) [pscustomobject]@{ file = [string]$file; ok = [bool]($file -and (Test-Path -LiteralPath $file)) } }
     $products = @(if ($entry.Count) { Get-ManualProducts $entry[0] | ForEach-Object { [pscustomobject]@{ file = $_.file; ok = (& $image $_.file).ok; scenes = @($_.scenes | ForEach-Object { & $image $_.file })
             sign_text = [string](@($_.scenes | Where-Object { $_.PSObject.Properties['sign_text'] -and $_.sign_text } | ForEach-Object { $_.sign_text } | Select-Object -First 1)[0]) } } })
@@ -41,7 +54,7 @@ function Assert-DraftRoot([string]$Path) {
 function Invoke-Rpc([string]$Cmd, $A) {
     switch ($Cmd) {
         'state' {
-            $map = Read-ManualReferenceMap $mapPath
+            $map = Get-CachedMap $mapPath
             $urls = @(if (Test-Path $workspace.Queue) { Get-Content $workspace.Queue -Encoding UTF8 | ForEach-Object { $_.Trim() } | Where-Object { $_ -and -not $_.StartsWith('#') } | Select-Object -Unique })
             $version = try { Get-AppVersion $root } catch { '' }
             return [pscustomobject]@{
