@@ -154,17 +154,27 @@ const flowFocus = (_flow, text) => text;
 // has it". So a chosen profile without the extension (or missing) refuses to start; another profile is never used instead.
 // The Google account chosen for Flow (workspace/config/run-settings.json flowAccount), "" when none.
 // PER SESSION: the Flow account of THIS window (its workspace/config/run-settings.json, seeded from the default session's file).
-// The Claude model + effort of this window (run-settings.json claudeModel: haiku | sonnet | opus, DEFAULT haiku; claudeEffort: a `claude --effort`
-// level, "" = no flag). The CLI gets the exact version id.
-export const CLAUDE_MODELS = ["haiku", "sonnet", "opus"];
-export const CLAUDE_MODEL_IDS = { haiku: "claude-haiku-5-5", sonnet: "claude-sonnet-5-5", opus: "claude-opus-5-5" };
+// The Claude model + effort of this window (run-settings.json claudeModel: any listed alias / full id or a custom id, DEFAULT claude-haiku-5-5;
+// claudeEffort: a `claude --effort` level, "" = no flag). The value is passed to `claude --model` exactly as stored.
+export const CLAUDE_DEFAULT_MODEL = "claude-haiku-5-5";
+export const CLAUDE_MODEL_RE = /^[A-Za-z0-9._\-\[\]]{1,60}$/;
+const fam = (name, note, items) => ({ family: name, note, models: items.map(([id, label]) => ({ id, label })) });
+// All ids verified with `claude --model <id>` on CLI 2.1.323. Not offered: claude-opus-4-1 / -4-0 (remapped), claude-sonnet-4-0 (retired), claude-haiku-3-5 (unknown).
+export const CLAUDE_MODEL_GROUPS = [
+  fam("Fable", "Mạnh nhất, cho việc khó và chạy lâu", [["fable", "Fable mới nhất · fable"], ["claude-fable-5-2", "Fable 5.2 · claude-fable-5-2"], ["claude-fable-5-1", "Fable 5.1 · claude-fable-5-1"], ["claude-fable-5", "Fable 5 · claude-fable-5"]]),
+  fam("Opus", "Tốt cho việc phức tạp hằng ngày", [["opus", "Opus mới nhất · opus"], ["claude-opus-5-5", "Opus 5.5 · claude-opus-5-5"], ["claude-opus-5", "Opus 5 · claude-opus-5"], ["claude-opus-4-8", "Opus 4.8 · claude-opus-4-8"], ["claude-opus-4-7", "Opus 4.7 · claude-opus-4-7"], ["claude-opus-4-6", "Opus 4.6 · claude-opus-4-6"], ["claude-opus-4-5", "Opus 4.5 · claude-opus-4-5"]]),
+  fam("Sonnet", "Nhẹ, cho việc thường ngày", [["sonnet", "Sonnet mới nhất · sonnet"], ["claude-sonnet-5-5", "Sonnet 5.5 · claude-sonnet-5-5"], ["claude-sonnet-5", "Sonnet 5 · claude-sonnet-5"], ["claude-sonnet-4-6", "Sonnet 4.6 · claude-sonnet-4-6"], ["claude-sonnet-4-5", "Sonnet 4.5 · claude-sonnet-4-5"]]),
+  fam("Haiku", "Nhẹ, cho việc thường ngày", [["haiku", "Haiku mới nhất · haiku"], ["claude-haiku-5-5", "Haiku 5.5 · claude-haiku-5-5"], ["claude-haiku-4-5", "Haiku 4.5 · claude-haiku-4-5"]]),
+];
+export const CLAUDE_MODELS = CLAUDE_MODEL_GROUPS.flatMap((g) => g.models.map((m) => m.id));
 export const CLAUDE_EFFORTS = ["low", "medium", "high", "xhigh", "max"];
+export const isClaudeModel = (v) => typeof v === "string" && CLAUDE_MODEL_RE.test(v);
 export function readClaudeSettings(workspaceDir, seedDir = "") {
   try {
     const f = (d) => join(d, "config", "run-settings.json");
     const s = readSeededJson(f(workspaceDir), seedDir ? f(seedDir) : "", {});
-    return { model: CLAUDE_MODELS.includes(s.claudeModel) ? s.claudeModel : "haiku", effort: CLAUDE_EFFORTS.includes(s.claudeEffort) ? s.claudeEffort : "" };
-  } catch { return { model: "haiku", effort: "" }; }
+    return { model: isClaudeModel(s.claudeModel) ? s.claudeModel : CLAUDE_DEFAULT_MODEL, effort: CLAUDE_EFFORTS.includes(s.claudeEffort) ? s.claudeEffort : "" };
+  } catch { return { model: CLAUDE_DEFAULT_MODEL, effort: "" }; }
 }
 export function readClaudeModel(workspaceDir, seedDir = "") { return readClaudeSettings(workspaceDir, seedDir).model; }
 export function readFlowAccount(workspaceDir, seedDir = "") {
@@ -337,7 +347,7 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
     if (!lightMode) writeFileSync(cfg, JSON.stringify(mcpConfig({ plat, profile: profileDir, headless, extension: ext ? { profile: bc.profile, name: group.name, color: group.color, background: mode !== "flow" } : null })));
     if (!lightMode && !ext) mkdirSync(profileDir, { recursive: true });
     const claudeSet = readClaudeSettings(workspace || join(toolRoot, "workspace"), join(toolRoot, "workspace"));
-    const args = ["-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "default", "--model", CLAUDE_MODEL_IDS[claudeSet.model], ...(claudeSet.effort ? ["--effort", claudeSet.effort] : []), ...(maxTurns > 0 ? ["--max-turns", String(maxTurns)] : []), "--allowedTools", (lightMode ? LIGHT_TOOLS : ALLOWED_TOOLS).join(","), "--add-dir", toolRoot, ...(lightMode ? ["--strict-mcp-config"] : ["--mcp-config", cfg])];
+    const args = ["-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "default", "--model", claudeSet.model, ...(claudeSet.effort ? ["--effort", claudeSet.effort] : []), ...(maxTurns > 0 ? ["--max-turns", String(maxTurns)] : []), "--allowedTools", (lightMode ? LIGHT_TOOLS : ALLOWED_TOOLS).join(","), "--add-dir", toolRoot, ...(lightMode ? ["--strict-mcp-config"] : ["--mcp-config", cfg])];
     // Optional per-profile Playwright extension token (shared workspace/playwright-tokens.json): only through this env, never in the MCP config file or a log.
     const extToken = ext ? extensionToken(join(toolRoot, "workspace"), bc.profile) : "";
     const env = { ...process.env, ...(extToken ? { PLAYWRIGHT_MCP_EXTENSION_TOKEN: extToken } : {}) };

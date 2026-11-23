@@ -40,15 +40,14 @@ function Invoke-ClaudeText([string]$Prompt, [string[]]$Images, [string]$ResultFi
     # --tools Read: the only tool there is. --strict-mcp-config with no --mcp-config: no MCP server at all.
     # --no-session-persistence: nothing is kept in the user's Claude history. The prompt goes in on stdin.
     $commandArgs = @('-p', '--output-format', 'json', '--tools', 'Read', '--allowedTools', 'Read', '--strict-mcp-config', '--permission-mode', 'default', '--no-session-persistence', '--max-turns', '12')
-    # No model given: this window's choice (workspace/config/run-settings.json claudeModel / claudeEffort, default haiku), exact version id.
+    # No model given: this window's choice (workspace/config/run-settings.json claudeModel / claudeEffort, default claude-haiku-5-5), alias or full id as stored.
     $effort = ''
     if (-not $Model) {
         $Model = 'claude-haiku-5-5'
         try {
             $ws = if ($env:PR_WORKSPACE) { $env:PR_WORKSPACE } else { Join-Path $PSScriptRoot '../../../workspace' }
             $rs = Get-Content -LiteralPath (Join-Path $ws 'config/run-settings.json') -Raw -Encoding UTF8 | ConvertFrom-Json
-            $ids = @{ haiku = 'claude-haiku-5-5'; sonnet = 'claude-sonnet-5-5'; opus = 'claude-opus-5-5' }
-            if ($ids.ContainsKey([string]$rs.claudeModel)) { $Model = $ids[[string]$rs.claudeModel] }
+            if ([string]$rs.claudeModel -cmatch '^[A-Za-z0-9._\-\[\]]{1,60}$') { $Model = [string]$rs.claudeModel }
             if (@('low', 'medium', 'high', 'xhigh', 'max') -contains [string]$rs.claudeEffort) { $effort = [string]$rs.claudeEffort }
         } catch { }
     }

@@ -162,7 +162,7 @@ export function createConfigApi({ hubRoot, pwsh, env = process.env }) {
       const saved = req.method === "POST" ? await body(req) : null;
       const script = saved
         ? `${load("ai-settings.ps1")}; Set-AiSettings '${q(hubRoot)}' $env:HUB_AI_MODEL $env:HUB_AI_EFFORT; '{"ok":true}'`
-        : `${load("ai-settings.ps1")}; [pscustomobject]@{ settings = (Get-AiSettings '${q(hubRoot)}'); models = @(Get-AiModels) } | ConvertTo-Json -Depth 6 -Compress`;
+        : `${load("ai-settings.ps1")}; [pscustomobject]@{ settings = (Get-AiSettings '${q(hubRoot)}'); models = @(Get-AiModels '${q(hubRoot)}') } | ConvertTo-Json -Depth 6 -Compress`;
       const r = await ps(script, saved ? { HUB_AI_MODEL: String(saved.model || ""), HUB_AI_EFFORT: String(saved.effort || "") } : {});
       json(res, r.error ? 400 : 200, r);
       return true;

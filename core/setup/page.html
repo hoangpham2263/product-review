@@ -24,6 +24,8 @@
 .item .side .btn { min-width: 110px; }
 .item .err { color: #b06000; font-size: 12px; }
 .ai-model { display: grid; grid-template-columns: minmax(0, 1fr) 240px 190px; gap: 6px 10px; align-items: center; }
+.ai-model .ccustom { grid-column: 2 / span 2; }
+.ai-model .ccustom.bad { border-color: #b06000; }
 header .all { margin-left: auto; }
 /* Cài đặt and Tài khoản AI: three short cards side by side (name, state, buttons). */
 #ai, #base { grid-template-columns: repeat(3, minmax(0, 1fr)); }
@@ -32,7 +34,7 @@ header .all { margin-left: auto; }
 #ai .item .side .btn, #base .item .side .btn { min-width: 0; height: 28px; padding: 0 10px; }
 /* What Cài / cập nhật tất cả AI did, one line per AI, under the installed items. */
 #all-result { display: grid; gap: 2px; margin: 10px 0 0; }
-@media (max-width: 860px) { #ai, #base { grid-template-columns: minmax(0, 1fr); } .ai-model { grid-template-columns: minmax(0, 1fr); } }
+@media (max-width: 860px) { #ai, #base { grid-template-columns: minmax(0, 1fr); } .ai-model { grid-template-columns: minmax(0, 1fr); } .ai-model .ccustom { grid-column: auto; } }
 .note-line { color: var(--muted); font-size: 12px; margin-bottom: 8px; }
 /* Lượt dùng AI: one row per AI and account. */
 .usage { width: 100%; border-collapse: collapse; background: var(--surface); border: 1px solid var(--line); }
@@ -57,7 +59,7 @@ header .all { margin-left: auto; }
       <div class="ai-model"><span class="muted">Model nhẹ, mức thấp tốn ít token hơn.</span><select class="model"></select><select class="effort"></select></div>
     </section>
     <section class="group wide"><h2>4. Model AI của Claude</h2>
-      <div class="ai-model"><span class="muted">Áp dụng cho mọi lần Claude chạy trong cửa sổ này (Tạo ảnh Claude (Flow), Viết review, Quét web). Mặc định Haiku: nhẹ nhất, ít token nhất.</span><select class="cmodel"></select><select class="ceffort"></select></div>
+      <div class="ai-model"><span class="muted">Áp dụng cho mọi lần Claude chạy trong cửa sổ này (Tạo ảnh Claude (Flow), Viết review, Quét web). Mặc định Haiku 5.5: nhẹ nhất, ít token nhất.</span><select class="cmodel"></select><select class="ceffort"></select><input class="ccustom" type="text" maxlength="60" placeholder="Mã model, ví dụ claude-opus-5-5" spellcheck="false" style="visibility:hidden"></div>
     </section>
     <section class="group wide"><h2>5. Lượt dùng AI</h2><div class="note-line">Mọi lần gọi AI của các tool trên máy này, theo từng tài khoản. Antigravity, Claude, ChatGPT không cho biết hạn mức: lỗi Hết lượt mà sau đó chưa chạy được lần nào thì tài khoản đó đang hết lượt.</div><div class="usage-wrap"><table class="usage"><thead><tr><th>AI · tài khoản</th><th>Hôm nay</th><th>7 ngày</th><th>30 ngày</th><th>Lỗi gần nhất</th></tr></thead><tbody id="usage"><tr><td colspan="5" class="sub">Đang đọc…</td></tr></tbody></table></div></section>
   </div>

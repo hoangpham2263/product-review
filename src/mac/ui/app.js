@@ -1772,15 +1772,19 @@ const formatCount = (n) => Number(n).toLocaleString("vi-VN");
 const CALL_NAMES = { antigravity: ["Antigravity", "lượt"], claude: ["Claude", "lượt"] };
 const LIMIT_NAMES = { antigravity: "hạn mức Antigravity", claude: "hạn mức Claude" };
 // The model line of the run card: Claude (exact version id from Cấu hình) and/or Codex, for the selected backends.
-const CLAUDE_VERSIONS = { haiku: ["Haiku 5.5", "claude-haiku-5-5"], sonnet: ["Sonnet 5.5", "claude-sonnet-5-5"], opus: ["Opus 5.5", "claude-opus-5-5"] };
+function claudeLabel(id) {
+  id = id || "claude-haiku-5-5";
+  for (const g of (modelInfo.claude.claudeModelGroups || [])) { const m = g.models.find((x) => x.id === id); if (m) return [m.label.split(" · ")[0], id]; }
+  return [id, id];
+}
 function updateModelLine() {
   if (!ui.lblModel || !ui.cmbText) return;
   const text = ui.cmbText.value, image = ui.cmbBackend.value;
   const parts = [];
   if (text === "claude" || image === "agent") {
-    const [name, id] = CLAUDE_VERSIONS[modelInfo.claude.claudeModel] || CLAUDE_VERSIONS.haiku;
+    const [name, id] = claudeLabel(modelInfo.claude.claudeModel);
     const effort = { low: "thấp", medium: "vừa", high: "cao", xhigh: "rất cao", max: "tối đa" }[modelInfo.claude.claudeEffort] || "mặc định";
-    parts.push(`Claude ${name} (${id}) · mức: ${effort}`);
+    parts.push(`Claude ${name === id ? id : name + " (" + id + ")"} · mức: ${effort}`);
   }
   if (text === "codex" || image === "codex") parts.push(`Codex ${modelInfo.codex || "model mặc định"}`);
   if (text === "antigravity") parts.push("Antigravity CLI");

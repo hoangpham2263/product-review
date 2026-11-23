@@ -202,20 +202,41 @@
   fetch("/api/config/ai").then((r) => r.json()).then((r) => {
     models = [].concat(r.models || []);
     const saved = r.settings || {};
-    if (saved.model && !models.some((m) => m.slug === saved.model)) models.unshift({ slug: saved.model, name: saved.model, efforts: ["low", "medium", "high"], default_effort: "" });
+    if (saved.model && !models.some((m) => m.slug === saved.model)) models.unshift({ slug: saved.model, name: saved.model, efforts: ["low", "medium", "high", "xhigh", "max", "ultra"], default_effort: "" });
     fill(model, ["", ...models.map((m) => m.slug)], ["Model mặc định của Codex", ...models.map((m) => m.name)], saved.model || "");
     fillEfforts(saved.effort || "");
   }).catch(() => { fill(model, [""], ["Model mặc định của Codex"], ""); fillEfforts(""); });
-  // Model AI của Claude: run-settings.json of THIS window (claudeModel haiku | sonnet | opus, default haiku; claudeEffort = claude --effort, "" = no flag).
-  const cmodel = $(".cmodel"), ceffort = $(".ceffort");
-  const CM = [["haiku", "Haiku · claude-haiku-5-5"], ["sonnet", "Sonnet · claude-sonnet-5-5"], ["opus", "Opus · claude-opus-5-5"]];
-  fill(cmodel, CM.map((x) => x[0]), CM.map((x) => x[1]), "haiku");
-  const CE = ["", "low", "medium", "high", "xhigh", "max"];
-  fill(ceffort, CE, CE.map((e) => (e ? effortNames[e] : "Mức suy nghĩ mặc định")), "");
-  cmodel.onchange = ceffort.onchange = async () => {
-    const r = await post("/api/run-settings", { claudeModel: cmodel.value, claudeEffort: ceffort.value });
+  // Model AI của Claude: run-settings.json of THIS window. claudeModel = a listed alias / id or a custom id (default claude-haiku-5-5); claudeEffort = claude --effort, "" = no flag.
+  // The model list comes from the server (GET /api/run-settings claudeModelGroups), one source.
+  const cmodel = $(".cmodel"), ceffort = $(".ceffort"), ccustom = $(".ccustom");
+  const CUSTOM = "__custom", CE = ["", "low", "medium", "high", "xhigh", "max"], DEFAULT_CM = "claude-haiku-5-5", CM_RE = /^[A-Za-z0-9._\-\[\]]{1,60}$/;
+  const effLabel = (e) => (e ? effortNames[e] : "Mức suy nghĩ mặc định");
+  let cgroups = [];
+  const fillClaudeModels = (value) => {
+    const ids = cgroups.flatMap((g) => g.models.map((m) => m.id));
+    const custom = !ids.includes(value);
+    const opts = cgroups.map((g) => { const og = el("optgroup"); og.label = g.family + " · " + g.note; og.append(...g.models.map((m) => Object.assign(el("option", "", m.label), { value: m.id }))); return og; });
+    cmodel.replaceChildren(...opts, Object.assign(el("option", "", "Khác (nhập mã model)"), { value: CUSTOM }));
+    cmodel.value = custom ? CUSTOM : value;
+    ccustom.value = custom ? value : "";
+    ccustom.style.visibility = custom ? "visible" : "hidden";
+  };
+  const saveClaude = async () => {
+    const custom = cmodel.value === CUSTOM;
+    const model = custom ? ccustom.value.trim() : cmodel.value;
+    ccustom.style.visibility = custom ? "visible" : "hidden";
+    ccustom.classList.toggle("bad", custom && !!model && !CM_RE.test(model));
+    if (custom && !CM_RE.test(model)) return; // wait for a valid id
+    const r = await post("/api/run-settings", { claudeModel: model, claudeEffort: ceffort.value });
     if (r.error) alert(r.error);
   };
-  fetch("/api/run-settings").then((r) => r.json()).then((r) => { fill(cmodel, CM.map((x) => x[0]), CM.map((x) => x[1]), r.claudeModel || "haiku"); fill(ceffort, CE, CE.map((e) => (e ? effortNames[e] : "Mức suy nghĩ mặc định")), r.claudeEffort || ""); }).catch(() => {});
+  fill(ceffort, CE, CE.map(effLabel), "");
+  cmodel.onchange = () => { if (cmodel.value === CUSTOM) { ccustom.style.visibility = "visible"; ccustom.focus(); if (!ccustom.value.trim()) return; } saveClaude(); };
+  ccustom.onchange = ceffort.onchange = saveClaude;
+  fetch("/api/run-settings").then((r) => r.json()).then((r) => {
+    cgroups = r.claudeModelGroups || [];
+    fillClaudeModels(r.claudeModel || DEFAULT_CM);
+    fill(ceffort, CE, CE.map(effLabel), r.claudeEffort || "");
+  }).catch(() => {});
   check();
 })();

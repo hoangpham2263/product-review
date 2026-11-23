@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { randomUUID, createHash } from "node:crypto";
 import { createConfigApi } from "../../core/setup/config-api.mjs";
-import { createAgentRunner, buildPrompt, newRunId, readFlowAccount, FEATURE, CLAUDE_MODELS, CLAUDE_EFFORTS } from "../../core/setup/agent-run.mjs";
+import { createAgentRunner, buildPrompt, newRunId, readFlowAccount, FEATURE, CLAUDE_MODEL_GROUPS, CLAUDE_DEFAULT_MODEL, isClaudeModel, CLAUDE_EFFORTS } from "../../core/setup/agent-run.mjs";
 import { readFlowBrowser, saveFlowBrowser, localChromeProfiles, tokenProfiles, saveExtensionToken, followFlowAccount } from "../../core/setup/flow-browser.mjs";
 import { currentSession, sessionLabel, sessionWorkspace, sharedWorkspace, registerSession, updateSession, unregisterSession, listSessions, lockHolder, releaseLocks, peekGroup, sessionTitle, profileLabelOf, projectBusyBy, setSessionProject, claimProjectFocus, readSeededJson, updateJsonLocked, SESSION_RE } from "../../core/setup/session.mjs";
 import { createFlowLogin, profileDirOf, profileGoogleAccounts, findChrome, flowOpenUrl, WINDOW_ARGS } from "../../core/setup/flow-login.mjs";
@@ -402,7 +402,8 @@ async function handle(req, res) {
       if (s2.imageBackend && !["codex", "agent"].includes(s2.imageBackend)) s2.imageBackend = "codex";
       if (s2.textBackend && !["codex", "antigravity", "claude"].includes(s2.textBackend)) s2.textBackend = "codex";
       delete s2.runMode;
-      if (!CLAUDE_MODELS.includes(s2.claudeModel)) s2.claudeModel = "haiku";
+      if (!isClaudeModel(s2.claudeModel)) s2.claudeModel = CLAUDE_DEFAULT_MODEL;
+      s2.claudeModelGroups = CLAUDE_MODEL_GROUPS;
       s2.flowAccounts = flowAccountsFor(readFlowBrowser(workspace, sharedWs));
       return send(res, 200, s2);
     }
@@ -413,7 +414,7 @@ async function handle(req, res) {
         if (Number.isInteger(given.threads) && given.threads >= 1 && given.threads <= 4) cur.threads = given.threads;
         if (["codex", "antigravity", "claude"].includes(given.textBackend)) cur.textBackend = given.textBackend;
         if (["codex", "agent"].includes(given.imageBackend)) cur.imageBackend = given.imageBackend;
-        if (typeof given.claudeModel === "string") { if (!given.claudeModel) delete cur.claudeModel; else if (CLAUDE_MODELS.includes(given.claudeModel)) cur.claudeModel = given.claudeModel; }
+        if (typeof given.claudeModel === "string") { if (!given.claudeModel) delete cur.claudeModel; else if (isClaudeModel(given.claudeModel)) cur.claudeModel = given.claudeModel; }
         if (typeof given.claudeEffort === "string") { if (!given.claudeEffort) delete cur.claudeEffort; else if (CLAUDE_EFFORTS.includes(given.claudeEffort)) cur.claudeEffort = given.claudeEffort; }
         if (typeof given.flowAccount === "string") { const v = given.flowAccount.trim(); if (!v) delete cur.flowAccount; else if (v.length <= 120 && /^[^\s@"<>]+@[^\s@"<>]+\.[^\s@"<>]+$/.test(v)) cur.flowAccount = v; }
         // the two separate pairs of the Dự án popup: Thêm vào hàng chờ (count 1-200, scenes 1-4) and Chuẩn bị trước (count 0-500, 0 = all; scenes 1-4)
