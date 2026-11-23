@@ -12,7 +12,7 @@ import { fileURLToPath } from "node:url";
 import { randomUUID, createHash } from "node:crypto";
 import { createConfigApi } from "../../core/setup/config-api.mjs";
 import { createAgentRunner, buildPrompt, newRunId, readFlowAccount, FEATURE } from "../../core/setup/agent-run.mjs";
-import { readFlowBrowser, saveFlowBrowser, localChromeProfiles, tokenProfiles, saveExtensionToken } from "../../core/setup/flow-browser.mjs";
+import { readFlowBrowser, saveFlowBrowser, localChromeProfiles, tokenProfiles, saveExtensionToken, followFlowAccount } from "../../core/setup/flow-browser.mjs";
 import { currentSession, sessionLabel, sessionWorkspace, sharedWorkspace, registerSession, updateSession, unregisterSession, listSessions, lockHolder, releaseLocks, peekGroup, sessionTitle, profileLabelOf, projectBusyBy, setSessionProject, claimProjectFocus, readSeededJson, updateJsonLocked, SESSION_RE } from "../../core/setup/session.mjs";
 import { createFlowLogin, profileDirOf, profileGoogleAccounts, findChrome, flowOpenUrl, WINDOW_ARGS } from "../../core/setup/flow-login.mjs";
 import { PWSH, toolEnv, psFile, psCommand, killTree, appWindow, chooseFiles } from "../../core/platform.mjs";
@@ -700,16 +700,17 @@ function flowAccountsFor(browser) {
   const p = localChromeProfiles().profiles.find((x) => x.folder === browser.profile);
   return p ? p.accounts : [];
 }
-// After the Chrome profile changed: the saved Flow account must belong to it; else it becomes the profile's primary account (or none).
+// After the Chrome profile changed: the Flow account follows it (followFlowAccount: the profile's only account; with several the current
+// one if signed in there, else none and the UI warns). The person can still pick another account by hand afterwards.
 function alignFlowAccount(browser) {
   if (!browser || browser.mode === "own") return;
   const file = join(workspace, "config", "run-settings.json");
   readSeededJson(file, join(sharedWs, "config", "run-settings.json"), {});
   const accounts = flowAccountsFor(browser);
   updateJsonLocked(file, (saved) => {
-    const cur = String(saved.flowAccount || "").toLowerCase();
-    if (cur && accounts.includes(cur)) return undefined;
-    if (accounts[0]) saved.flowAccount = accounts[0]; else delete saved.flowAccount;
+    const cur = String(saved.flowAccount || "").toLowerCase(), want = followFlowAccount(accounts, cur);
+    if (want === cur) return undefined;
+    if (want) saved.flowAccount = want; else delete saved.flowAccount;
     return saved;
   }, {});
 }

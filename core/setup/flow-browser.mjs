@@ -56,6 +56,14 @@ export function localChromeProfiles({ plat = process.platform, env = process.env
   return { dir, profiles };
 }
 
+// Which Flow account follows a Chrome profile: its only signed-in account; with several (or none) the current one if it is signed in
+// there, else none ("" = Flow picks; the UI warns). The person can still pick another account by hand afterwards.
+export function followFlowAccount(accounts, current = "") {
+  const list = [...new Set((accounts || []).map((a) => String(a || "").toLowerCase()).filter(Boolean))], cur = String(current || "").toLowerCase();
+  if (list.length === 1) return list[0];
+  return cur && list.includes(cur) ? cur : "";
+}
+
 // Optional Playwright extension token per Chrome profile (the token the Playwright MCP Bridge page shows in THAT profile; each profile has its own).
 // With it an extension-mode run connects without the Connect click (env PLAYWRIGHT_MCP_EXTENSION_TOKEN of the spawned claude process only);
 // without it nothing changes. SHARED file workspace/playwright-tokens.json { "<profile folder>": "<token>" } (gitignored with /workspace/).
