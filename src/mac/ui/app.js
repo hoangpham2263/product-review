@@ -1776,7 +1776,7 @@ const CALL_NAMES = { antigravity: ["Antigravity", "lượt"], claude: ["Claude",
 const LIMIT_NAMES = { antigravity: "hạn mức Antigravity", claude: "hạn mức Claude" };
 // The model line of the run card: Claude (exact version id from Cấu hình) and/or Codex, for the selected backends.
 function claudeLabel(id) {
-  id = id || "claude-haiku-5-5";
+  id = id || "claude-sonnet-4-5";
   for (const g of (modelInfo.claude.claudeModelGroups || [])) { const m = g.models.find((x) => x.id === id); if (m) return [m.label.split(" · ")[0], id]; }
   return [id, id];
 }

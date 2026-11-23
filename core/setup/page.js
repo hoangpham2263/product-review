@@ -206,10 +206,10 @@
     fill(model, ["", ...models.map((m) => m.slug)], ["Model mặc định của Codex", ...models.map((m) => m.name)], saved.model || "");
     fillEfforts(saved.effort || "");
   }).catch(() => { fill(model, [""], ["Model mặc định của Codex"], ""); fillEfforts(""); });
-  // Model AI của Claude: run-settings.json of THIS window. claudeModel = a listed alias / id or a custom id (default claude-haiku-5-5); claudeEffort = claude --effort, "" = no flag.
+  // Model AI của Claude: run-settings.json of THIS window. claudeModel = a listed alias / id or a custom id (default claude-sonnet-4-5); claudeEffort = claude --effort, "" = no flag.
   // The model list comes from the server (GET /api/run-settings claudeModelGroups), one source.
   const cmodel = $(".cmodel"), ceffort = $(".ceffort"), ccustom = $(".ccustom");
-  const CUSTOM = "__custom", CE = ["", "low", "medium", "high", "xhigh", "max"], DEFAULT_CM = "claude-haiku-5-5", CM_RE = /^[A-Za-z0-9._\-\[\]]{1,60}$/;
+  const CUSTOM = "__custom", CE = ["", "low", "medium", "high", "xhigh", "max"], DEFAULT_CM = "claude-sonnet-4-5", CM_RE = /^[A-Za-z0-9._\-\[\]]{1,60}$/;
   const effLabel = (e) => (e ? effortNames[e] : "Mức suy nghĩ mặc định");
   let cgroups = [];
   const fillClaudeModels = (value) => {
