@@ -113,8 +113,8 @@ export function friendlyTool(name, input = {}, mode = "flow") {
 // person's real Chrome, never --extension. A normal visible Chrome window by default (Google Flow flagged headless runs as "unusual activity"); PR_FLOW_HEADLESS=1 runs it in the background. This temp file is the only config.
 // extension = { profile: "Profile 1", name, color }: the person's everyday Chrome through the Playwright extension (the Chrome window of that
 // profile must be open; the person clicks Connect). The run's tabs go into one named Chrome tab group.
-// extension.background (default true): false for Flow image runs. Google Flow flagged prompts submitted in a hidden (background) tab as
-// "unusual activity" (2026-11-23), so a Flow run keeps the old visible-tab behaviour; scan / reviews runs stay in the background.
+// No background mode (reverted 2026-11-23 at the user's request): with PLAYWRIGHT_MCP_BACKGROUND=1 Google Flow flagged prompts sent in a
+// hidden tab as "unusual activity" and pages rendered nothing hidden. Runs bring their tab to the front again, as before.
 export function mcpConfig({ plat = osPlatform(), profile, headless = true, extension = null } = {}) {
   if (extension) {
     // Background mode (PLAYWRIGHT_MCP_BACKGROUND=1 = the --background flag of Playwright MCP 0.0.86+, checked in its cdpRelay/browserModel
@@ -124,7 +124,7 @@ export function mcpConfig({ plat = osPlatform(), profile, headless = true, exten
     // every run pulled Chrome to the front while the person worked in other apps (worse with several windows running).
     const a = ["@playwright/mcp@latest", "--extension", ...(extension.profile ? ["--profile-dir-name", extension.profile] : []), "--session-name", extension.name || "Product Review", "--session-color", extension.color || "blue"];
     const server = plat === "win32" ? { command: "cmd", args: ["/c", "npx", ...a] } : { command: "npx", args: a };
-    server.env = { ...(extension.profile ? { PLAYWRIGHT_MCP_PROFILE_DIR_NAME: extension.profile } : {}), ...(extension.background === false ? {} : { PLAYWRIGHT_MCP_BACKGROUND: "1" }) };
+    server.env = { ...(extension.profile ? { PLAYWRIGHT_MCP_PROFILE_DIR_NAME: extension.profile } : {}), };
     return { mcpServers: { playwright: server } };
   }
   if (!profile) throw new Error("mcpConfig needs the own Chrome profile folder.");
@@ -147,8 +147,8 @@ HUMAN PACING: before EVERY prompt you submit in Google Flow run: node core/flow-
 
 `);
 // Flow runs: the Flow tab must be VISIBLE while working in it (Google flags actions in a hidden tab); every other run never takes focus.
-const FLOW_FOCUS = "FLOW TAB VISIBLE (Google Flow flags work done in a hidden tab as unusual activity): this run is NOT in background mode. Before you upload, type, submit or download in Google Flow, make the Flow tab the visible tab with page.bringToFront() (in browser_run_code_unsafe) and keep it visible until that action is done. Use ONE Flow tab; open no new windows; outside Flow do not focus anything else.";
-const flowFocus = (flow, text) => (flow ? text.replace(/^NEVER STEAL FOCUS:.*$/m, FLOW_FOCUS) : text);
+const TAB_VISIBLE = "TAB VISIBLE: a hidden tab renders nothing and Google Flow flags work done in a hidden tab as unusual activity, so start every browser_run_code_unsafe with await page.bringToFront(); keep ONE tab; open no new windows.";
+const flowFocus = (_flow, text) => text.replace(/^NEVER STEAL FOCUS:.*$/m, TAB_VISIBLE);
 // Extension mode only works on a profile that HAS the Playwright MCP Bridge extension: otherwise the MCP silently uses "the last used profile that
 // has it". So a chosen profile without the extension (or missing) refuses to start; another profile is never used instead.
 // The Google account chosen for Flow (workspace/config/run-settings.json flowAccount), "" when none.
