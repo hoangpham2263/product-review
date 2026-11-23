@@ -176,6 +176,22 @@ export function readClaudeSettings(workspaceDir, seedDir = "") {
     return { model: isClaudeModel(s.claudeModel) ? s.claudeModel : CLAUDE_DEFAULT_MODEL, effort: CLAUDE_EFFORTS.includes(s.claudeEffort) ? s.claudeEffort : "" };
   } catch { return { model: CLAUDE_DEFAULT_MODEL, effort: "" }; }
 }
+// The first line of every Claude run: the model the CLI REPORTS as running (init event), with a friendly name from CLAUDE_MODEL_GROUPS.
+const EFFORT_VI = { low: "thấp", medium: "vừa", high: "cao", xhigh: "rất cao", max: "tối đa" };
+export function claudeModelName(id) {
+  for (const g of CLAUDE_MODEL_GROUPS) { const m = g.models.find((x) => x.id === id); if (m) return m.label.split(" · ")[0]; }
+  return "";
+}
+export function modelLineText(id, effort, provisional = false) {
+  const name = claudeModelName(id);
+  return "Model đang dùng: " + id + (name && name !== id ? " (" + name + ")" : "") + " · mức suy nghĩ: " + (EFFORT_VI[effort] || "mặc định") + (provisional ? " (theo cài đặt, đang chờ Claude xác nhận)" : "");
+}
+// The setting may be an alias ("haiku") or carry a suffix ("[1m]"): that still counts as the same model.
+export function modelMatches(asked, actual) {
+  if (!asked || !actual) return true;
+  const a = String(asked).replace(/\[.*\]$/, ""), b = String(actual).replace(/\[.*\]$/, "");
+  return a === b || b.includes(a);
+}
 export function readClaudeModel(workspaceDir, seedDir = "") { return readClaudeSettings(workspaceDir, seedDir).model; }
 export function readFlowAccount(workspaceDir, seedDir = "") {
   try {
@@ -254,9 +270,22 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
     run.lines.push(line); if (run.lines.length > LOG_LINES) run.lines.splice(0, run.lines.length - LOG_LINES);
     try { mkdirSync(runsDir, { recursive: true }); if (++run.written % 500 === 0) writeFileSync(logFile, run.lines.join("\n") + "\n"); else appendFileSync(logFile, line + "\n"); } catch {}
   };
+  // First line of the run: written at spawn from the settings, replaced in place when the init event reports the real model.
+  const setModelLine = (run, text) => {
+    const line = (run.stamp0 || (run.stamp0 = new Date(now()).toTimeString().slice(0, 8))) + " " + (run.prefix || "") + sanitize(text);
+    if (run.lines.length && run.modelLine) run.lines[0] = line; else run.lines.unshift(line);
+    run.modelLine = true; run.prev = "";
+    try { mkdirSync(runsDir, { recursive: true }); writeFileSync(logFile, run.lines.join("\n") + "\n"); } catch {}
+  };
   const handleLine = (run, raw) => {
     // Not an event (a cut-off fragment, tool output): nothing a person can read, so it stays out of the log.
     let ev; try { ev = JSON.parse(raw); } catch { return; }
+    if (ev.type === "system" && ev.subtype === "init" && typeof ev.model === "string" && ev.model) {
+      run.state.model_in_use = ev.model;
+      setModelLine(run, modelLineText(ev.model, run.asked?.effort));
+      if (!modelMatches(run.asked?.model, ev.model)) addLine(run, "⚠ Model thực tế khác cài đặt: cài đặt = " + run.asked.model + ", đang chạy = " + ev.model);
+      touch(run); return;
+    }
     if (ev.type === "assistant" && Array.isArray(ev.message?.content)) {
       run.state.turns = (run.state.turns || 0) + 1;
       for (const c of ev.message.content) {
@@ -357,10 +386,12 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
     catch (e) { try { rmSync(cfg, { force: true }); } catch {} try { releaseLocks(toolRoot, session, process.pid, kind); } catch {} return { ok: false, status: 500, error: sanitize(e.message) }; }
     const started = new Date(now()).toISOString();
     const run = { child, cfg, lines: [], buf: "", written: 0, stderr: [], ended: false, forced: "", result: null, timer: null,
-      state: { run_id: runId, mode, project, pid: child.pid ?? null, started, updated: started, status: "running", exit_code: null, last_text: "", turns: 0, error: "" } };
+      state: { run_id: runId, mode, project, pid: child.pid ?? null, started, updated: started, status: "running", exit_code: null, last_text: "", turns: 0, error: "", model_in_use: claudeSet.model } };
+    run.asked = claudeSet;
     run.prefix = "[" + (FEATURE[mode] || mode) + (project ? " · " + project : "") + "] ";
     cur = run;
     try { writeFileSync(logFile, ""); } catch {}
+    setModelLine(run, modelLineText(claudeSet.model, claudeSet.effort, true));
     addLine(run, mode === "index" ? "Bắt đầu: Claude gắn nhãn kho ảnh bối cảnh (mã lượt " + runId + ")"
       : mode === "prep" ? "Bắt đầu: Claude chuẩn bị trước ảnh bối cảnh cho các sản phẩm của dự án " + project + " (mã lượt " + runId + ")"
       : mode === "scan" ? "Bắt đầu: Claude quét " + site + " (mã lượt " + runId + ")"
@@ -409,7 +440,7 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
     return {
       active: !!run, status: shown?.status || "idle", run_id: shown?.run_id || "", mode: shown?.mode || "flow", project: shown?.project || "", started: shown?.started || "",
       elapsed_s: shown?.started ? Math.max(0, Math.round(((run ? now() : Date.parse(shown.updated) || now()) - Date.parse(shown.started)) / 1000)) : 0,
-      last_text: shown?.last_text || "", turns: shown?.turns || 0, error: shown?.error || "", updated: shown?.updated || "", tail: lines.slice(-TAIL_LINES),
+      model_in_use: shown?.model_in_use || "", last_text: shown?.last_text || "", turns: shown?.turns || 0, error: shown?.error || "", updated: shown?.updated || "", tail: lines.slice(-TAIL_LINES),
     };
   }
   return { start, stop, status, shutdown, isActive: () => !!cur };

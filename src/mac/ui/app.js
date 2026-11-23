@@ -1787,7 +1787,7 @@ function updateModelLine() {
   if (text === "claude" || image === "agent") {
     const [name, id] = claudeLabel(modelInfo.claude.claudeModel);
     const effort = { low: "thấp", medium: "vừa", high: "cao", xhigh: "rất cao", max: "tối đa" }[modelInfo.claude.claudeEffort] || "mặc định";
-    parts.push(`Claude ${name === id ? id : name + " (" + id + ")"} · mức: ${effort}`);
+    parts.push(`Claude ${name === id ? id : name + " (" + id + ")"} · mức: ${effort}` + (run.active && run.modelInUse ? ` · đang chạy: ${run.modelInUse}` : ""));
   }
   if (text === "codex" || image === "codex") parts.push(`Codex ${modelInfo.codex || "model mặc định"}`);
   if (text === "antigravity") parts.push("Antigravity CLI");
@@ -2013,6 +2013,7 @@ async function pollAgent() {
   try {
     const st = await (await fetch("/api/agent/status")).json();
     if (st.result_folder) run.resultFolder = st.result_folder;
+    if (st.model_in_use && st.model_in_use !== run.modelInUse) { run.modelInUse = st.model_in_use; updateModelLine(); }
     const elapsed = Math.floor((Date.now() - run.started) / 1000);
     const time = String(Math.floor(elapsed / 60)).padStart(2, "0") + ":" + String(elapsed % 60).padStart(2, "0");
     ui.lblProgress.textContent = `${st.last_text || "Claude đang chuẩn bị…"}  •  ${time}  •  ${run.ai}`;
@@ -2023,7 +2024,7 @@ async function pollAgent() {
 }
 async function finishAgent(st) {
   setRunning(false);
-  run.agent = false;
+  run.agent = false; run.modelInUse = "";
   await loadState();
   refreshResumable();
   await updateReviewButton();
