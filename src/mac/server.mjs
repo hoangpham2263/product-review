@@ -436,8 +436,23 @@ async function handle(req, res) {
     if (agent.isActive()) return send(res, 409, { error: "Đã có một lượt Claude đang chạy." });
     const login = readFlowBrowser(workspace, sharedWs).mode === "own" ? await flowLogin.status() : { state: "logged_in" };
     if (login.state !== "logged_in") return send(res, 409, { error: login.state === "logged_out" ? "Chưa đăng nhập Google Flow trong Chrome riêng: bấm Mở Chrome để đăng nhập, đăng nhập xong đóng cửa sổ đó rồi Kiểm tra lại." : "Chưa chạy được Claude: " + login.detail });
+    // given.run (Chạy tiếp): only an existing Claude run of this window (its folder is used as is).
+    if (given.run && (!/^agent-[0-9a-z-]{6,60}$/i.test(String(given.run)) || !existsSync(join(workspace, "output", String(given.run), "agent-items.json")))) return send(res, 400, { error: "Không tìm thấy lượt để chạy tiếp." });
     const r = agent.start({ run: given.run || undefined });
     return send(res, r.status, r.ok ? { ok: true, run: r.run_id, started: r.started } : { error: r.error });
+  }
+  // Chạy tiếp: the last Claude (Flow) run of this window, when it is over (stopped, failed, or done with items left) and still has
+  // items without an image. Starting with its run id continues it: prepare keeps its items, and the steps skip what is already done.
+  if (path === "/api/agent/resumable" && req.method === "GET") {
+    const st = agent.status(), id = String(st.run_id || "");
+    const none = () => send(res, 200, { resumable: false });
+    if (st.active || (st.mode && st.mode !== "flow") || !/^agent-[0-9a-z-]+$/i.test(id)) return none();
+    const dir = join(workspace, "output", id);
+    let items = [];
+    try { const j = JSON.parse(readFileSync(join(dir, "agent-items.json"), "utf8").replace(/^﻿/, "")); items = Array.isArray(j) ? j : (j.items || []); } catch { return none(); }
+    const left = items.filter((it) => it && it.id && !existsSync(join(dir, "images", it.id + ".png"))).length;
+    if (!left) return none();
+    return send(res, 200, { resumable: true, run: id, items: items.length, left, status: st.status || "", updated: st.updated || st.started || "" });
   }
   if (path === "/api/agent/status" && req.method === "GET") {
     const st = agent.status(), dir = st.run_id ? join(workspace, "output", st.run_id) : "";

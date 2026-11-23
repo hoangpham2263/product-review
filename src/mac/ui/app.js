@@ -430,10 +430,14 @@ function buildMain() {
 
   // Run row (20,466 1060x90).
   const cardRun = at(el("div", "card"), 20, 466, null, 90, { right: 24 });
-  ui.btnRun = at(button("Bắt đầu", true), 14, 25, 160, 40);
-  ui.btnStop = at(button("Dừng"), 186, 25, 100, 40);
+  // Bắt đầu, Chạy tiếp, Dừng, status: all before x=460 where the token / quota labels start.
+  ui.btnRun = at(button("Bắt đầu", true), 14, 25, 130, 40);
+  // Chạy tiếp: continues the last stopped / unfinished Claude (Flow) run with its own items, context and sign wording.
+  ui.btnResume = at(button("Chạy tiếp"), 154, 25, 100, 40);
+  ui.btnResume.disabled = true;
+  ui.btnStop = at(button("Dừng"), 264, 25, 90, 40);
   ui.btnStop.disabled = true;
-  ui.lblStatus = at(label("", "muted"), 302, 32, 150, 26);
+  ui.lblStatus = at(label("", "muted"), 366, 32, 90, 26);
   ui.lblStatus.style.lineHeight = "26px";
   // The two pickers and Luồng form one block (2 rows of 22 + 5 gap = 49 px), centered in the 90 px card like the buttons: rows at 20 and 47.
   ui.lblThr = at(label("Luồng:", "muted"), null, 47, 56, 24, { right: 88, left: false });
@@ -470,7 +474,7 @@ function buildMain() {
   ui.lblTokens = at(label("", "muted"), 460, 25, null, 20, { right: 400 });
   ui.lblQuota = at(label("", "muted"), 460, 45, null, 20, { right: 400 });
   for (const l of [ui.lblTokens, ui.lblQuota]) Object.assign(l.style, { fontSize: "11px", lineHeight: "20px" });
-  cardRun.append(ui.btnRun, ui.btnStop, ui.lblStatus, ui.lblTokens, ui.lblQuota, ui.lblText, ui.cmbText, ui.lblBackend, ui.cmbBackend, ui.lblThr, ui.numThr);
+  cardRun.append(ui.btnRun, ui.btnResume, ui.btnStop, ui.lblStatus, ui.lblTokens, ui.lblQuota, ui.lblText, ui.cmbText, ui.lblBackend, ui.cmbBackend, ui.lblThr, ui.numThr);
 
   // Tiến trình & thông báo (20,508 1060x282, all anchors).
   const cardLog = at(el("div", "card"), 20, 568, null, null, { right: 24, bottom: 10 });
@@ -1680,6 +1684,7 @@ function updateActionAvailability() {
   // Claude (Flow) cannot start until its own Chrome is signed in to Google Flow.
   if (ui.cmbBackend?.value === "agent" && !flowExtensionMode() && flowLogin.state !== "logged_in") ui.btnRun.disabled = true;
   ui.btnStop.disabled = !run.active;
+  if (ui.btnResume) ui.btnResume.disabled = busy || !ui.resumeRun || ui.btnRun.disabled;
   ui.numThr.enabled = !busy;
   ui.cmbText.disabled = busy;
   // Both modes keep image generation enabled.
@@ -1857,6 +1862,21 @@ async function startAgent() {
   if (!r.ok) { const body = await r.json().catch(() => ({})); return appendLog("Chưa khởi động được Claude: " + (body.error || r.status)); }
   attachAgent(Date.now());
 }
+// Chạy tiếp: which run can be continued (GET /api/agent/resumable), refreshed on load and after every run.
+async function refreshResumable() {
+  const r = await fetch("/api/agent/resumable").then((x) => x.json()).catch(() => null);
+  ui.resumeRun = r?.resumable ? r.run : "";
+  if (ui.btnResume) ui.btnResume.title = ui.resumeRun ? `Chạy tiếp lượt ${r.run}: còn ${r.left}/${r.items} ảnh chưa làm (giữ mô tả và chữ đã chọn).` : "Không có lượt dở dang để chạy tiếp.";
+  updateActionAvailability();
+}
+async function resumeRun() {
+  if (!ui.resumeRun) return;
+  ui.txtLog.value = "";
+  const r = await fetch("/api/agent/run", { method: "POST", body: JSON.stringify({ run: ui.resumeRun }) });
+  if (!r.ok) { const body = await r.json().catch(() => ({})); return appendLog("Chưa chạy tiếp được: " + (body.error || r.status)); }
+  ui.resumeRun = "";
+  attachAgent(Date.now());
+}
 function attachAgent(started) {
   Object.assign(run, { agent: true, since: 0, total: countUrls(), done: 0, stopped: false, failure: false, started, resultFolder: "", ai: "Claude (Google Flow)" });
   setRunning(true);
@@ -1886,6 +1906,7 @@ async function finishAgent(st) {
   setRunning(false);
   run.agent = false;
   await loadState();
+  refreshResumable();
   await updateReviewButton();
   const pending = run.resultFolder ? await api("pending", { batch: run.resultFolder }).catch(() => 0) : 0;
   // The run is over: stop the moving bar (full when finished, empty otherwise) and show a clean line, not Claude's last chat text.
@@ -1981,6 +2002,8 @@ function wire() {
   ui.btnUpdate.onclick = () => (run.active ? messageBox("Đang xử lý sản phẩm. Chờ chạy xong rồi cập nhật.", "Cập nhật") : showUpdateDialog());
 
   ui.btnRun.onclick = () => startBatch();
+  ui.btnResume.onclick = () => resumeRun();
+  refreshResumable();
   ui.btnReload.onclick = async () => {
     if (run.active) return messageBox("Đang chạy. Dừng hoặc chờ xong rồi tải lại.");
     ui.btnReload.disabled = true;
