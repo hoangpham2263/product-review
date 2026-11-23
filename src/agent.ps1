@@ -187,7 +187,7 @@ function Invoke-AgentContextBrief {
     Open-AgentRun $Run
     $entry = Get-AgentItem $Item
     Write-AgentJson ([ordered]@{ ok = $true; run = $script:Batch.Id; item = $entry.id; product_image = $entry.product_image; prompt = (Get-ProductContextPrompt $entry.handle)
-            file_format = '{"product":"...","presentation":"worn|held|placed|vehicle","details":"numbered visible details","lettered":true|false (true = the product photo shows SAMPLE customer lettering such as Your Name / YOUR LOGO; false = fixed words or no text),"sample_text":"when lettered: that sample lettering exactly as shown, top to bottom, '' | '' between lines (e.g. Your Name | Est. 2024); else empty","source_categories":["category-key"]} (an id is optional; a raw classification with category_key/existing_profile is accepted too)' })
+            file_format = '{"product":"...","presentation":"worn|held|placed|vehicle","details":"numbered visible details","lettered":true|false (true = the product photo shows SAMPLE customer lettering such as Your Name / YOUR LOGO; false = fixed words or no text),"sample_text":"when lettered: that sample lettering exactly as shown, top to bottom, '' | '' between lines (e.g. Your Name | Est. 2024); else empty","custom_logo":true|false (STEP 3C: a buyer-supplied logo area with replaceable sample branding, e.g. the chest mark of a custom polo),"logo_placeholder":"when custom_logo: the replaceable sample branding words, '' | '' between lines; else empty","source_categories":["category-key"]} (an id is optional; a raw classification with category_key/existing_profile is accepted too)' })
 }
 
 function Invoke-AgentContext {
@@ -199,7 +199,7 @@ function Invoke-AgentContext {
     # Reduce to the raw classification and validate it with the same code as the AI step.
     $category = if ($in.category_key) { [string]$in.category_key } elseif (@($in.source_categories).Count) { [string]@($in.source_categories)[0] } elseif ($in.id) { [string]$in.id } else { '' }
     $profile = if ($in.existing_profile) { [string]$in.existing_profile } else { [string]$in.id }
-    $raw = [ordered]@{ category_key = $category; existing_profile = $profile; product = $in.product; presentation = $in.presentation; details = $in.details; lettered = ($in.lettered -eq $true); sample_text = $(if ($in.sample_text -is [string]) { $in.sample_text } else { '' }) }
+    $raw = [ordered]@{ category_key = $category; existing_profile = $profile; product = $in.product; presentation = $in.presentation; details = $in.details; lettered = ($in.lettered -eq $true); sample_text = $(if ($in.sample_text -is [string]) { $in.sample_text } else { '' }); custom_logo = ($in.custom_logo -eq $true); logo_placeholder = $(if ($in.logo_placeholder -is [string]) { $in.logo_placeholder } else { '' }) }
     $context = ConvertFrom-ProductClassification ($raw | ConvertTo-Json -Depth 4)
     $cats = @($in.source_categories | ForEach-Object { [string]$_ } | Where-Object { $_ })
     if ($cats.Count) { $context | Add-Member source_categories $cats -Force }
@@ -286,6 +286,10 @@ function Get-FlowAspect([string]$ImagePath) {
 # $SignText: optional wording for a made-to-order lettered product (references.json scene.sign_text, " | " = line break).
 # Same rule as the Codex path (02-create-image.ps1): the sample lettering of the product photo is replaced entirely.
 function Get-CondensedFlowPrompt($Context, [string]$SignText = '', [bool]$SafeArt = $false) {
+    # Custom-logo product (STEP 3C): the sample logo is replaced by one small fictional symbol; -Safe (a retry after Flow refused) stays neutral.
+    $customLogo = $Context.PSObject.Properties['custom_logo'] -and $Context.custom_logo -eq $true
+    $logoPh = if ($customLogo -and $Context.PSObject.Properties['logo_placeholder']) { [string]$Context.logo_placeholder } else { '' }
+    $replaceLogo = $customLogo -and -not $SafeArt
     $details = ([string]$Context.details -replace '\s+', ' ').Trim()
     # Exact wording: the details must not quote the sample words ("Your Name") as something to copy.
     $exactSign = [bool]@(Get-SignWordingLines $SignText).Count
@@ -300,6 +304,7 @@ function Get-CondensedFlowPrompt($Context, [string]$SignText = '', [bool]$SafeAr
         if ($ends.Count -gt 0 -and $ends[$ends.Count - 1].Index -ge 200) { $details = $head.Substring(0, $ends[$ends.Count - 1].Index + 1) }
         else { $details = ($head -replace '\s+\S*$', '').TrimEnd(' ', ',', ';', ':') + '...' }
     }
+    if ($replaceLogo -and $logoPh) { $logoCtx = [pscustomobject]@{ sample_text = $logoPh }; $details = Remove-SampleLettering $details $logoCtx 'the sample logo'; $productName = Remove-SampleLettering $productName $logoCtx 'the sample logo' }
     $worn = -not $Context.presentation -or $Context.presentation -eq 'worn'
     $first = if ($worn) {
         'Edit image 1 (the review photo) into ONE photorealistic photo: keep its people, pose, framing, camera and background exactly as they are, and replace only the target garment with the product from image 2. If no person is shown, keep the existing folded or laid-out presentation; do not add a model.'
@@ -323,6 +328,8 @@ function Get-CondensedFlowPrompt($Context, [string]$SignText = '', [bool]$SafeAr
     $signRule = Get-ItemSignRule $SignText $Context 2 'the product text and the no-text rule'
     $lastRule = if ($signRule) {
         "$signRule Do not add objects, people or props that image 1 does not have. One single frame: no collage, split screen or multiple views."
+    } elseif ($replaceLogo) {
+        'LOGO: the logo area of image 2 shows replaceable sample branding' + $(if ($logoPh) { ' (' + $logoPh + ')' } else { '' }) + '. Replace the whole sample mark, tagline included, with ONE small plausible fictional symbol in the same logo or embroidery spot: an original simple non-letter shape, no readable words or initials, no real or famous brand, not an imitation of the sample mark. Keep the exact construction, colors, trim, material and every other artwork detail of image 2. Add no labels or watermarks. Do not add objects, people or props that image 1 does not have. One single frame: no collage, split screen or multiple views.'
     } else {
         'Show the product without any brand name or logo; add no text, labels or watermarks. Do not add objects, people or props that image 1 does not have. One single frame: no collage, split screen or multiple views.'
     }
@@ -352,11 +359,11 @@ function Invoke-AgentFlowBrief {
         # Already archived: use the archived copies (01 = review photo, 02 = product).
         $review = @(Get-ChildItem -LiteralPath $folder -Filter '01-*' | Select-Object -First 1)[0].FullName
         $product = @(Get-ChildItem -LiteralPath $folder -Filter '02-*' | Select-Object -First 1)[0].FullName
-        $request = New-ProductImageRequest $product $entry.id $context $review
+        $request = New-ProductImageRequest $product $entry.id $context $review 'flow'
         $request.Images = @($review, $product)
     } else {
         $reviewPhoto = Get-ReviewPhoto $entry.id $context
-        $request = New-ProductImageRequest $entry.product_image $entry.id $context $reviewPhoto
+        $request = New-ProductImageRequest $entry.product_image $entry.id $context $reviewPhoto 'flow'
         Save-ProductReferenceBundle ([pscustomobject]@{ Url = $entry.url; Handle = $entry.handle }) $entry.id $context $request | Out-Null
         foreach ($loose in @($entry.product_image, $entry.review_photo)) { if ($loose -and (Test-Path -LiteralPath $loose)) { Remove-Item -LiteralPath $loose -Force } }
     }
@@ -380,7 +387,7 @@ function Invoke-AgentFlowBrief {
     }
     $cmd = "powershell -NoProfile -ExecutionPolicy Bypass -File src/agent.ps1 register-image -Run $($script:Batch.Id) -Item $($entry.id) -From <downloaded file>"
     if ($signText) { $cmd += ' -SignRead "<what the sign in the image reads, '' | '' between lines>"' }
-    $out = [ordered]@{ ok = $true; run = $script:Batch.Id; item = $entry.id; prompt_file = $promptFile; condensed_prompt = (Get-CondensedFlowPrompt $context $signText ([bool]$Safe)); safe = [bool]$Safe
+    $out = [ordered]@{ ok = $true; run = $script:Batch.Id; item = $entry.id; prompt_file = $promptFile; condensed_prompt = (Get-CondensedFlowPrompt $context $signText ([bool]$Safe)); safe = [bool]$Safe; logo_mode = $(if ($context.PSObject.Properties['custom_logo'] -and $context.custom_logo -eq $true) { if ($Safe) { 'neutral (after a refusal)' } else { 'replace with a fictional symbol' } } else { 'none' })
         aspect = (Get-FlowAspect $request.Images[0]); uploads = $uploads; register_command = $cmd }
     if ($signText) { $out.sign_text = $signText }
     Write-AgentJson $out
