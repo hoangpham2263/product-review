@@ -77,9 +77,10 @@ function runAgentCli(args, timeout = 240000) {
 const reviewAiOf = () => { try { const s = readSeededJson(join(workspace, "config", "run-settings.json"), join(sharedWs, "config", "run-settings.json"), {}); return ["codex", "claude", "antigravity"].includes(s.reviewAi) ? s.reviewAi : "auto"; } catch { return "auto"; } };
 const REVIEW_AI_NAME = { codex: "Codex", claude: "Claude", antigravity: "Antigravity" };
 function startImgJob(run, threads, agentName, labelAi = agentName, reviewAi = "auto") {
-  imgJob = { run, n: clampThreads(threads), phase: "prepare", started: Date.now(), lines: [], text: "Đang chuẩn bị…", agent: agentName, label_ai: labelAi, reviewAi, stopped: false, busy: false };
+  imgJob = { run, n: clampThreads(threads), phase: "prepare", started: Date.now(), lines: [], text: "Đang chuẩn bị…", agent: agentName, label_ai: labelAi, reviewAi, stopped: false, busy: false,
+    claimed: new Set(), revTries: {}, active: 0, finTried: new Set(), finBusy: false, finFailed: 0, workerBatch: null, launches: 0, noProgress: 0, lastHave: 0, imagesDone: false, fatal: "", imageError: "", imageIssue: "" };
   jobFinal = null;
-  jobLog(imgJob, "Chia việc " + imgJob.n + " luồng: ngữ cảnh → tạo ảnh → review → hoàn tất");
+  jobLog(imgJob, "Chia việc " + imgJob.n + " luồng: ngữ cảnh → tạo ảnh (review và hoàn tất chạy song song ngay khi có ảnh)");
   jobTimer = jobTimer || setInterval(() => { jobTick().catch(() => {}); }, 2000);
   setImmediate(() => jobTick().catch(() => {}));
 }
@@ -106,32 +107,65 @@ function startPhaseWorkers(j, mode, ids) {
   }
   return { ok: true, workers: started.length };
 }
-// Reviews written by an explicit text AI: per item review-brief -> ai-draft (that AI + the image) -> write-review (quality gate under the run lock; up to 3 repairs naming the
-// problem; the 4th draft is kept, an item is never dropped for its wording). N items at a time (Luồng); these are CLI text calls, no browser. Dừng stops between items.
-async function autoReviews(j, ids) {
-  const queue = ids.slice(), ai = j.reviewAi, name = REVIEW_AI_NAME[ai];
-  let fatal = "", failed = 0, done = 0;
-  jobLog(j, "Review bằng " + name + ": " + ids.length + " mục, " + Math.min(j.n, ids.length) + " luồng");
-  const item = async (id) => {
-    const short = (id.match(/^\d+/) || [id])[0];
-    const b = await runAgentCli(["review-brief", "-Run", j.run, "-Item", id]);
-    if (!b.ok) { failed++; jobLog(j, "Mục " + short + ": chưa lập được đề review (" + String(b.error || "").slice(0, 100) + ")"); return; }
-    let extra = "";
-    for (let attempt = 1; attempt <= 4 && !fatal && !j.stopped; attempt++) {
-      const out = join(workspace, "tmp", "rv-" + j.run + "-" + id + ".txt"); shardFiles.push(out);
-      const d = await runAgentCli(["ai-draft", "-Run", j.run, "-Item", id, "-Backend", ai, "-File", out, ...(extra ? ["-Text", extra] : [])], 900000);
-      if (!d.ok) { if (/QUOTA|AUTH/.test(String(d.cause || "")) || /quota|exhausted|sign in/i.test(String(d.error || ""))) fatal = name + " không viết được (" + String(d.cause || d.error || "").slice(0, 120) + "). Chọn AI khác cho Viết review rồi Chạy tiếp."; else { failed++; jobLog(j, "Mục " + short + ": " + name + " lỗi (" + String(d.error || d.cause || "").slice(0, 100) + ")"); } return; }
-      const w = await runAgentCli(["write-review", "-Run", j.run, "-Item", id, "-File", out]);
-      if (w.ok) { done++; return; }
-      extra = "Your previous draft was rejected: " + [].concat(w.problems || w.error || "").join(" ") + " Rewrite it fixing only that, keep the observations about the photo.";
+// An item the image agent explicitly gave up on ([CAUSE:REFUSED] ...) has an error file and no image: it is not "missing", the run does not wait for it.
+const hasGaveUp = (run, id) => { try { return /CAUSE:(REFUSED|QUOTA)/.test(readFileSync(join(runDirOf(run), "logs", id + "-agent-error.txt"), "utf8")) && !hasImg(run, id); } catch { return false; } };
+// One review by an explicit text AI: review-brief -> ai-draft (that AI + the image) -> write-review (quality gate under the run lock; up to 3 repairs naming the problem; the 4th
+// draft is kept, an item is never dropped for its wording). CLI text calls, no browser.
+async function autoReviewItem(j, id) {
+  const ai = j.reviewAi, name = REVIEW_AI_NAME[ai], short = (id.match(/^\d+/) || [id])[0];
+  const b = await runAgentCli(["review-brief", "-Run", j.run, "-Item", id]);
+  if (!b.ok) { jobLog(j, "Mục " + short + ": chưa lập được đề review (" + String(b.error || "").slice(0, 100) + ")"); return; }
+  let extra = "";
+  for (let attempt = 1; attempt <= 4 && !j.fatal && !j.stopped; attempt++) {
+    const out = join(workspace, "tmp", "rv-" + j.run + "-" + id + ".txt"); shardFiles.push(out);
+    const d = await runAgentCli(["ai-draft", "-Run", j.run, "-Item", id, "-Backend", ai, "-File", out, ...(extra ? ["-Text", extra] : [])], 900000);
+    if (!d.ok) {
+      if (/QUOTA|AUTH/.test(String(d.cause || "")) || /quota|exhausted|sign in/i.test(String(d.error || ""))) { j.fatal = name + " không viết được (" + String(d.cause || d.error || "").slice(0, 120) + "). Chọn AI khác cho Viết review rồi Chạy tiếp."; jobLog(j, j.fatal); }
+      else jobLog(j, "Mục " + short + ": " + name + " lỗi (" + String(d.error || d.cause || "").slice(0, 100) + ")");
+      return;
     }
-  };
-  const worker = async () => { while (queue.length && !fatal && !j.stopped) await item(queue.shift()); };
-  await Promise.all(Array.from({ length: Math.min(j.n, ids.length) }, worker));
-  if (j.stopped) return finishJob("stopped");
-  if (fatal) { jobLog(j, fatal); return finishJob("failed", fatal); }
-  jobLog(j, "Review xong " + done + "/" + ids.length + (failed ? ", " + failed + " mục lỗi" : ""));
-  j.phase = "finish-next";
+    const w = await runAgentCli(["write-review", "-Run", j.run, "-Item", id, "-File", out]);
+    if (w.ok) return;
+    extra = "Your previous draft was rejected: " + [].concat(w.problems || w.error || "").join(" ") + " Rewrite it fixing only that, keep the observations about the photo.";
+  }
+}
+// Reviews start AS SOON AS an item has its image (while the image agent keeps working): an explicit AI = a pool of up to N items at a time; the agent AI = rev workers on the items
+// that are ready (a batch of at least N while images are still coming, anything once they are done). Items are claimed in memory (one orchestrator), each tried twice at most.
+function pumpReviews(j, draining) {
+  const ids = jobIds(j.run);
+  if (j.workerBatch && !lightPool.some((r) => r.isActive())) { for (const id of j.workerBatch) j.claimed.delete(id); j.workerBatch = null; }
+  const ready = ids.filter((id) => hasImg(j.run, id) && !hasRev(j.run, id) && !j.claimed.has(id) && (j.revTries[id] || 0) < 2);
+  if (!ready.length || j.fatal) return;
+  if (j.reviewAi !== "auto") {
+    while (j.active < j.n && ready.length) {
+      const id = ready.shift(); j.claimed.add(id); j.revTries[id] = (j.revTries[id] || 0) + 1; j.active++;
+      if (!j.reviewLogged) { j.reviewLogged = true; jobLog(j, "Review bằng " + REVIEW_AI_NAME[j.reviewAi] + ": bắt đầu ngay khi có ảnh, " + j.n + " luồng"); }
+      autoReviewItem(j, id).catch(() => {}).finally(() => { j.active--; j.claimed.delete(id); });
+    }
+  } else if (!lightPool.some((r) => r.isActive()) && (draining || ready.length >= Math.max(2, j.n))) {
+    const r = startPhaseWorkers(j, "rev", ready);
+    if (!r.ok) { jobLog(j, "Chưa khởi động được worker review: " + String(r.error || "").slice(0, 100)); for (const id of ready) j.revTries[id] = 9; return; }
+    for (const id of ready) { j.claimed.add(id); j.revTries[id] = (j.revTries[id] || 0) + 1; }
+    j.workerBatch = ready.slice();
+    jobLog(j, "Review: " + ready.length + " mục chia " + r.workers + " luồng (song song với tạo ảnh)");
+  }
+}
+// finish (the results upload) per item as soon as image + review exist: one at a time, never blocking the tick.
+async function pumpFinish(j) {
+  if (j.finBusy) return;
+  const done = new Set(doneRows(j.run));
+  const need = jobIds(j.run).filter((id) => hasImg(j.run, id) && hasRev(j.run, id) && !done.has(id) && !j.finTried.has(id));
+  if (!need.length) return;
+  j.finBusy = true;
+  try {
+    for (const id of need) {
+      if (j.stopped) break;
+      j.finTried.add(id);
+      const short = (id.match(/^\d+/) || [id])[0];
+      const r = await runAgentCli(["finish", "-Run", j.run, "-Item", id]);
+      if (!r.ok) { j.finFailed++; jobLog(j, "Mục " + short + " chưa hoàn tất: " + String(r.error || r.cause || "").slice(0, 160)); }
+    }
+  } finally { j.finBusy = false; }
 }
 async function jobTick() {
   const j = imgJob;
@@ -142,53 +176,57 @@ async function jobTick() {
     if (j.phase === "prepare") {
       const r = await runAgentCli(["prepare", "-Run", j.run]);
       if (!r.ok) return finishJob("failed", r.error || "Chưa lập được danh sách mục của lượt.");
-      j.phase = j.n > 1 ? "ctx-next" : "images-next"; // Luồng 1: the image agent does the context itself
+      j.phase = j.n > 1 ? "ctx-next" : "images";  // Luồng 1: the image agent does the context itself
     }
-    if (j.phase === "context" || j.phase === "review") {
+    if (j.phase === "context") {
       if (lightPool.some((r) => r.isActive())) return;
-      j.phase = j.phase === "context" ? "images-next" : "finish-next";
+      j.phase = "images";
     }
     if (j.phase === "ctx-next") {
       const need = jobIds(j.run).filter((id) => !hasCtx(j.run, id) && !hasImg(j.run, id));
-      if (!need.length) { j.phase = "images-next"; }
+      if (!need.length) j.phase = "images";
       else { const r = startPhaseWorkers(j, "ctx", need); if (!r.ok) return finishJob("failed", r.error); j.phase = "context"; jobLog(j, "Ngữ cảnh: " + need.length + " mục chia " + r.workers + " luồng"); return; }
     }
-    if (j.phase === "images-next") {
-      const ids = jobIds(j.run);
-      if (ids.length && ids.every((id) => hasImg(j.run, id))) { j.phase = "review-next"; }
-      else {
+    if (j.phase === "images") {
+      // reviews and finish follow the images live
+      pumpReviews(j, false); pumpFinish(j).catch(() => {});
+      if (agentRunner.isActive()) return;
+      const ids = jobIds(j.run), have = ids.filter((id) => hasImg(j.run, id)).length;
+      const missing = ids.filter((id) => !hasImg(j.run, id) && !hasGaveUp(j.run, id)).length;
+      if (j.launches > 0) {
+        // the image agent has exited: stopped, a real error, or "done": done with images still missing means it quit early (e.g. after one group) -> run it again for the rest
+        const st = agentRunner.status();
+        if (st.status === "stopped") return finishJob("stopped");
+        if (st.status === "failed") { j.imageError = st.error || "Lượt tạo ảnh lỗi"; j.imagesDone = true; }
+        else {
+          j.noProgress = have > j.lastHave ? 0 : j.noProgress + 1;
+          if (!missing) j.imagesDone = true;
+          else if (j.noProgress >= 2 || j.launches >= 6) { j.imageIssue = missing + " mục chưa có ảnh (đã chạy lại " + (j.launches - 1) + " lần)"; j.imagesDone = true; }
+        }
+      } else if (!missing) j.imagesDone = true;
+      if (!j.imagesDone) {
         const r = agentRunner.start({ run: j.run, mode: "flow", phased: j.n > 1 ? true : "review" });
         if (!r.ok) return finishJob("failed", r.error);
-        j.phase = "images"; jobLog(j, "Tạo ảnh"); return;
+        j.launches++; j.lastHave = have;
+        jobLog(j, j.launches === 1 ? "Tạo ảnh" : "Tạo ảnh: còn " + missing + " mục, chạy tiếp (lần " + j.launches + ")");
+        return;
       }
+      j.phase = "drain";
     }
-    if (j.phase === "images") {
-      if (agentRunner.isActive()) return;
-      const st = agentRunner.status();
-      if (st.status === "stopped") return finishJob("stopped");
-      // the image run may fail (e.g. Antigravity's quota): with an explicit review AI the images that ARE done still get their reviews, then the failure is reported
-      if (st.status === "failed") { if (j.reviewAi === "auto" || !jobIds(j.run).some((id) => hasImg(j.run, id))) return finishJob("failed", st.error || ""); j.imageError = st.error || ""; }
-      j.phase = "review-next";
-    }
-    if (j.phase === "review-next") {
-      const need = jobIds(j.run).filter((id) => hasImg(j.run, id) && !hasRev(j.run, id));
-      if (!need.length) { j.phase = "finish-next"; }
-      else if (j.reviewAi !== "auto") { j.phase = "review"; return await autoReviews(j, need); }
-      else { const r = startPhaseWorkers(j, "rev", need); if (!r.ok) return finishJob("failed", r.error); j.phase = "review"; jobLog(j, "Review: " + need.length + " mục chia " + r.workers + " luồng"); return; }
-    }
-    if (j.phase === "finish-next") {
-      j.phase = "finish";
-      const done = new Set(doneRows(j.run));
-      const need = jobIds(j.run).filter((id) => hasRev(j.run, id) && !done.has(id));
-      let failed = 0;
-      for (const id of need) {
-        if (j.stopped) return finishJob("stopped");
-        jobLog(j, "Hoàn tất mục " + ((id.match(/^\d+/) || [id])[0]) + " (" + (need.indexOf(id) + 1) + "/" + need.length + ")");
-        const r = await runAgentCli(["finish", "-Run", j.run, "-Item", id]);
-        if (!r.ok) { failed++; jobLog(j, "Mục " + ((id.match(/^\d+/) || [id])[0]) + " chưa hoàn tất: " + String(r.error || r.cause || "").slice(0, 160)); }
-      }
+    if (j.phase === "drain") {
+      pumpReviews(j, true); pumpFinish(j).catch(() => {});
+      if (j.active > 0 || j.finBusy || j.workerBatch || lightPool.some((r) => r.isActive())) return;
+      const ids = jobIds(j.run), done = new Set(doneRows(j.run));
+      const reviewsLeft = ids.filter((id) => hasImg(j.run, id) && !hasRev(j.run, id) && (j.revTries[id] || 0) < 2).length;
+      const finishLeft = ids.filter((id) => hasImg(j.run, id) && hasRev(j.run, id) && !done.has(id) && !j.finTried.has(id)).length;
+      if (reviewsLeft || finishLeft) return;
+      const gaveUp = ids.filter((id) => hasGaveUp(j.run, id)).length;
+      const open = ids.filter((id) => !hasGaveUp(j.run, id) && !(hasImg(j.run, id) && hasRev(j.run, id) && done.has(id))).length;
+      if (j.fatal) return finishJob("failed", j.fatal);
       if (j.imageError) return finishJob("failed", j.imageError);
-      return finishJob("done", failed ? failed + " mục chưa hoàn tất (xem log)" : "");
+      if (j.imageIssue) return finishJob("failed", j.imageIssue);
+      if (open) return finishJob("failed", open + " mục chưa hoàn tất (xem log)");
+      return finishJob("done", gaveUp ? gaveUp + " mục không tạo được ảnh (bị từ chối hoặc lỗi)" : "");
     }
   } finally { j.busy = false; }
 }
