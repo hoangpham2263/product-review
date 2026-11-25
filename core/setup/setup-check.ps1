@@ -87,7 +87,7 @@ if ($agy) {
         if ((Get-Content -LiteralPath $agyLog -Raw -ErrorAction SilentlyContinue) -match 'authenticated successfully as (\S+@\S+)') { $agyAccount = $Matches[1] }
     } catch { $agyOk = $false }
     Remove-Item -LiteralPath $agyLog -Force -ErrorAction SilentlyContinue
-    if ($agyOk) { $agyState = 'ok'; $agyDetail = 'Đã đăng nhập (tài khoản riêng của Antigravity, không theo Chrome).' }
+    if ($agyOk -or $agyAccount) { $agyState = 'ok'; $agyDetail = 'Đã đăng nhập (tài khoản riêng của Antigravity, không theo Chrome).' }
     else { $agyState = 'fail'; $agyDetail = 'Chưa đăng nhập. Mở Antigravity (hoặc chạy agy trong Terminal) rồi đăng nhập Google.' }
 }
 # Claude Code CLI (claude): Viết review: Claude. Optional; only needed when Claude is chosen. Found like agent mode does:
