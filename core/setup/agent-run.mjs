@@ -108,7 +108,7 @@ export function friendlyTool(name, input = {}, mode = "flow") {
     return "Chạy lệnh của công cụ";
   }
   if (n === "Read") return /contact-sheets/i.test(cmd) ? "Xem tấm ảnh ghép (nhiều ảnh một lần)" : /\.(png|jpe?g|webp)$/i.test(cmd) ? "Xem ảnh sản phẩm / ảnh bối cảnh" : "Đọc dữ liệu của lượt chạy";
-  if (n === "AgyImage") return "Antigravity tạo ảnh";
+  if (n === "AgyImage") return input?.count > 1 ? `Antigravity tạo ${input.count} ảnh cùng lúc` : "Antigravity tạo ảnh";
   if (n === "Write" || n === "Edit") return "Ghi file tạm của lượt chạy";
   return "Đang xử lý: " + n;
 }
@@ -240,6 +240,14 @@ export const isAgyModel = (v) => typeof v === "string" && AGY_MODEL_RE.test(v);
 // queue / prep / index runs have their own key. A window saved before these keys existed keeps working: a missing key falls back to the old agentBackend.
 // Codex cannot run these: the runner only starts the Claude or the Antigravity CLI.
 export const AGENT_TASK_KEY = { flow: "agentBackend", scan: "scanAgent", reviews: "reviewsAgent", queue: "queueAgent", prep: "queueAgent", index: "queueAgent" };
+// Luồng (run-settings.json threads, 1-4, default 1 here): how many pictures an Antigravity image run makes at once (Claude (Flow) ignores it: Flow pacing).
+export function readThreads(workspaceDir, seedDir = "") {
+  try {
+    const f = (d) => join(d, "config", "run-settings.json");
+    const n = Number(readSeededJson(f(workspaceDir), seedDir ? f(seedDir) : "", {}).threads);
+    return Number.isInteger(n) && n >= 1 && n <= 4 ? n : 1;
+  } catch { return 1; }
+}
 export function readAgentSettings(workspaceDir, seedDir = "", mode = "flow") {
   try {
     const f = (d) => join(d, "config", "run-settings.json");
@@ -264,7 +272,7 @@ export function findAgy(plat = osPlatform()) {
 export function agyToolToClaude(name, params = {}) {
   const n = String(name || "");
   if (n === "call_mcp_tool") return { name: String(params.ToolName || "mcp"), input: {} };
-  if (n === "invoke_subagent" || n === "generate_image") return { name: "AgyImage", input: {} };
+  if (n === "invoke_subagent" || n === "generate_image") return { name: "AgyImage", input: { count: Math.max(1, Number(params.count) || 1) } };
   if (n === "run_command") return { name: "Bash", input: { command: String(params.CommandLine || "") } };
   if (n === "read_file" || n === "view_file") return { name: "Read", input: { file_path: String(params.Path || params.AbsolutePath || "") } };
   if (["write_to_file", "replace_file_content", "multi_replace_file_content", "sed_file"].includes(n)) return { name: "Write", input: {} };
@@ -307,7 +315,7 @@ export const newRunId = (d = new Date()) => "agent-" + d.toISOString().replace(/
 
 // The text block of docs/agent-prompt.md (mode "flow") or docs/scan-prompt.md (mode "scan"), placeholders filled.
 export const PROMPT_FILES = { flow: "agent-prompt.md", scan: "scan-prompt.md", reviews: "reviews-count-prompt.md", queue: "queue-prompt.md", prep: "prep-prompt.md", index: "index-prompt.md" };
-export function buildPrompt({ toolRoot, run, options = "defaults", mode = "flow", site = "", max = 20, project = "", workspace = "", agentName = "Claude Code" }) {
+export function buildPrompt({ toolRoot, run, options = "defaults", mode = "flow", site = "", max = 20, project = "", workspace = "", agentName = "Claude Code", threads = 1 }) {
   const agyImg = mode === "flow" && agentName === "Antigravity"; // Antigravity makes the images itself: its own prompt file, no Flow, no Google account
   const file = agyImg ? "agent-prompt-agy-image.md" : PROMPT_FILES[mode];
   if (!file) throw new Error("Unknown run mode: " + mode);
@@ -318,7 +326,7 @@ export function buildPrompt({ toolRoot, run, options = "defaults", mode = "flow"
   if (mode === "flow" && !agyImg) acct = readFlowAccount(workspace || join(toolRoot, "workspace"), join(toolRoot, "workspace"));
   const acctText = acct ? `\nGOOGLE ACCOUNT FOR FLOW: use ONLY the already signed-in Google account ${acct}. The profile may hold several Google accounts and Flow opens the first one. Before creating the project open https://accounts.google.com/AccountChooser?continue=https%3A%2F%2Fflow.google.com%2F and click THAT email (no password is needed for a signed-in account); on Flow check the avatar menu shows the same email. If that email is not in the list, or Flow says the credits are used up on it: STOP and report. Never sign out, never remove or add an account, never use another account.` : "";
   return m[1].replace(/\{\{TOOL\}\}/g, toolRoot).replace(/\{\{RUN\}\}/g, run).replace(/\{\{OPTIONS\}\}/g, options)
-    .replace(/\{\{SITE\}\}/g, site).replace(/\{\{MAX\}\}/g, String(max)).replace(/\{\{PROJECT\}\}/g, project).replace(/agent: Claude Code/g, "agent: " + agentName) + acctText;
+    .replace(/\{\{SITE\}\}/g, site).replace(/\{\{MAX\}\}/g, String(max)).replace(/\{\{PROJECT\}\}/g, project).replace(/agent: Claude Code/g, "agent: " + agentName).replace(/{{THREADS}}/g, String(threads)) + acctText;
 }
 
 const defaultKill = (child, plat) => {
@@ -435,7 +443,7 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
           killTree(run.child); setTimeout(() => finish(run, null), graceMs).unref?.();
           return;
         }
-        const c = agyToolToClaude(s.tool_name, p);
+        const c = agyToolToClaude(s.tool_name, s.tool_name === "invoke_subagent" ? { count: (s.subagent_info?.subagents || []).length } : p);
         addLine(run, friendlyTool(c.name, c.input, run.state.mode)); touch(run);
       }
       return;
@@ -504,7 +512,7 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
     if (!found?.found) return { ok: false, status: 400, error: agy ? "Antigravity CLI (agy) not found: install Antigravity and sign in with Google, or set PR_AGY_CLI to its path." : "Claude CLI not found: install Claude Code, or set PR_CLAUDE_CLI to its path." };
     if (!noBrowser && !npxOk()) return { ok: false, status: 400, error: "npx is not available (it comes with Node.js): the Playwright MCP cannot start." };
     let prompt;
-    try { prompt = buildPrompt({ toolRoot, run: runId, options, mode, site, max, project, workspace, agentName: agy ? "Antigravity" : "Claude Code" }); } catch (e) { return { ok: false, status: 500, error: sanitize(e.message) }; }
+    try { prompt = buildPrompt({ toolRoot, run: runId, options, mode, site, max, project, workspace, agentName: agy ? "Antigravity" : "Claude Code", threads: agyImage ? readThreads(workspace || join(toolRoot, "workspace"), join(toolRoot, "workspace")) : 1 }); } catch (e) { return { ok: false, status: 500, error: sanitize(e.message) }; }
     mkdirSync(tmpDir, { recursive: true }); mkdirSync(runsDir, { recursive: true });
     const cfg = join(tmpDir, `mcp-${runId}-${randomBytes(3).toString("hex")}.json`);
     const bc = noBrowser ? {} : (getBrowser() || {}), ext = !noBrowser && bc.mode !== "own";
