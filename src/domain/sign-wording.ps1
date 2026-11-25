@@ -1,4 +1,4 @@
-# Sign wording of a made-to-order lettered product (neon name/logo sign): ONE template, prompts/sign-wording.txt, used by every
+﻿# Sign wording of a made-to-order lettered product (neon name/logo sign): ONE template, prompts/sign-wording.txt, used by every
 # image path (Codex: workflow/steps/02-create-image.ps1; Claude (Flow): agent.ps1). The wording comes from references.json
 # scene.sign_text or, in the Claude (Flow) path, from the agent (src/agent.ps1 set-sign-text), " | " = line break.
 # Rules live in the templates (prompts/sign-wording*.txt, prompts/sign-choice.txt); the code only fills the placeholders and checks.

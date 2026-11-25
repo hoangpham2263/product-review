@@ -56,7 +56,8 @@ const savedThreads = () => { try { return clampThreads(readSeededJson(join(works
 // urls = null (index): the shards split the library photos by a stable hash (-Shard k/n). threads 1 = exactly the old single run.
 function startLightShards({ mode, project, options, threads = 1, urls = null, tag = "" }) {
   let n = clampThreads(threads);
-  if (urls && urls.length) n = Math.min(n, urls.length);
+  if (urls && !urls.length) return { ok: false, status: 409, error: "Không còn sản phẩm nào để xử lý (đã thêm, đã chuẩn bị hoặc không khớp bộ lọc)." };
+  if (urls) n = Math.min(n, urls.length);
   const stamp = newRunId().slice(6);
   if (n <= 1 || lightPool.some((r) => r.isActive())) return lightPool[0].start({ run: (tag || mode) + "-" + stamp, mode, project, options });
   const chunk = urls ? Math.ceil(urls.length / n) : 0, started = [];
@@ -73,7 +74,7 @@ function startLightShards({ mode, project, options, threads = 1, urls = null, ta
     if (!r.ok) { for (const x of started) x.stop(); return r; }
     started.push(runner); if (!started.first) started.first = r;
   }
-  return started.first;
+  return started.first || { ok: false, status: 409, error: "Không còn sản phẩm nào để xử lý." };
 }
 // Quét web: the project of a run is the one whose session.json names the run (src/scan.ps1 start -Run); older scans keep a scan.json.
 // Paths use "/" for the window.
@@ -522,6 +523,7 @@ async function handle(req, res) {
       if (!AGENT_BACKENDS.includes(s2.agentBackend)) s2.agentBackend = "claude";
       for (const k of ["scanAgent", "reviewsAgent", "queueAgent"]) if (!AGENT_BACKENDS.includes(s2[k])) s2[k] = s2.agentBackend; // older windows: the old single agent
       if (s2.agyModel && !isAgyModel(s2.agyModel)) delete s2.agyModel;
+      if (s2.agyEffort && !AGY_EFFORTS.includes(s2.agyEffort)) delete s2.agyEffort; // e.g. the old "max"
       s2.agyModelGroups = await listAgyModels();
       s2.flowAccounts = flowAccountsFor(readFlowBrowser(workspace, sharedWs));
       return send(res, 200, s2);

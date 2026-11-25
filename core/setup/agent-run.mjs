@@ -355,12 +355,19 @@ export function findClaude(plat = osPlatform()) {
   } catch { return { found: false, path: "" }; }
 }
 
+const lightRuns = new Map(); // active light runs per tool root + session (shared by every shard)
 export function createAgentRunner({ toolRoot, workspace, profileDir = join(workspace, "chrome-profile"), headless = process.env.PR_FLOW_HEADLESS === "1", getBrowser = () => ({ mode: "extension", profile: "Profile 1" }), session = "", kind = "main", slot = 0, checkProfile = checkExtensionProfile, findCli = findClaude, findAgyCli = findAgy, plat = osPlatform(), spawnFn = spawn, killTree = (c) => defaultKill(c, plat), npxOk = () => defaultNpx(plat), now = () => Date.now(), graceMs = 4000, minutes = DEFAULT_MINUTES, maxTurns = 0 }) {
   const runsDir = join(workspace, "runs"), tmpDir = join(workspace, "tmp");
   // Two runner instances per server: "main" (Flow images + reviews, scan, review count) and "light" (queue, prep: no browser). Own state and log files,
   // so a prep / queue run goes on while Bắt đầu runs; two light runs at once stay forbidden (each runner is one run at a time).
   // slot 0 = the one light run of old; slots 1-3 = the other shards of a Luồng N run (own state / log files, own lock tag).
-  const stateName = kind === "light" ? (slot ? "prep-run-" + slot : "prep-run") : "agent-run", lockTag = slot ? kind + slot : kind;
+  const stateName = kind === "light" ? (slot ? "prep-run-" + slot : "prep-run") : "agent-run", lockTag = kind;
+  // Several light runs (shards) of one session share the project / library lock: it is released only when the LAST one ends.
+  const lightKey = toolRoot + "|" + session;
+  const releaseOwn = (started) => {
+    if (kind === "light") { const n = (lightRuns.get(lightKey) || 0) - (started ? 1 : 0); if (started) lightRuns.set(lightKey, Math.max(0, n)); if (n > 0) return; }
+    try { releaseLocks(toolRoot, session, process.pid, lockTag); } catch {}
+  };
   const stateFile = join(runsDir, stateName + ".json"), logFile = join(runsDir, stateName + ".log");
   let cur = null, last = null;
 
@@ -431,12 +438,25 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
           if (t) { addLine(run, "Antigravity: " + t); run.state.last_text = t; }
           touch(run);
         }
+      } else if (s.tool_name === "invoke_subagent") {
+        // Judged on EVERY event of the step, and only once the type info is there (the first event may arrive with an empty list). Outside the image
+        // run any subagent is foreign; inside it only image-generator is allowed. No type info at all by the end of the step = a warning, not a kill.
+        const subs = s.subagent_info?.subagents || [], imgRun = run.agyImage;
+        run.agyShown = run.agyShown || new Set();
+        const bad = !imgRun ? "subagent không phải image-generator" : subs.length && !subs.every((x) => /^image-generator$/i.test(String(x.type_name || ""))) ? "subagent không phải image-generator" : "";
+        if (bad) {
+          run.abort = "Antigravity dùng " + bad + ", không phải việc của lượt chạy: đã dừng.";
+          addLine(run, "⚠ " + run.abort); touch(run);
+          killTree(run.child); setTimeout(() => finish(run, null), graceMs).unref?.();
+          return;
+        }
+        if (subs.length && !run.agyShown.has(idx)) { run.agyShown.add(idx); const c = agyToolToClaude("invoke_subagent", { count: subs.length }); addLine(run, friendlyTool(c.name, c.input, run.state.mode, run.state.agent)); touch(run); }
+        else if (!subs.length && s.state === "DONE" && !run.agyShown.has(idx)) { run.agyShown.add(idx); addLine(run, "⚠ Antigravity gọi một subagent nhưng không báo loại: bỏ qua kiểm tra bước này"); touch(run); }
       } else if ((s.step_type === "tool" || s.step_type === "subagent") && s.tool_name && !run.agySteps.has(idx)) {
         run.agySteps.add(idx);
         const p = s.tool_info?.parameters || {};
         const imgRun = run.agyImage, noMcp = LIGHT_MODES.includes(run.state.mode) || imgRun;
-        const bad = (imgRun && (s.tool_name === "generate_image" || (s.tool_name === "invoke_subagent" && (s.subagent_info?.subagents || []).length > 0 && (s.subagent_info.subagents).every((x) => /^image-generator$/i.test(String(x.type_name || "")))))) ? ""
-          : s.tool_name === "invoke_subagent" ? "subagent không phải image-generator"
+        const bad = (imgRun && s.tool_name === "generate_image") ? ""
           : AGY_FORBIDDEN_TOOL.test(s.tool_name) ? "công cụ " + s.tool_name + " của chính Antigravity"
           : s.tool_name === "call_mcp_tool" && !noMcp && p.ServerName !== AGY_MCP_SERVER ? "máy chủ MCP \"" + String(p.ServerName || "?") + "\" (không phải " + AGY_MCP_SERVER + ")"
           : s.tool_name === "call_mcp_tool" && noMcp ? "công cụ MCP trong lượt không dùng trình duyệt" : "";
@@ -446,7 +466,7 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
           killTree(run.child); setTimeout(() => finish(run, null), graceMs).unref?.();
           return;
         }
-        const c = agyToolToClaude(s.tool_name, s.tool_name === "invoke_subagent" ? { count: (s.subagent_info?.subagents || []).length } : p);
+        const c = agyToolToClaude(s.tool_name, p);
         addLine(run, friendlyTool(c.name, c.input, run.state.mode, run.state.agent)); touch(run);
       }
       return;
@@ -474,7 +494,7 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
     try { rmSync(run.cfg, { force: true }); } catch {}
     // Antigravity: the per-run folder (prompt, plugin with the Playwright MCP config and its token) is always removed, on success, failure and stop.
     if (run.agyDir) { try { rmSync(run.agyDir, { recursive: true, force: true }); } catch {} }
-    try { releaseLocks(toolRoot, session, process.pid, lockTag); } catch {}
+    releaseOwn(true);
     // An image run (mode "flow") that finished its process cleanly but produced nothing for ANY of its items (no image, no result) is a failed run,
     // not a success: the final state must not look like "done, 0 errors" when 0 of N items were completed.
     let nothing = "";
@@ -530,12 +550,12 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
     if (!projectId && mode === "scan" && site) { try { projectId = new URL(site).hostname.replace(/^www\./, "").replace(/\./g, "-"); } catch {} }
     if (projectId) {
       const c = claimLock(toolRoot, "project", projectId, session, process.pid, lockTag);
-      if (!c.ok) { releaseLocks(toolRoot, session, process.pid, lockTag); return { ok: false, status: 409, error: "Dự án " + projectId + " đang được " + holderText(c.holder) + " dùng. Chọn dự án khác hoặc đợi phiên đó xong để khỏi ghi đè dữ liệu của nhau." }; }
+      if (!c.ok) { releaseOwn(false); return { ok: false, status: 409, error: "Dự án " + projectId + " đang được " + holderText(c.holder) + " dùng. Chọn dự án khác hoặc đợi phiên đó xong để khỏi ghi đè dữ liệu của nhau." }; }
     }
     // Gắn nhãn kho ảnh: the library index is shared by every session, so one index run at a time on this machine (no two windows tagging the same photos).
     if (mode === "index") {
       const c = claimLock(toolRoot, "library", "scene-index", session, process.pid, lockTag);
-      if (!c.ok) { releaseLocks(toolRoot, session, process.pid, lockTag); return { ok: false, status: 409, error: "Kho ảnh đang được " + holderText(c.holder) + " gắn nhãn. Đợi lượt đó xong." }; }
+      if (!c.ok) { releaseOwn(false); return { ok: false, status: 409, error: "Kho ảnh đang được " + holderText(c.holder) + " gắn nhãn. Đợi lượt đó xong." }; }
     }
     const group = ext ? takeGroup(workspace, session) : null;
     if (!noBrowser) writeFileSync(cfg, JSON.stringify(mcpConfig({ plat, profile: profileDir, headless, extension: ext ? { profile: bc.profile, name: group.name, color: group.color, background: mode !== "flow" } : null })));
@@ -572,7 +592,7 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
           if (extToken) server.env = { ...(server.env || {}), PLAYWRIGHT_MCP_EXTENSION_TOKEN: extToken };
           writeFileSync(join(agyDir, ".agents", "plugins", AGY_PLUGIN, "mcp_config.json"), JSON.stringify({ mcpServers: { [AGY_SERVER]: server } }));
         }
-      } catch (e) { try { rmSync(agyDir, { recursive: true, force: true }); } catch {} try { rmSync(cfg, { force: true }); } catch {} try { releaseLocks(toolRoot, session, process.pid, lockTag); } catch {} return { ok: false, status: 500, error: sanitize(e.message) }; }
+      } catch (e) { try { rmSync(agyDir, { recursive: true, force: true }); } catch {} try { rmSync(cfg, { force: true }); } catch {} releaseOwn(false); return { ok: false, status: 500, error: sanitize(e.message) }; }
       const task = "Your full task is in the file " + join(agyDir, "prompt.md") + ". Read it first with view_file, then do exactly what it says, following its numbered steps in order. Reply only as the task asks.";
       args = ["-p", task, "--output-format", "stream-json", "--dangerously-skip-permissions", "--add-dir", toolRoot, ...(asked.model ? ["--model", asked.model] : []), ...(asked.effort && !(asked.model && /-(low|medium|high|xhigh)$/.test(asked.model)) ? ["--effort", asked.effort] : [])];
     } else {
@@ -582,13 +602,13 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
     const cmd = plat === "win32" && /\.(cmd|bat)$/i.test(found.path) ? ["cmd", ["/c", found.path, ...args]] : [found.path, args];
     let child;
     try { child = spawnFn(cmd[0], cmd[1], { cwd: agy ? agyDir : toolRoot, env, windowsHide: true, detached: false, stdio: ["pipe", "pipe", "pipe"] }); }
-    catch (e) { try { rmSync(cfg, { force: true }); } catch {} if (agyDir) { try { rmSync(agyDir, { recursive: true, force: true }); } catch {} } try { releaseLocks(toolRoot, session, process.pid, lockTag); } catch {} return { ok: false, status: 500, error: sanitize(e.message) }; }
+    catch (e) { try { rmSync(cfg, { force: true }); } catch {} if (agyDir) { try { rmSync(agyDir, { recursive: true, force: true }); } catch {} } releaseOwn(false); return { ok: false, status: 500, error: sanitize(e.message) }; }
     const started = new Date(now()).toISOString();
     const run = { child, cfg, lines: [], buf: "", written: 0, stderr: [], ended: false, forced: "", result: null, timer: null,
       state: { run_id: runId, mode, project, pid: child.pid ?? null, started, updated: started, status: "running", exit_code: null, last_text: "", turns: 0, error: "", model_in_use: asked.model, agent: backend } };
     run.asked = asked; run.backend = backend; run.who = who; run.agyDir = agyDir; run.agyImage = agyImage;
     run.prefix = "[" + (FEATURE[mode] || mode) + (project ? " · " + project : "") + (shard ? " · luồng " + shard : "") + "] ";
-    cur = run;
+    cur = run; if (kind === "light") lightRuns.set(lightKey, (lightRuns.get(lightKey) || 0) + 1);
     try { writeFileSync(logFile, ""); } catch {}
     setModelLine(run, modelLineText(asked.model, asked.effort, true, backend));
     addLine(run, mode === "index" ? "Bắt đầu: " + who + " gắn nhãn kho ảnh bối cảnh (mã lượt " + runId + ")"

@@ -10,7 +10,7 @@ function Read-AgentLessons([string]$Path) {
     $body=$blocks[0].Groups['body'].Value
     $legacy=[regex]::Match($body,'(?ms)^```json\r?\n(?<json>.*?)^```')
     if($legacy.Success){
-        $records=@(ConvertFrom-Json -InputObject $legacy.Groups['json'].Value)
+        $records=@(foreach($parsedRecord in (ConvertFrom-Json -InputObject $legacy.Groups['json'].Value)){$parsedRecord})
     }else{
         $items=[regex]::Matches($body,'(?ms)^### (?<title>[^\r\n]+)\r?\n<!-- app-lesson: (?<meta>[^\r\n]+) -->\r?\n(?<text>.*?)(?=^### |\z)')
         if($items.Count -ne [regex]::Matches($body,'<!-- app-lesson:').Count){throw 'Incomplete Markdown lesson.'}

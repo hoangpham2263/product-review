@@ -449,12 +449,14 @@ function Select-OnlyFile($Rows, [scriptblock]$KeyOf) {
     if (-not $OnlyFile) { return @($Rows) }
     if (-not (Test-Path -LiteralPath $OnlyFile)) { Fail-Scan "-OnlyFile not found: $OnlyFile" 'BAD_ONLYFILE' }
     $keys = New-Object System.Collections.Generic.HashSet[string]
-    foreach ($u in @([IO.File]::ReadAllText($OnlyFile) | ConvertFrom-Json)) { [void]$keys.Add((Get-ScanUrlKey ([string]$u))) }
+    $parsed = [IO.File]::ReadAllText($OnlyFile).TrimStart([char]0xFEFF) | ConvertFrom-Json
+    foreach ($u in @(foreach ($one in $parsed) { $one })) { [void]$keys.Add((Get-ScanUrlKey ([string]$u))) }
     return @($Rows | Where-Object { $keys.Contains((Get-ScanUrlKey ([string](& $KeyOf $_)))) })
 }
+if ($Shard -and ($Shard -notmatch '^([1-4])/([1-4])$' -or [int]$Matches[1] -gt [int]$Matches[2])) { Fail-Scan '-Shard must look like 1/2 (slice k of n, n 1-4).' 'BAD_SHARD' }
 function Test-InShard([string]$Key) {
     if (-not $Shard) { return $true }
-    if ($Shard -notmatch '^([1-4])/([1-4])$' -or [int]$Matches[1] -gt [int]$Matches[2]) { Fail-Scan '-Shard must look like 1/2 (slice k of n, n 1-4).' 'BAD_SHARD' }
+    [void]($Shard -match '^([1-4])/([1-4])$')
     $k = [int]$Matches[1]; $n = [int]$Matches[2]
     $h = 0
     foreach ($c in $Key.ToCharArray()) { $h = ($h * 31 + [int]$c) % 1000003 }
@@ -704,7 +706,6 @@ try {
             Import-QueueLibs
             $dir = Get-ScanDir $ProjectId
             if (-not $Url) { Fail-Scan '-Url is required.' 'BAD_URL' }
-            $addLock = Enter-QueueAddLock
             if (-not $Group) { Fail-Scan '-Group is required (the library group the scenes come from).' 'BAD_GROUP' }
             $key = Get-ScanUrlKey $Url
             $row = @(Read-ScanRows (Join-Path $dir 'products.csv') | Where-Object { (Get-ScanUrlKey $_.product_url) -eq $key })
@@ -720,7 +721,7 @@ try {
             $handle = Get-Slug (([Uri]$row[0].product_url).Segments[-1].Trim('/')) 80
             $sceneDir = Join-Path (Get-SessionWorkspaceDir $ProjectRoot) "reference-inputs/$ProjectId-scenes"
             New-Item -ItemType Directory -Force -Path $sceneDir | Out-Null
-            $picked = @(); $number = 0; $seen = @()
+            $picked = @(); $number = 0; $seen = @(); $hashes = @{}
             foreach ($wantedName in $wanted) {
                 $number++
                 $photo = @($library | Where-Object { $_.name -eq $wantedName })
@@ -731,6 +732,7 @@ try {
                 if (@($picked | Where-Object { $_.sha256 -eq $sha }).Count) { Fail-Scan 'Two of the scenes are the same picture; pick different ones.' 'SAME_SCENE' }
                 # Visual checks (perceptual hash): the same photo re-saved under another name, or a scene another product already uses.
                 $sceneHash = Get-PHash $sceneSource ("lib:$Group/$($photo[0].name):$($photo[0].md5)")
+                $hashes[$wantedName] = $sceneHash
                 foreach ($other in $seen) {
                     $distance = Get-PHashDistance $sceneHash $other.hash
                     if ($distance -le $SceneSameDistance) { Save-PHashCache; Fail-Scan "[CAUSE:SCENE_DUPLICATE] $wantedName and $($other.name) are visually the same picture (hash distance $distance of 256); pick a different scene for one of them." 'SCENE_DUPLICATE' }
@@ -745,9 +747,20 @@ try {
                 if ((Get-FileHashText $target 'SHA256') -ne $sha) { Fail-Scan "Copy of $wantedName is damaged." 'SCENE_COPY' }
                 $picked += [pscustomobject]@{ file = $target; sha256 = $sha }
             }
-            [void](Add-QueueEntry $dir $row[0] $picked)
+            # The slow part (library downloads, hashes, copies) is done. The lock now covers only the final check + the queue write: another shard may have
+            # queued this link or taken one of these scenes meanwhile, so both are checked again here.
+            $addLock = Enter-QueueAddLock
+            try {
+                if ((Get-QueuedKeys).Contains($key)) { Save-PHashCache; Fail-Scan 'This link is already in the queue (urls.txt or references.json); it was left as it is.' 'ALREADY_QUEUED' }
+                if (-not $AllowReuse) {
+                    foreach ($wantedName in $wanted) {
+                        $reused = @(Find-UsedScenes $hashes[$wantedName] $Url)
+                        if ($reused.Count) { Save-PHashCache; Fail-Scan "[CAUSE:SCENE_REUSED] $wantedName was just taken by another product ($($reused[0].where): $($reused[0].url)); pick a scene no product uses (scenes list: used_count)." 'SCENE_REUSED' }
+                    }
+                }
+                [void](Add-QueueEntry $dir $row[0] $picked)
+            } finally { $addLock.Dispose() }
             Save-PHashCache
-            $addLock.Dispose()
             # Keep the stock coherent: the product's prepared row (a top-up, or none yet) becomes consumed with the scenes really queued.
             $consumedBy = if ($env:PR_SESSION) { $env:PR_SESSION } else { 'default' }
             [void](Use-PreparedLock $dir {

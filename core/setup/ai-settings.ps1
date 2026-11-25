@@ -48,7 +48,7 @@ function Get-AiModels([string]$ProjectRoot = '') {
         } catch { }
     }
     if ($cache -and (Test-Path -LiteralPath $cache)) {
-        try { return @(Get-Content -LiteralPath $cache -Raw -Encoding UTF8 | ConvertFrom-Json) } catch { }
+        try { return @(foreach ($cachedModel in (Get-Content -LiteralPath $cache -Raw -Encoding UTF8 | ConvertFrom-Json)) { $cachedModel }) } catch { }
     }
     return @()
 }
