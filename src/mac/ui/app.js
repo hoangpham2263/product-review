@@ -389,7 +389,12 @@ function buildMain() {
   const cardLog = at(el("div", "card"), 20, 484, null, null, { right: 24, bottom: 10 });
   cardLog.append(at(label("Tiến trình & thông báo"), 14, 10, 150, 20));
   // always-visible run line: which feature runs (or ran last), for which project, since when, last step
-  ui.runLine = at(label("", "muted"), 170, 10, null, 20, { right: 14 });
+  ui.runLine = at(label("", "muted"), 170, 10, null, 20, { right: 84 });
+  ui.btnDetail = at(button("Chi tiết"), null, 8, 64, 22, { right: 14, left: false });
+  Object.assign(ui.btnDetail.style, { fontSize: "11px", padding: "0 4px", minHeight: "0" });
+  ui.btnDetail.title = "Hiện tất cả dòng chi tiết của lượt chạy";
+  // ONE result line when a run ends (green done, amber partial / stopped, red failed): coloured left border, stays until the next run starts or Xóa thông báo
+  ui.resultBox = at(el("div", "result"), 14, 34, null, 26, { right: 14 }); ui.resultBox.hidden = true;
   Object.assign(ui.runLine.style, { whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", fontSize: "11px", lineHeight: "20px" });
   cardLog.append(ui.runLine);
   setTimeout(refreshRunLine, 500);
@@ -397,19 +402,66 @@ function buildMain() {
   ui.bar.append(el("span"));
   ui.lblProgress = at(label("Thêm sản phẩm và ảnh đi kèm để bắt đầu."), 14, 50, null, 24, { right: 14 });
   ui.lblProgress.style.lineHeight = "24px";
+  // the log shows only meaningful events (coloured status words / icons); the raw lines, nothing lost, are behind "Chi tiết"
+  ui.logView = at(el("div", "logview"), 14, 80, null, null, { right: 14, bottom: 12 });
   ui.txtLog = at(el("textarea", "text", { readOnly: true }), 14, 80, null, null, { right: 14, bottom: 12 });
-  cardLog.append(ui.bar, ui.lblProgress, ui.txtLog);
+  ui.txtLog.hidden = true;
+  ui.btnDetail.onclick = () => { ui.showDetail = !ui.showDetail; ui.txtLog.hidden = !ui.showDetail; ui.logView.hidden = !!ui.showDetail; ui.btnDetail.textContent = ui.showDetail ? "Gọn" : "Chi tiết"; };
+  cardLog.append(ui.runLine, ui.btnDetail, ui.resultBox, ui.bar, ui.lblProgress, ui.logView, ui.txtLog);
+  layoutLog(false);
 
   c.append(header, cardList, cardRun, cardLog);
 }
 
-function appendLog(text) { if (text) { ui.txtLog.value += text + "\n"; ui.txtLog.scrollTop = ui.txtLog.scrollHeight; } }
+// ----- log: clean view + raw details, and the result line -----
+const NOISE = /Đọc dữ liệu của lượt chạy|Chạy lệnh của công cụ|Xem ảnh sản phẩm|Xem tấm ảnh ghép|Xem ảnh để lập|Kiểm tra bảng dự án|Ghi file tạm|^Đang xử lý:|Kiểm tra tab trình duyệt|Đọc nội dung trang|Chờ trang tải|Mở trang Google Flow|Mở trang web|Bấm (nút )?trên|Nhập (nội dung )?(vào )?(Flow|trang)|Nhấn phím|Chờ Flow xử lý|Thao tác trên|Chụp (màn hình|ảnh trang)|Đọc trạng thái trang|Tải ảnh tham chiếu|Chờ nhịp rồi gửi|Khóa \/ mở khóa tải|Chuẩn bị nội dung gửi|Lưu ngữ cảnh sản phẩm|Lấy (lô|danh sách|ảnh)|Xem danh sách ảnh|Antigravity (đã xử lý xong các bước|tạo ảnh$)|(Claude|Antigravity) đã xử lý xong các bước|Lượt chạy kết thúc|Lượt chạy dừng vì lỗi|Lượt chạy: /;
+const KEEP = /⚠|✖|Lỗi|lỗi|Bắt đầu|Model đang dùng|Mục \d|Hoàn tất|thử lại|Chi tiết lỗi|Ngữ cảnh|Review|Chia việc/;
+const isNoise = (line) => {
+  const msg = line.replace(/^\S+\s+(\[[^\]]*\]\s*)?/, "");
+  if (/^(Claude|Antigravity): /.test(msg)) return msg.length > 140 || /^(Claude|Antigravity): ([#*|>-]|\d+\.|-)/.test(msg); // the agent's long markdown summary stays under Chi tiết
+  if (KEEP.test(msg) && !/Mục \d+ · (Chờ nhịp|Chuẩn bị nội dung|Lưu ngữ cảnh)/.test(msg)) return false;
+  return NOISE.test(msg) || /\(×\d+\)\s*$/.test(msg);
+};
+const esc = (t) => t.replace(/&/g, "&amp;").replace(/</g, "&lt;");
+function paintLine(line) {
+  const m = line.match(/^(\S+\s+(?:\[[^\]]*\]\s*)?)([\s\S]*)$/), head = m ? m[1] : "", body = m ? m[2] : line;
+  const html = esc(head) + esc(body).replace(/(✔|Xong|Hoàn tất)/g, '<b class="ok">$1</b>').replace(/(⚠|Đã dừng|Xong một phần|thử lại)/g, '<b class="warn">$1</b>').replace(/(✖|Lỗi|lỗi|Chi tiết lỗi)/g, '<b class="bad">$1</b>').replace(/(Bắt đầu|Model đang dùng)/g, '<b class="info">$1</b>');
+  return '<div>' + html + '</div>';
+}
+function setLog(lines) {
+  const list = (lines || []).filter(Boolean);
+  ui.txtLog.value = list.join("\n"); ui.txtLog.scrollTop = ui.txtLog.scrollHeight;
+  ui.logView.innerHTML = list.filter((l) => !isNoise(l)).map(paintLine).join("");
+  ui.logView.scrollTop = ui.logView.scrollHeight;
+}
+function clearLogs() { ui.txtLog.value = ""; ui.logView.innerHTML = ""; }
+function appendLog(text) { if (text) { ui.txtLog.value += text + "\n"; ui.txtLog.scrollTop = ui.txtLog.scrollHeight; ui.logView.insertAdjacentHTML("beforeend", paintLine(text)); ui.logView.scrollTop = ui.logView.scrollHeight; } }
+function layoutLog(withResult) {
+  const d = withResult ? 32 : 0;
+  ui.bar.style.top = 36 + d + "px"; ui.lblProgress.style.top = 50 + d + "px"; ui.logView.style.top = ui.txtLog.style.top = 80 + d + "px";
+}
+function showResult(r) {
+  ui.resultBox.className = "result " + r.level;
+  ui.resultBox.textContent = r.text;
+  ui.resultBox.title = (r.name ? r.name + ": " : "") + r.text; ui.resultBox.hidden = false; ui.resultKey = r.key || "";
+  layoutLog(true);
+}
+function hideResult() { if (ui.resultBox.hidden) return; ui.resultBox.hidden = true; layoutLog(false); }
+// The result of the last finished run (any type, also one started from a popup); gone while something runs.
+function syncResult(rs) {
+  if (run.active || (rs.running && rs.running.length)) { hideResult(); ui.resultDismissed = ""; return; }
+  const r = rs.last && rs.last.result;
+  if (!r || ui.resultDismissed === r.key || ui.resultKey === r.key) return;
+  showResult(r);
+}
 function setStatus(text, color) { ui.lblStatus.textContent = text; ui.lblStatus.style.color = color || "var(--muted)"; }
 function countUrls() { return new Set(state.rows.map((r) => r.url.trim()).filter(Boolean)).size; }
 function updateStatus() { if (!run.active) setStatus(`Sẵn sàng • ${countUrls()} sản phẩm`); }
-function setBar(value, max, marquee = false, fail = false) {
+function setBar(value, max, marquee = false, fail = false, state = "") {
   ui.bar.classList.toggle("marquee", marquee);
   ui.bar.classList.toggle("fail", fail);
+  ui.bar.classList.toggle("done", state === "done");
+  ui.bar.classList.toggle("warn", state === "warn");
   ui.bar.firstChild.style.width = marquee ? "" : `${Math.min(100, (value / Math.max(1, max)) * 100)}%`;
 }
 
@@ -497,7 +549,7 @@ function showOtherProgress(rs) {
   if (ui.extProgress && rs.last && rs.last.mode !== "flow" && rs.last.kind !== "codex") {
     const pr = rs.last.progress || { total: 0, done: 0, label: (rs.last.feature || "") + ": " + clock(rs.last.elapsed_s || 0) }, ok = rs.last.status === "done";
     ui.extProgress = false;
-    setBar(ok ? 1 : pr.total > 0 ? pr.done : 0, ok || !(pr.total > 0) ? 1 : pr.total, false, rs.last.status === "failed");
+    setBar(ok ? 1 : pr.total > 0 ? pr.done : 0, ok || !(pr.total > 0) ? 1 : pr.total, false, rs.last.status === "failed", ok ? "done" : rs.last.status === "stopped" ? "warn" : "");
     ui.lblProgress.textContent = (pr.label || "").replace(/ · \d\d:\d\d.*$/, "") + (ok ? " • xong" : rs.last.status === "stopped" ? " • đã dừng" : " • chưa hoàn tất");
   }
 }
@@ -508,6 +560,7 @@ async function refreshRunLine() {
   ui.runLine.textContent = lines.join("  |  ");
   ui.runLine.title = lines.join("\n");
   showOtherProgress(rs);
+  syncResult(rs);
   ui.runLine.style.color = rs.running && rs.running.length ? "var(--accent)" : !rs.last ? "var(--muted)" : rs.last.status === "done" ? "var(--ok)" : rs.last.status === "stopped" ? "var(--muted)" : "var(--error)";
   return rs;
 }
@@ -1763,7 +1816,7 @@ async function startBatch() {
   try { await saveQueue(true); } catch (e) { return appendLog(e.message); }
   if (!countUrls()) return messageBox("Vui lòng thêm ít nhất một link sản phẩm.");
   if (!state.codex) return messageBox('Chưa có công cụ xử lý. Bấm "Cấu hình" để xem hướng dẫn.');
-  ui.txtLog.value = "";
+  clearLogs();
   Object.assign(run, { since: 0, total: countUrls(), done: 0, index: 0, stages: new Map(), jobRows: [], stage: "Đang chuẩn bị", stopped: false, failure: false, started: Date.now(), resultFolder: "", tokens: { in: 0, cached: 0, out: 0 }, calls: {} });
   updateUsage();
   for (const r of state.rows) r.stage = null;
@@ -1828,7 +1881,7 @@ async function startAgent() {
   try { await saveQueue(true); } catch (e) { return appendLog(e.message); }
   if (!countUrls()) return messageBox("Vui lòng thêm ít nhất một link sản phẩm.");
   if (!(await flowPreflight())) return;
-  ui.txtLog.value = "";
+  clearLogs();
   const r = await fetch("/api/agent/run", { method: "POST", body: JSON.stringify({ text: cfg.text }) });
   if (!r.ok) { const body = await r.json().catch(() => ({})); return appendLog("Chưa khởi động được " + agentName() + ": " + (body.error || r.status)); }
   attachAgent(Date.now());
@@ -1844,7 +1897,7 @@ async function resumeRun() {
   if (!ui.resumeRun) return;
   if (!isFlow(cfg.image)) return appendLog("Chạy tiếp chỉ dùng khi Tạo ảnh = Claude (Flow), Antigravity hoặc Antigravity (Flow) (chọn trong Cấu hình). Với Codex, bấm Bắt đầu: các link đã xong tự rời hàng chờ.");
   if (!(await flowPreflight())) return;
-  ui.txtLog.value = "";
+  clearLogs();
   const r = await fetch("/api/agent/run", { method: "POST", body: JSON.stringify({ run: ui.resumeRun }) });
   if (!r.ok) { const body = await r.json().catch(() => ({})); return appendLog("Chưa chạy tiếp được: " + (body.error || r.status)); }
   ui.resumeRun = "";
@@ -1874,7 +1927,7 @@ async function pollAgent() {
     run.lastProgress = st.progress || run.lastProgress;
     if (st.progress && st.progress.total > 0) { setBar(st.progress.done, st.progress.total); ui.lblProgress.textContent = st.progress.label; }
     else { setBar(0, 1, true); ui.lblProgress.textContent = st.progress && st.progress.label ? st.progress.label : `${runAi(st)} đang chuẩn bị…  •  ${time}`; }
-    ui.txtLog.value = (st.tail || []).join("\n"); ui.txtLog.scrollTop = ui.txtLog.scrollHeight;
+    setLog(st.tail || []);
     if (!st.active) return finishAgent(st);
   } catch {}
   setTimeout(pollAgent, 1500);
@@ -1890,7 +1943,8 @@ async function finishAgent(st) {
   const pending = run.resultFolder ? await api("pending", { batch: run.resultFolder }).catch(() => 0) : 0;
   // The run is over: stop the moving bar (full when finished, empty otherwise) and show a clean line, not Claude's last chat text.
   const lp = st.progress || run.lastProgress, counted = lp && lp.total > 0;
-  setBar(st.status === "done" ? 1 : counted ? lp.done : 0, st.status === "done" || !counted ? 1 : lp.total, false, st.status === "failed");
+  setBar(st.status === "done" ? 1 : counted ? lp.done : 0, st.status === "done" || !counted ? 1 : lp.total, false, st.status === "failed", st.status === "done" ? "done" : st.status === "stopped" ? "warn" : "");
+  setTimeout(refreshRunLine, 300);
   const secs = Math.floor((Date.now() - run.started) / 1000);
   const took = `${Math.floor(secs / 60)} phút ${secs % 60} giây`;
   const counts = lp && lp.label ? lp.label.replace(/ · \d\d:\d\d.*$/, "") : "";
@@ -1924,6 +1978,8 @@ async function finish(r) {
   refreshQuota();
   const elapsed = Math.floor((Date.now() - run.started) / 1000);
   ui.lblProgress.textContent = `Đã xong ${run.done}/${run.total} ảnh • ${Math.floor(elapsed / 60)} phút ${elapsed % 60} giây • ${run.ai}`;
+  { const ok = !r.stopped && r.exitCode === 0 && !run.failure, took = elapsed < 90 ? elapsed + " giây" : Math.round(elapsed / 60) + " phút";
+    showResult({ level: r.stopped ? "warn" : ok ? (run.done < run.total ? "warn" : "ok") : "error", name: "Tạo ảnh & review (Codex)", text: r.stopped ? "Đã dừng · " + run.done + "/" + run.total + " ảnh" : ok ? "Xong · " + run.done + "/" + run.total + " ảnh · " + took : "Lỗi · " + run.done + "/" + run.total + " ảnh xong, một số sản phẩm chưa hoàn tất", key: "codex|" + Date.now() }); }
   if (r.stopped) { setStatus("Đã dừng", "var(--muted)"); appendLog("Đã dừng. Các link chưa hoàn tất được giữ lại."); }
   else if (r.exitCode === 0 && !run.failure) {
     setStatus("✔ Hoàn tất", "var(--ok)");
@@ -1977,7 +2033,7 @@ function wire() {
       reset();
     }, 700);
   };
-  ui.btnClearLog.onclick = () => { ui.txtLog.value = ""; };
+  ui.btnClearLog.onclick = () => { clearLogs(); if (!ui.resultBox.hidden) { ui.resultDismissed = ui.resultKey; hideResult(); } };
   // Kết quả = the Loox files Duyệt & xuất file made, one per export, named by time (workspace/exports). Each run keeps its own images in workspace/output/<run>.
   ui.btnOut.onclick = () => api("openPath", { path: state.exports });
   ui.btnReview.onclick = async () => { if (!run.active) { await showReviewDialog(); updateReviewButton(); } };

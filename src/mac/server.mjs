@@ -523,7 +523,7 @@ function progressOf(st) {
       const fin = ids.filter((id) => rows.some((r) => String(r.photo_path || "").replace(/\\/g, "/").split("/").pop().replace(/\.[^.]+$/, "") === id)).length;
       const cur = ids.find((id) => !has(join(dir, "images", id + ".png"))) || ids.find((id) => !has(join(dir, "logs", id + "-review.txt")) && !has(join(dir, "logs", id + "-agent-review.json")));
       const curText = cur && st.active ? " · Mục " + (String(cur).match(/^\d+/) || [cur])[0] : "";
-      return { done: ctxN + img + rev, total: 3 * n, label: "Ngữ cảnh " + ctxN + "/" + n + " · Ảnh " + img + "/" + n + " · Review" + (reviewAiOf() !== "auto" ? " (" + REVIEW_AI_NAME[reviewAiOf()] + ")" : "") + " " + rev + "/" + n + " · Hoàn tất " + fin + "/" + n + " · " + t + curText + eta(st, fin, n) };
+      return { nums: { img, rev, fin, n, ctx: ctxN }, done: ctxN + img + rev, total: 3 * n, label: "Ngữ cảnh " + ctxN + "/" + n + " · Ảnh " + img + "/" + n + " · Review" + (reviewAiOf() !== "auto" ? " (" + REVIEW_AI_NAME[reviewAiOf()] + ")" : "") + " " + rev + "/" + n + " · Hoàn tất " + fin + "/" + n + " · " + t + curText + eta(st, fin, n) };
     }
     if (st.mode === "scan") {
       const sc = scanOfRun(st.run_id);
@@ -531,28 +531,53 @@ function progressOf(st) {
       let total = 0;
       try { const mf = join(sc.dir, "menu.json"); if (statSync(mf).mtimeMs >= started - 3000) { const m = rj(mf); total = Array.isArray(m) ? m.length : 0; } } catch {}
       const session = rj(join(sc.dir, "session.json")), done = Object.keys(session.added || {}).length;
-      return { done, total, label: total ? "Danh mục " + Math.min(done, total) + "/" + total + " · " + (sc.added || 0) + " sản phẩm · " + t + eta(st, done, total) : "Đang đọc menu · " + t };
+      return { nums: { done, total, found: sc.added || 0 }, done, total, label: total ? "Danh mục " + Math.min(done, total) + "/" + total + " · " + (sc.added || 0) + " sản phẩm · " + t + eta(st, done, total) : "Đang đọc menu · " + t };
     }
     if (st.mode === "reviews") {
       const rows = productRows(st.project), total = rows.length, done = rows.filter((r) => stampMs(r.checked) >= started - 1000).length;
-      return { done, total, label: "Đã kiểm tra " + done + "/" + total + " link · " + t + eta(st, done, total) };
+      return { nums: { done, total }, done, total, label: "Đã kiểm tra " + done + "/" + total + " link · " + t + eta(st, done, total) };
     }
     if (st.mode === "queue" && queueOrder && queueOrder.project === st.project) {
       const done = orderAdded();
-      return { done, total: queueOrder.total, label: "Hàng chờ: đã thêm " + done + "/" + queueOrder.total + shards + " · " + t + eta(st, done, queueOrder.total) };
+      return { nums: { done, total: queueOrder.total }, done, total: queueOrder.total, label: "Hàng chờ: đã thêm " + done + "/" + queueOrder.total + shards + " · " + t + eta(st, done, queueOrder.total) };
     }
     if (st.mode === "prep" && prepMeta && prepMeta.project === st.project) {
       let done = 0;
       try { const lines = readFileSync(join(sharedWs, "projects", st.project, "prepared.csv"), "utf8").replace(/^\uFEFF/, "").split(/\r?\n/).filter((l) => l.trim()); const head = csvCells(lines[0]), at = head.indexOf("prepared_at"); for (const l of lines.slice(1)) if (at >= 0 && stampMs(csvCells(l)[at]) >= prepMeta.startedMs - 1000) done++; } catch {}
-      return { done, total: prepMeta.total, label: "Chuẩn bị trước: " + done + (prepMeta.total ? "/" + prepMeta.total : " sản phẩm") + shards + " · " + t + (prepMeta.total ? eta(st, done, prepMeta.total) : "") };
+      return { nums: { done, total: prepMeta.total }, done, total: prepMeta.total, label: "Chuẩn bị trước: " + done + (prepMeta.total ? "/" + prepMeta.total : " sản phẩm") + shards + " · " + t + (prepMeta.total ? eta(st, done, prepMeta.total) : "") };
     }
     if (st.mode === "index" && indexMeta) {
       let n = 0; try { n = Object.keys(rj(join(sharedWs, "source-photos", "scene-index.json"))).length; } catch {}
       const done = Math.max(0, n - indexMeta.base);
-      return { done, total: 0, label: "Gắn nhãn kho ảnh: +" + done + " ảnh" + shards + " · " + t };
+      return { nums: { done }, done, total: 0, label: "Gắn nhãn kho ảnh: +" + done + " ảnh" + shards + " · " + t };
     }
   } catch {}
   return null;
+}
+// The ONE result line of a finished run (any run type): { level: ok | warn | error, text, name, key }. Numbers come from the same facts on disk as the progress.
+const humanError = (e) => String(e || "").replace(/\[CAUSE:[A-Z_]+\]\s*/g, "").replace(/\s+/g, " ").trim();
+function resultOf(st) {
+  if (!st || !st.status || st.status === "idle" || st.status === "running" || st.active) return null;
+  const pr = progressOf(st), nm = (pr && pr.nums) || {}, sec = st.elapsed_s || 0;
+  const dur = sec < 90 ? Math.max(1, sec) + " giây" : Math.round(sec / 60) + " phút";
+  let level = st.status === "done" ? "ok" : st.status === "stopped" ? "warn" : "error", body = "";
+  switch (st.mode) {
+    case "flow": body = nm.n ? (level === "ok" ? nm.img + "/" + nm.n + " ảnh · " + nm.rev + " review" : "ảnh " + nm.img + "/" + nm.n + " · review " + nm.rev + "/" + nm.n) : ""; if (level === "ok" && nm.n && nm.img < nm.n) level = "warn"; break;
+    case "scan": body = nm.total !== undefined ? (level === "ok" ? "Quét: " + nm.found + " sản phẩm / " + nm.done + " danh mục" : "Quét " + nm.done + "/" + nm.total + " danh mục") : ""; break;
+    case "reviews": body = nm.total !== undefined ? (level === "ok" ? "Review: " + nm.done + " link đã kiểm tra" : "Review " + nm.done + "/" + nm.total) : ""; break;
+    case "queue": body = nm.total !== undefined ? "Thêm vào hàng chờ " + nm.done + "/" + nm.total : "Thêm vào hàng chờ"; if (level === "ok" && nm.total && nm.done < nm.total) level = "warn"; break;
+    case "prep": body = nm.done !== undefined ? "Chuẩn bị " + nm.done + (nm.total && level !== "ok" ? "/" + nm.total : "") + " sản phẩm" : "Chuẩn bị trước"; break;
+    case "index": body = nm.done !== undefined ? "Gắn nhãn +" + nm.done + " ảnh" : "Gắn nhãn kho ảnh"; break;
+    default: body = "";
+  }
+  let text;
+  if (st.status === "failed") {
+    const err = humanError(st.error);
+    const cause = /CAUSE:QUOTA/.test(st.error || "") ? "Antigravity báo model quá tải" + (st.quota_reset ? ", thử lại lúc " + new Date(st.quota_reset).toTimeString().slice(0, 5) : "") : err.slice(0, 140) || "không rõ nguyên nhân";
+    text = "Lỗi · " + cause + (body ? " · " + body : "");
+  } else if (level === "warn" && st.status === "stopped") text = "Đã dừng" + (body ? " · " + body : "");
+  else text = (level === "warn" ? "Xong một phần · " : "Xong · ") + (body ? body + " · " : "") + dur;
+  return { level, text, name: FEATURE[st.mode] || st.mode, key: st.run_id + "|" + (st.updated || st.started || "") };
 }
 const withProgress = (st) => ({ ...st, progress: progressOf(st) });
 // The shard files of a sharded run are removed when no light run is active any more (only the ones this server wrote).
@@ -895,12 +920,12 @@ async function handle(req, res) {
   // ONE status for the run line of every view: what runs now (main runner, light runner, the Codex Bắt đầu run) and the last finished run.
   if (path === "/api/runs/status" && req.method === "GET") {
     const view = (st, kind) => ({ kind, feature: FEATURE[st.mode] || st.mode, mode: st.mode, project: st.project ? projectNameOf(st.project) : "", active: !!st.active, elapsed_s: st.elapsed_s || 0,
-      last_text: st.last_text || "", status: st.status, error: st.error || "", started: st.started || "", updated: st.updated || "", progress: progressOf(st) });
+      last_text: st.last_text || "", status: st.status, error: st.error || "", started: st.started || "", updated: st.updated || "", progress: progressOf(st), result: resultOf(st) });
     const m = agent.status(), l = light.status(), running = [];
     if (run.proc) running.push({ kind: "codex", feature: FEATURE.flow, mode: "flow", project: selfProject() ? projectNameOf(selfProject()) : "", active: true, elapsed_s: Math.round((Date.now() - (run.startedAt || Date.now())) / 1000), last_text: "", status: "running", error: "" });
     if (m.active) running.push(view(m, "main"));
     if (l.active) running.push(view(l, "light"));
-    const done = [[m, "main"], [l, "light"]].filter(([s]) => !s.active && s.started && s.status && s.status !== "idle").map(([s, k]) => view(s, k)).sort((a, b) => String(b.updated || b.started).localeCompare(String(a.updated || a.started)));
+    const done = [[m, "main"], [l, "light"]].filter(([s]) => !s.active && s.started && s.status && s.status !== "idle" && s.mode !== "ctx" && s.mode !== "rev").map(([s, k]) => view(s, k)).sort((a, b) => String(b.updated || b.started).localeCompare(String(a.updated || a.started)));
     return send(res, 200, { running, last: done[0] || null });
   }
   if (path === "/api/light/status" && req.method === "GET") return send(res, 200, { ...withProgress(light.status()), light: true });
