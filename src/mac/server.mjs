@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { randomUUID, createHash } from "node:crypto";
 import { createConfigApi } from "../../core/setup/config-api.mjs";
-import { createAgentRunner, buildPrompt, newRunId, readFlowAccount, FEATURE, CLAUDE_MODEL_GROUPS, CLAUDE_DEFAULT_MODEL, isClaudeModel, CLAUDE_EFFORTS } from "../../core/setup/agent-run.mjs";
+import { createAgentRunner, buildPrompt, newRunId, readFlowAccount, FEATURE, CLAUDE_MODEL_GROUPS, CLAUDE_DEFAULT_MODEL, isClaudeModel, CLAUDE_EFFORTS, AGENT_BACKENDS, AGY_EFFORTS, isAgyModel, listAgyModels } from "../../core/setup/agent-run.mjs";
 import { readFlowBrowser, saveFlowBrowser, localChromeProfiles, tokenProfiles, saveExtensionToken, followFlowAccount } from "../../core/setup/flow-browser.mjs";
 import { currentSession, sessionLabel, sessionWorkspace, sharedWorkspace, registerSession, updateSession, unregisterSession, listSessions, lockHolder, releaseLocks, peekGroup, sessionTitle, profileLabelOf, projectBusyBy, setSessionProject, claimProjectFocus, readSeededJson, updateJsonLocked, SESSION_RE } from "../../core/setup/session.mjs";
 import { createFlowLogin, profileDirOf, profileGoogleAccounts, findChrome, flowOpenUrl, WINDOW_ARGS } from "../../core/setup/flow-login.mjs";
@@ -404,6 +404,9 @@ async function handle(req, res) {
       delete s2.runMode;
       if (!isClaudeModel(s2.claudeModel)) s2.claudeModel = CLAUDE_DEFAULT_MODEL;
       s2.claudeModelGroups = CLAUDE_MODEL_GROUPS;
+      if (!AGENT_BACKENDS.includes(s2.agentBackend)) s2.agentBackend = "claude";
+      if (s2.agyModel && !isAgyModel(s2.agyModel)) delete s2.agyModel;
+      s2.agyModelGroups = await listAgyModels();
       s2.flowAccounts = flowAccountsFor(readFlowBrowser(workspace, sharedWs));
       return send(res, 200, s2);
     }
@@ -416,6 +419,9 @@ async function handle(req, res) {
         if (["codex", "agent"].includes(given.imageBackend)) cur.imageBackend = given.imageBackend;
         if (typeof given.claudeModel === "string") { if (!given.claudeModel) delete cur.claudeModel; else if (isClaudeModel(given.claudeModel)) cur.claudeModel = given.claudeModel; }
         if (typeof given.claudeEffort === "string") { if (!given.claudeEffort) delete cur.claudeEffort; else if (CLAUDE_EFFORTS.includes(given.claudeEffort)) cur.claudeEffort = given.claudeEffort; }
+        if (AGENT_BACKENDS.includes(given.agentBackend)) cur.agentBackend = given.agentBackend;
+        if (typeof given.agyModel === "string") { if (!given.agyModel) delete cur.agyModel; else if (isAgyModel(given.agyModel)) cur.agyModel = given.agyModel; }
+        if (typeof given.agyEffort === "string") { if (!given.agyEffort) delete cur.agyEffort; else if (AGY_EFFORTS.includes(given.agyEffort)) cur.agyEffort = given.agyEffort; }
         if (typeof given.flowAccount === "string") { const v = given.flowAccount.trim(); if (!v) delete cur.flowAccount; else if (v.length <= 120 && /^[^\s@"<>]+@[^\s@"<>]+\.[^\s@"<>]+$/.test(v)) cur.flowAccount = v; }
         // the two separate pairs of the Dự án popup: Thêm vào hàng chờ (count 1-200, scenes 1-4) and Chuẩn bị trước (count 0-500, 0 = all; scenes 1-4)
         const int = (v, lo, hi) => (Number.isInteger(v) && v >= lo && v <= hi ? v : undefined);

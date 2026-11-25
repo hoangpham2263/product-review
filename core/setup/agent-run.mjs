@@ -1,11 +1,11 @@
 // Agent mode: starts Claude Code headless (`claude -p`) to drive Google Flow (Playwright MCP) and write the reviews.
 // One run at a time (one browser, one agent). The prompt goes to STDIN, never argv. Nothing secret is stored: only assistant
 // text and tool NAMES are kept, scrubbed and cut (never tool inputs or results).
-import { spawn, spawnSync, execFileSync } from "node:child_process";
+import { spawn, spawnSync, execFileSync, execFile } from "node:child_process";
 import { mkdirSync, readFileSync, writeFileSync, appendFileSync, rmSync, existsSync, readdirSync } from "node:fs";
 import { join } from "node:path";
 import { randomBytes } from "node:crypto";
-import { platform as osPlatform } from "node:os";
+import { platform as osPlatform, tmpdir, homedir } from "node:os";
 import { localChromeProfiles, extensionToken } from "./flow-browser.mjs";
 import { WINDOW_SIZE } from "./flow-login.mjs";
 import { claimLock, releaseLocks, takeGroup, sessionLabel, readSeededJson } from "./session.mjs";
@@ -182,9 +182,9 @@ export function claudeModelName(id) {
   for (const g of CLAUDE_MODEL_GROUPS) { const m = g.models.find((x) => x.id === id); if (m) return m.label.split(" · ")[0]; }
   return "";
 }
-export function modelLineText(id, effort, provisional = false) {
-  const name = claudeModelName(id);
-  return "Model đang dùng: " + id + (name && name !== id ? " (" + name + ")" : "") + " · mức suy nghĩ: " + (EFFORT_VI[effort] || "mặc định") + (provisional ? " (theo cài đặt, đang chờ Claude xác nhận)" : "");
+export function modelLineText(id, effort, provisional = false, backend = "claude") {
+  const agy = backend === "antigravity", name = agy ? "" : claudeModelName(id);
+  return "Model đang dùng: " + (id || (agy ? "mặc định của Antigravity" : "")) + (name && name !== id ? " (" + name + ")" : "") + " · mức suy nghĩ: " + (EFFORT_VI[effort] || "mặc định") + (provisional ? ` (theo cài đặt, đang chờ ${AGENT_NAME[backend] || "Claude"} xác nhận)` : "");
 }
 // The setting may be an alias ("haiku") or carry a suffix ("[1m]"): that still counts as the same model.
 export function modelMatches(asked, actual) {
@@ -192,6 +192,86 @@ export function modelMatches(asked, actual) {
   const a = String(asked).replace(/\[.*\]$/, ""), b = String(actual).replace(/\[.*\]$/, "");
   return a === b || b.includes(a);
 }
+// ---- Agent backend: "claude" (Claude Code CLI) or "antigravity" (Google Antigravity CLI `agy`), chosen in Cấu hình (run-settings.json agentBackend).
+// One runner serves both: only the spawn line, the per-run MCP wiring and the stream parser differ.
+export const AGENT_BACKENDS = ["claude", "antigravity"];
+export const AGENT_NAME = { claude: "Claude", antigravity: "Antigravity" };
+export const AGY_MODEL_RE = /^[A-Za-z0-9._\-]{1,60}$/;
+export const AGY_EFFORTS = ["low", "medium", "high", "xhigh", "max"];
+// "" = no --model flag: agy uses its own default and the run reports the model agy says it runs (init event).
+export const AGY_DEFAULT_MODEL = "";
+// The plugin + server name of the per-run Playwright MCP; agy exposes its tools as call_mcp_tool(ServerName "<plugin>_<server>", ToolName "browser_*").
+export const AGY_PLUGIN = "prreview", AGY_SERVER = "flow", AGY_MCP_SERVER = AGY_PLUGIN + "_" + AGY_SERVER;
+// Checked with `agy models` on agy 1.5.16; used only when the live list cannot be read.
+const AGY_FALLBACK = [
+  ["gemini-4-neon-high", "Gemini 4 Neon (High)"], ["gemini-4-neon-xhigh", "Gemini 4 Neon (XHigh)"], ["gemini-4-neon-medium", "Gemini 4 Neon (Medium)"], ["gemini-4-neon-low", "Gemini 4 Neon (Low)"],
+  ["gemini-4-carbon-high", "Gemini 4 Carbon (High)"], ["gemini-4-carbon-medium", "Gemini 4 Carbon (Medium)"], ["gemini-4-carbon-low", "Gemini 4 Carbon (Low)"],
+  ["gemini-4-argon-high", "Gemini 4 Argon (High)"], ["gemini-4-argon-medium", "Gemini 4 Argon (Medium)"], ["gemini-4-argon-low", "Gemini 4 Argon (Low)"],
+  ["gemini-4-hydrogen-high", "Gemini 4 Hydrogen (High)"], ["gemini-4-hydrogen-xhigh", "Gemini 4 Hydrogen (XHigh)"], ["gemini-4-hydrogen-medium", "Gemini 4 Hydrogen (Medium)"], ["gemini-4-hydrogen-low", "Gemini 4 Hydrogen (Low)"],
+  ["gemini-pro-orchestrator-neon", "Orchestrator (Neon)"], ["gemini-pro-orchestrator", "Orchestrator (Carbon)"], ["gemini-pro-orchestrator-argon", "Orchestrator (Argon)"],
+  ["gemini-3.8-flash-high", "Gemini 3.8 Flash (High)"], ["gemini-3.8-flash-medium", "Gemini 3.8 Flash (Medium)"], ["gemini-3.8-flash-low", "Gemini 3.8 Flash (Low)"],
+  ["claude-sonnet-4-6", "Claude Sonnet 4.6 (Thinking)"], ["claude-opus-4-6-thinking", "Claude Opus 4.6 (Thinking)"], ["gpt-oss-120b-medium", "GPT-OSS 120B (Medium)"],
+];
+// Same shape as CLAUDE_MODEL_GROUPS: [{family, note, models:[{id,label}]}], grouped by the model family in its id.
+export function groupAgyModels(pairs) {
+  const fams = [["Gemini 4", /^gemini-4-/, "Gemini mới nhất, mức suy nghĩ nằm trong tên model"], ["Orchestrator", /orchestrator/, "Điều phối nhiều bước"], ["Gemini 3.8", /^gemini-3/, "Nhẹ, nhanh"], ["Claude", /^claude-/, "Claude chạy qua Antigravity"], ["Khác", /./, ""]];
+  const out = fams.map(([family, re, note]) => ({ family, re, note, models: [] }));
+  for (const [id, name] of pairs) { const g = out.find((f) => f.re.test(id)); g.models.push({ id, label: `${name} · ${id}` }); }
+  return out.filter((g) => g.models.length).map(({ family, note, models }) => ({ family, note, models }));
+}
+export function parseAgyModels(text) {
+  const pairs = [];
+  for (const line of String(text || "").split(/\r?\n/)) { const m = line.match(/^([A-Za-z0-9._-]+)\t+(.+?)\s*$/); if (m && AGY_MODEL_RE.test(m[1])) pairs.push([m[1], m[2]]); }
+  return pairs;
+}
+let agyModelCache = { at: 0, groups: null };
+// `agy models` (live, cached 10 minutes); the static list when agy is missing, not signed in or too slow.
+export async function listAgyModels({ find = () => findAgy(), run = (path) => new Promise((res, rej) => execFile(path, ["models"], { timeout: 20000, windowsHide: true, encoding: "utf8" }, (e, out) => (e ? rej(e) : res(out)))), now = Date.now(), force = false } = {}) {
+  if (!force && agyModelCache.groups && now - agyModelCache.at < 600000) return agyModelCache.groups;
+  try {
+    const found = find();
+    if (found?.found) { const pairs = parseAgyModels(await run(found.path)); if (pairs.length) { agyModelCache = { at: now, groups: groupAgyModels(pairs) }; return agyModelCache.groups; } }
+  } catch {}
+  return groupAgyModels(AGY_FALLBACK);
+}
+export const isAgyModel = (v) => typeof v === "string" && AGY_MODEL_RE.test(v);
+export function readAgentSettings(workspaceDir, seedDir = "") {
+  try {
+    const f = (d) => join(d, "config", "run-settings.json");
+    const s = readSeededJson(f(workspaceDir), seedDir ? f(seedDir) : "", {});
+    return { backend: AGENT_BACKENDS.includes(s.agentBackend) ? s.agentBackend : "claude", agyModel: isAgyModel(s.agyModel) ? s.agyModel : AGY_DEFAULT_MODEL, agyEffort: AGY_EFFORTS.includes(s.agyEffort) ? s.agyEffort : "" };
+  } catch { return { backend: "claude", agyModel: AGY_DEFAULT_MODEL, agyEffort: "" }; }
+}
+// The Antigravity CLI: env PR_AGY_CLI, else the first `agy` on PATH, else its default install folders.
+export function findAgy(plat = osPlatform()) {
+  const given = process.env.PR_AGY_CLI;
+  if (given && existsSync(given)) return { found: true, path: given };
+  try {
+    const out = execFileSync(plat === "win32" ? "where" : "which", ["agy"], { encoding: "utf8", windowsHide: true, timeout: 10000 }).split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+    const pick = (plat === "win32" && out.find((p) => /\.(exe|cmd|bat)$/i.test(p))) || out[0];
+    if (pick) return { found: true, path: pick };
+  } catch {}
+  for (const p of [join(homedir(), ".local", "bin", "agy"), join(homedir(), ".local", "bin", "agy.exe"), ...(process.env.LOCALAPPDATA ? [join(process.env.LOCALAPPDATA, "agy", "bin", "agy.exe")] : [])]) if (existsSync(p)) return { found: true, path: p };
+  return { found: false, path: "" };
+}
+// What agy's tool events become for friendlyTool(): the same names the Claude path shows. Only the command / path / MCP tool name are read, never stored.
+export function agyToolToClaude(name, params = {}) {
+  const n = String(name || "");
+  if (n === "call_mcp_tool") return { name: String(params.ToolName || "mcp"), input: {} };
+  if (n === "run_command") return { name: "Bash", input: { command: String(params.CommandLine || "") } };
+  if (n === "read_file" || n === "view_file") return { name: "Read", input: { file_path: String(params.Path || params.AbsolutePath || "") } };
+  if (["write_to_file", "replace_file_content", "multi_replace_file_content", "sed_file"].includes(n)) return { name: "Write", input: {} };
+  return { name: n, input: {} };
+}
+// agy's OWN browser / image / web tools must never run a Flow or scan run: the Playwright MCP is the only browser (one browser = one agent, visible tab rule).
+export const AGY_FORBIDDEN_TOOL = /^(browser_|open_browser_url$|capture_browser|execute_browser_javascript$|list_browser_pages$|read_browser_page$|click_browser_pixel$|generate_image$|search_web$|read_url_content$)/;
+// Put in front of the prompt of an Antigravity run: the prompt is written with Claude's tool names; this maps them to agy's.
+export const agyNote = (light) => `ANTIGRAVITY TOOL MAP (you are Antigravity, not Claude; the task below uses Claude's tool names, use yours):
+- "Bash" = run_command (a PowerShell on Windows: write "node core/flow-pace.mjs ..." and "powershell -NoProfile -ExecutionPolicy Bypass -File src/agent.ps1 ..." exactly as given, from the TOOL folder).
+- "Read" = view_file (also for photos and contact sheets: LOOK at them); "Write" / "Edit" = write_to_file / replace_file_content, only for the temp files the steps ask for.
+` + (light ? `- This run has NO browser: never call any browser_* tool.\n` : `- Every Playwright browser tool of the task (browser_tabs, browser_navigate, browser_snapshot, browser_click, browser_type, browser_press_key, browser_wait_for, browser_run_code_unsafe, browser_take_screenshot, browser_evaluate, browser_file_upload) is called through call_mcp_tool with ServerName "${AGY_MCP_SERVER}", ToolName = that tool's name and Arguments = its arguments (browser_run_code_unsafe takes {"code": "async (page) => {...}"}).
+- NEVER use your own built-in browser tools (open_browser_url, browser_click_element, browser_input, browser_get_dom, browser_subagent, capture_browser_screenshot, execute_browser_javascript, ...), generate_image, search_web or read_url_content, and never another MCP server than "${AGY_MCP_SERVER}": the run is stopped at once if you do.\n`) + `\n`;
+
 export function readClaudeModel(workspaceDir, seedDir = "") { return readClaudeSettings(workspaceDir, seedDir).model; }
 export function readFlowAccount(workspaceDir, seedDir = "") {
   try {
@@ -213,7 +293,7 @@ export const newRunId = (d = new Date()) => "agent-" + d.toISOString().replace(/
 
 // The text block of docs/agent-prompt.md (mode "flow") or docs/scan-prompt.md (mode "scan"), placeholders filled.
 export const PROMPT_FILES = { flow: "agent-prompt.md", scan: "scan-prompt.md", reviews: "reviews-count-prompt.md", queue: "queue-prompt.md", prep: "prep-prompt.md", index: "index-prompt.md" };
-export function buildPrompt({ toolRoot, run, options = "defaults", mode = "flow", site = "", max = 20, project = "", workspace = "" }) {
+export function buildPrompt({ toolRoot, run, options = "defaults", mode = "flow", site = "", max = 20, project = "", workspace = "", agentName = "Claude Code" }) {
   const file = PROMPT_FILES[mode];
   if (!file) throw new Error("Unknown run mode: " + mode);
   const md = readFileSync(join(toolRoot, "docs", file), "utf8");
@@ -223,7 +303,7 @@ export function buildPrompt({ toolRoot, run, options = "defaults", mode = "flow"
   if (mode === "flow") acct = readFlowAccount(workspace || join(toolRoot, "workspace"), join(toolRoot, "workspace"));
   const acctText = acct ? `\nGOOGLE ACCOUNT FOR FLOW: use ONLY the already signed-in Google account ${acct}. The profile may hold several Google accounts and Flow opens the first one. Before creating the project open https://accounts.google.com/AccountChooser?continue=https%3A%2F%2Fflow.google.com%2F and click THAT email (no password is needed for a signed-in account); on Flow check the avatar menu shows the same email. If that email is not in the list, or Flow says the credits are used up on it: STOP and report. Never sign out, never remove or add an account, never use another account.` : "";
   return m[1].replace(/\{\{TOOL\}\}/g, toolRoot).replace(/\{\{RUN\}\}/g, run).replace(/\{\{OPTIONS\}\}/g, options)
-    .replace(/\{\{SITE\}\}/g, site).replace(/\{\{MAX\}\}/g, String(max)).replace(/\{\{PROJECT\}\}/g, project) + acctText;
+    .replace(/\{\{SITE\}\}/g, site).replace(/\{\{MAX\}\}/g, String(max)).replace(/\{\{PROJECT\}\}/g, project).replace(/agent: Claude Code/g, "agent: " + agentName) + acctText;
 }
 
 const defaultKill = (child, plat) => {
@@ -250,7 +330,7 @@ export function findClaude(plat = osPlatform()) {
   } catch { return { found: false, path: "" }; }
 }
 
-export function createAgentRunner({ toolRoot, workspace, profileDir = join(workspace, "chrome-profile"), headless = process.env.PR_FLOW_HEADLESS === "1", getBrowser = () => ({ mode: "extension", profile: "Profile 1" }), session = "", kind = "main", checkProfile = checkExtensionProfile, findCli = findClaude, plat = osPlatform(), spawnFn = spawn, killTree = (c) => defaultKill(c, plat), npxOk = () => defaultNpx(plat), now = () => Date.now(), graceMs = 4000, minutes = DEFAULT_MINUTES, maxTurns = 0 }) {
+export function createAgentRunner({ toolRoot, workspace, profileDir = join(workspace, "chrome-profile"), headless = process.env.PR_FLOW_HEADLESS === "1", getBrowser = () => ({ mode: "extension", profile: "Profile 1" }), session = "", kind = "main", checkProfile = checkExtensionProfile, findCli = findClaude, findAgyCli = findAgy, plat = osPlatform(), spawnFn = spawn, killTree = (c) => defaultKill(c, plat), npxOk = () => defaultNpx(plat), now = () => Date.now(), graceMs = 4000, minutes = DEFAULT_MINUTES, maxTurns = 0 }) {
   const runsDir = join(workspace, "runs"), tmpDir = join(workspace, "tmp");
   // Two runner instances per server: "main" (Flow images + reviews, scan, review count) and "light" (queue, prep: no browser). Own state and log files,
   // so a prep / queue run goes on while Bắt đầu runs; two light runs at once stay forbidden (each runner is one run at a time).
@@ -280,6 +360,7 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
   const handleLine = (run, raw) => {
     // Not an event (a cut-off fragment, tool output): nothing a person can read, so it stays out of the log.
     let ev; try { ev = JSON.parse(raw); } catch { return; }
+    if (run.backend === "antigravity") return handleAgy(run, ev);
     if (ev.type === "system" && ev.subtype === "init" && typeof ev.model === "string" && ev.model) {
       run.state.model_in_use = ev.model;
       setModelLine(run, modelLineText(ev.model, run.asked?.effort));
@@ -301,6 +382,56 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
       touch(run);
     }
   };
+  // Antigravity (`agy -p --output-format stream-json`): {event:"init"|"step_update"|"result"}. Agent text arrives as text_delta pieces of one
+  // step (printed when the step is DONE); a tool step is printed once, when first seen. Its own browser / image / web tools stop the run.
+  const handleAgy = (run, ev) => {
+    if (ev.event === "init" && ev.init) {
+      const m = typeof ev.init.model === "string" ? ev.init.model : "";
+      run.agySeen = true;
+      if (m) { run.state.model_in_use = m; setModelLine(run, modelLineText(m, run.asked?.effort, false, "antigravity")); }
+      else if (run.asked?.model) { run.state.model_in_use = run.asked.model; setModelLine(run, modelLineText(run.asked.model, run.asked?.effort, false, "antigravity") + " (theo cài đặt: agy không báo model)"); }
+      else setModelLine(run, "Model đang dùng: mặc định của Antigravity (agy không báo tên model) · mức suy nghĩ: " + (EFFORT_VI[run.asked?.effort] || "mặc định"));
+      if (m && run.asked?.model && !modelMatches(run.asked.model, m)) addLine(run, "⚠ Model thực tế khác cài đặt: cài đặt = " + run.asked.model + ", đang chạy = " + m);
+      touch(run); return;
+    }
+    if (ev.event === "step_update" && ev.step_update) {
+      const s = ev.step_update, idx = s.step_index;
+      run.agyText = run.agyText || {}; run.agySteps = run.agySteps || new Set();
+      if (s.step_type === "agent_response") {
+        if (typeof s.text_delta === "string") run.agyText[idx] = (run.agyText[idx] || "") + s.text_delta;
+        if (s.state === "DONE" && run.agyText[idx] !== undefined) {
+          const t = sanitize(run.agyText[idx]); delete run.agyText[idx];
+          run.state.turns = (run.state.turns || 0) + 1;
+          if (t) { addLine(run, "Antigravity: " + t); run.state.last_text = t; }
+          touch(run);
+        }
+      } else if (s.step_type === "tool" && s.tool_name && !run.agySteps.has(idx)) {
+        run.agySteps.add(idx);
+        const p = s.tool_info?.parameters || {};
+        const bad = AGY_FORBIDDEN_TOOL.test(s.tool_name) ? "công cụ " + s.tool_name + " của chính Antigravity"
+          : s.tool_name === "call_mcp_tool" && run.state.mode && !LIGHT_MODES.includes(run.state.mode) && p.ServerName !== AGY_MCP_SERVER ? "máy chủ MCP \"" + String(p.ServerName || "?") + "\" (không phải " + AGY_MCP_SERVER + ")"
+          : s.tool_name === "call_mcp_tool" && LIGHT_MODES.includes(run.state.mode) ? "công cụ MCP trong lượt không dùng trình duyệt" : "";
+        if (bad) {
+          run.abort = "Antigravity dùng " + bad + ", không phải Playwright MCP của lượt chạy: đã dừng để không mở trình duyệt thứ hai.";
+          addLine(run, "⚠ " + run.abort); touch(run);
+          killTree(run.child); setTimeout(() => finish(run, null), graceMs).unref?.();
+          return;
+        }
+        const c = agyToolToClaude(s.tool_name, p);
+        addLine(run, friendlyTool(c.name, c.input, run.state.mode)); touch(run);
+      }
+      return;
+    }
+    if (ev.event === "result" && ev.result) {
+      const r = ev.result, ok = String(r.status || "").toUpperCase() === "SUCCESS";
+      run.result = { is_error: !ok, subtype: String(r.finished_reason || r.status || "") };
+      if (typeof r.num_turns === "number" && r.num_turns > 0) run.state.turns = r.num_turns;
+      if (typeof r.response === "string" && r.response.trim()) run.state.last_text = sanitize(r.response);
+      if (!ok && r.error) run.agyError = sanitize(r.error);
+      addLine(run, ok ? "Antigravity đã xử lý xong các bước" : `Antigravity báo lỗi (${run.result.subtype || "không rõ"})`);
+      touch(run);
+    }
+  };
   const feed = (run, chunk) => {
     run.buf += chunk.toString("utf8");
     let i;
@@ -312,6 +443,8 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
     clearTimeout(run.timer);
     if (run.buf.trim()) handleLine(run, run.buf.trim());
     try { rmSync(run.cfg, { force: true }); } catch {}
+    // Antigravity: the per-run folder (prompt, plugin with the Playwright MCP config and its token) is always removed, on success, failure and stop.
+    if (run.agyDir) { try { rmSync(run.agyDir, { recursive: true, force: true }); } catch {} }
     try { releaseLocks(toolRoot, session, process.pid, kind); } catch {}
     // An image run (mode "flow") that finished its process cleanly but produced nothing for ANY of its items (no image, no result) is a failed run,
     // not a success: the final state must not look like "done, 0 errors" when 0 of N items were completed.
@@ -325,11 +458,11 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
         try { made = readdirSync(join(dir, "images")).filter((x) => /\.(png|jpe?g|webp)$/i.test(x)).length; } catch {}
         let results = 0;
         try { const r = JSON.parse(readFileSync(join(dir, "results.json"), "utf8")); results = Array.isArray(r) ? r.length : 0; } catch {}
-        if (n > 0 && made === 0 && results === 0) nothing = "0/" + n + " mục hoàn tất: không có ảnh nào được tạo và không có kết quả nào. Xem lý do của từng mục trong báo cáo cuối của Claude.";
+        if (n > 0 && made === 0 && results === 0) nothing = "0/" + n + " mục hoàn tất: không có ảnh nào được tạo và không có kết quả nào. Xem lý do của từng mục trong báo cáo cuối của " + (run.who || "Claude") + ".";
       } catch {}
     }
-    const status = nothing ? "failed" : run.forced || (code === 0 && !run.result?.is_error ? "done" : "failed");
-    const error = status === "failed" ? sanitize(nothing || err || run.stderr.at(-1) || (run.result?.is_error ? `Claude reported ${run.result.subtype || "an error"}.` : `Claude exited with code ${code}.`))
+    const status = nothing || run.abort ? "failed" : run.forced || (code === 0 && !run.result?.is_error ? "done" : "failed");
+    const error = status === "failed" ? sanitize(nothing || run.abort || err || run.agyError || run.stderr.at(-1) || (run.result?.is_error ? `${run.who || "Claude"} reported ${run.result.subtype || "an error"}.` : `${run.who || "Claude"} exited with code ${code}.`))
       : status === "timeout" ? `Stopped after the ${minutes}-minute limit.` : "";
     addLine(run, { done: "Lượt chạy kết thúc", failed: `Lượt chạy dừng vì lỗi${code === null || code === undefined ? "" : " (mã " + code + ")"}`, timeout: "Lượt chạy dừng vì quá thời gian" }[status] || `Lượt chạy: ${status}`);
     try { writeFileSync(logFile, run.lines.join("\n") + "\n"); } catch {}
@@ -346,11 +479,12 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
     const lightMode = LIGHT_MODES.includes(mode);
     if ((kind === "light") !== lightMode) return { ok: false, status: 400, error: `Mode ${mode} does not run on this runner.` };
     if (cur) return { ok: false, status: 409, error: `An agent run is already active (started ${cur.state.started}). Wait for it or press Stop.` };
-    const found = findCli();
-    if (!found?.found) return { ok: false, status: 400, error: "Claude CLI not found: install Claude Code, or set PR_CLAUDE_CLI to its path." };
+    const agentSet = readAgentSettings(workspace || join(toolRoot, "workspace"), join(toolRoot, "workspace")), backend = agentSet.backend, agy = backend === "antigravity", who = AGENT_NAME[backend];
+    const found = agy ? findAgyCli() : findCli();
+    if (!found?.found) return { ok: false, status: 400, error: agy ? "Antigravity CLI (agy) not found: install Antigravity and sign in with Google, or set PR_AGY_CLI to its path." : "Claude CLI not found: install Claude Code, or set PR_CLAUDE_CLI to its path." };
     if (!lightMode && !npxOk()) return { ok: false, status: 400, error: "npx is not available (it comes with Node.js): the Playwright MCP cannot start." };
     let prompt;
-    try { prompt = buildPrompt({ toolRoot, run: runId, options, mode, site, max, project, workspace }); } catch (e) { return { ok: false, status: 500, error: sanitize(e.message) }; }
+    try { prompt = buildPrompt({ toolRoot, run: runId, options, mode, site, max, project, workspace, agentName: agy ? "Antigravity" : "Claude Code" }); } catch (e) { return { ok: false, status: 500, error: sanitize(e.message) }; }
     mkdirSync(tmpDir, { recursive: true }); mkdirSync(runsDir, { recursive: true });
     const cfg = join(tmpDir, `mcp-${runId}-${randomBytes(3).toString("hex")}.json`);
     const bc = lightMode ? {} : (getBrowser() || {}), ext = !lightMode && bc.mode !== "own";
@@ -376,34 +510,9 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
     if (!lightMode) writeFileSync(cfg, JSON.stringify(mcpConfig({ plat, profile: profileDir, headless, extension: ext ? { profile: bc.profile, name: group.name, color: group.color, background: mode !== "flow" } : null })));
     if (!lightMode && !ext) mkdirSync(profileDir, { recursive: true });
     const claudeSet = readClaudeSettings(workspace || join(toolRoot, "workspace"), join(toolRoot, "workspace"));
-    const args = ["-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "default", "--model", claudeSet.model, ...(claudeSet.effort ? ["--effort", claudeSet.effort] : []), ...(maxTurns > 0 ? ["--max-turns", String(maxTurns)] : []), "--allowedTools", (lightMode ? LIGHT_TOOLS : ALLOWED_TOOLS).join(","), "--add-dir", toolRoot, ...(lightMode ? ["--strict-mcp-config"] : ["--mcp-config", cfg])];
-    // Optional per-profile Playwright extension token (shared workspace/playwright-tokens.json): only through this env, never in the MCP config file or a log.
+    const asked = agy ? { model: agentSet.agyModel, effort: agentSet.agyEffort } : claudeSet;
+    // Optional per-profile Playwright extension token (shared workspace/playwright-tokens.json): through this env for Claude, never in a log.
     const extToken = ext ? extensionToken(join(toolRoot, "workspace"), bc.profile) : "";
-    const env = { ...process.env, ...(extToken ? { PLAYWRIGHT_MCP_EXTENSION_TOKEN: extToken } : {}) };
-    const cmd = plat === "win32" && /\.(cmd|bat)$/i.test(found.path) ? ["cmd", ["/c", found.path, ...args]] : [found.path, args];
-    let child;
-    try { child = spawnFn(cmd[0], cmd[1], { cwd: toolRoot, env, windowsHide: true, detached: false, stdio: ["pipe", "pipe", "pipe"] }); }
-    catch (e) { try { rmSync(cfg, { force: true }); } catch {} try { releaseLocks(toolRoot, session, process.pid, kind); } catch {} return { ok: false, status: 500, error: sanitize(e.message) }; }
-    const started = new Date(now()).toISOString();
-    const run = { child, cfg, lines: [], buf: "", written: 0, stderr: [], ended: false, forced: "", result: null, timer: null,
-      state: { run_id: runId, mode, project, pid: child.pid ?? null, started, updated: started, status: "running", exit_code: null, last_text: "", turns: 0, error: "", model_in_use: claudeSet.model } };
-    run.asked = claudeSet;
-    run.prefix = "[" + (FEATURE[mode] || mode) + (project ? " · " + project : "") + "] ";
-    cur = run;
-    try { writeFileSync(logFile, ""); } catch {}
-    setModelLine(run, modelLineText(claudeSet.model, claudeSet.effort, true));
-    addLine(run, mode === "index" ? "Bắt đầu: Claude gắn nhãn kho ảnh bối cảnh (mã lượt " + runId + ")"
-      : mode === "prep" ? "Bắt đầu: Claude chuẩn bị trước ảnh bối cảnh cho các sản phẩm của dự án " + project + " (mã lượt " + runId + ")"
-      : mode === "scan" ? "Bắt đầu: Claude quét " + site + " (mã lượt " + runId + ")"
-      : mode === "queue" ? "Bắt đầu: Claude thêm sản phẩm của dự án " + project + " vào hàng chờ (mã lượt " + runId + ")"
-      : mode === "reviews" ? "Bắt đầu: Claude đọc số review trên các trang sản phẩm của dự án " + project + " (mã lượt " + runId + ")"
-      : "Bắt đầu: Claude điều khiển Google Flow (mã lượt " + runId + ")");
-    saveState(run.state);
-    child.stdout?.on("data", (c) => feed(run, c));
-    child.stderr?.on("data", (c) => { for (const l of c.toString("utf8").split(/\r?\n/)) { const t = sanitize(l); if (t) { run.stderr.push(t); if (run.stderr.length > 20) run.stderr.shift(); addLine(run, "Cảnh báo: " + t); } } });
-    child.on("error", (e) => finish(run, null, e.message));
-    child.on("close", (code) => finish(run, code));
-    child.stdin?.on("error", () => {});
     const note = mode === "index"
       ? "RUN-NOW NOTE: this run only TAGS the scene photo library (no browser needed, do not open any page): look at the numbered contact sheets with the Read tool and use the scan.ps1 scene-index commands. It never touches a project, the queue or image creation.\n\n"
       : mode === "prep"
@@ -415,7 +524,55 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
       : mode === "scan"
       ? "RUN-NOW NOTE: this run uses the tool's OWN Chrome (a dedicated profile, no sign-in needed to scan a shop)" + (headless ? ", running in the background (headless)" : "") + ". There is no Connect step and no extension: ignore any instruction to click Connect or wait for the person; start with browser_tabs or browser_navigate. If the site asks for a login or shows a captcha, stop and report it (never sign in for the person)." + "\n\n"
       : "RUN-NOW NOTE: this run uses the tool's OWN Chrome (a dedicated profile the person already signed in to Google Flow with)" + (headless ? ", running in the background (headless)" : "") + ". There is no Connect step and no extension: ignore any instruction to click Connect or wait for the person; start with browser_tabs or browser_navigate. If Flow shows a Google sign-in page, stop and report CAUSE:LOGIN (never sign in for the person)." + "\n\n";
-    try { child.stdin?.end((ext && mode !== "queue" ? extensionNote({ groupName: group.name, session: sessionLabel(session), downloadsDir: join(workspace, "tmp", "flow-downloads"), tokenSet: !!extToken, flow: mode === "flow" }) : note) + prompt); } catch {}
+    const intro = (ext && mode !== "queue" ? extensionNote({ groupName: group.name, session: sessionLabel(session), downloadsDir: join(workspace, "tmp", "flow-downloads"), tokenSet: !!extToken, flow: mode === "flow" }) : note) + prompt;
+    let args, agyDir = "";
+    if (agy) {
+      // Antigravity has no per-run MCP flag (--settings refuses mcpServers) and global config must stay untouched, so the run gets a folder of its own
+      // OUTSIDE the repo (agy would otherwise read the AGENTS.md files above it) used as its cwd: it holds prompt.md and a project plugin
+      // .agents/plugins/prreview/mcp_config.json that carries the same Playwright MCP as the Claude path (agy loads it for this cwd only). Removed in finish().
+      agyDir = join(tmpdir(), "pr-agy-" + runId + "-" + randomBytes(3).toString("hex"));
+      try {
+        mkdirSync(join(agyDir, ".agents", "plugins", AGY_PLUGIN), { recursive: true });
+        writeFileSync(join(agyDir, "prompt.md"), agyNote(lightMode) + intro, "utf8");
+        writeFileSync(join(agyDir, ".agents", "plugins", AGY_PLUGIN, "plugin.json"), JSON.stringify({ name: AGY_PLUGIN }));
+        if (!lightMode) {
+          const server = { ...mcpConfig({ plat, profile: profileDir, headless, extension: ext ? { profile: bc.profile, name: group.name, color: group.color } : null }).mcpServers.playwright };
+          // agy starts the MCP from its own language server: the extension token travels in this file (a private temp folder, deleted when the run ends).
+          if (extToken) server.env = { ...(server.env || {}), PLAYWRIGHT_MCP_EXTENSION_TOKEN: extToken };
+          writeFileSync(join(agyDir, ".agents", "plugins", AGY_PLUGIN, "mcp_config.json"), JSON.stringify({ mcpServers: { [AGY_SERVER]: server } }));
+        }
+      } catch (e) { try { rmSync(agyDir, { recursive: true, force: true }); } catch {} try { rmSync(cfg, { force: true }); } catch {} try { releaseLocks(toolRoot, session, process.pid, kind); } catch {} return { ok: false, status: 500, error: sanitize(e.message) }; }
+      const task = "Your full task is in the file " + join(agyDir, "prompt.md") + ". Read it first with view_file, then do exactly what it says, following its numbered steps in order. Reply only as the task asks.";
+      args = ["-p", task, "--output-format", "stream-json", "--dangerously-skip-permissions", "--add-dir", toolRoot, ...(asked.model ? ["--model", asked.model] : []), ...(asked.effort ? ["--effort", asked.effort] : [])];
+    } else {
+      args = ["-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "default", "--model", claudeSet.model, ...(claudeSet.effort ? ["--effort", claudeSet.effort] : []), ...(maxTurns > 0 ? ["--max-turns", String(maxTurns)] : []), "--allowedTools", (lightMode ? LIGHT_TOOLS : ALLOWED_TOOLS).join(","), "--add-dir", toolRoot, ...(lightMode ? ["--strict-mcp-config"] : ["--mcp-config", cfg])];
+    }
+    const env = { ...process.env, ...(extToken && !agy ? { PLAYWRIGHT_MCP_EXTENSION_TOKEN: extToken } : {}) };
+    const cmd = plat === "win32" && /\.(cmd|bat)$/i.test(found.path) ? ["cmd", ["/c", found.path, ...args]] : [found.path, args];
+    let child;
+    try { child = spawnFn(cmd[0], cmd[1], { cwd: agy ? agyDir : toolRoot, env, windowsHide: true, detached: false, stdio: ["pipe", "pipe", "pipe"] }); }
+    catch (e) { try { rmSync(cfg, { force: true }); } catch {} if (agyDir) { try { rmSync(agyDir, { recursive: true, force: true }); } catch {} } try { releaseLocks(toolRoot, session, process.pid, kind); } catch {} return { ok: false, status: 500, error: sanitize(e.message) }; }
+    const started = new Date(now()).toISOString();
+    const run = { child, cfg, lines: [], buf: "", written: 0, stderr: [], ended: false, forced: "", result: null, timer: null,
+      state: { run_id: runId, mode, project, pid: child.pid ?? null, started, updated: started, status: "running", exit_code: null, last_text: "", turns: 0, error: "", model_in_use: asked.model } };
+    run.asked = asked; run.backend = backend; run.who = who; run.agyDir = agyDir;
+    run.prefix = "[" + (FEATURE[mode] || mode) + (project ? " · " + project : "") + "] ";
+    cur = run;
+    try { writeFileSync(logFile, ""); } catch {}
+    setModelLine(run, modelLineText(asked.model, asked.effort, true, backend));
+    addLine(run, mode === "index" ? "Bắt đầu: " + who + " gắn nhãn kho ảnh bối cảnh (mã lượt " + runId + ")"
+      : mode === "prep" ? "Bắt đầu: " + who + " chuẩn bị trước ảnh bối cảnh cho các sản phẩm của dự án " + project + " (mã lượt " + runId + ")"
+      : mode === "scan" ? "Bắt đầu: " + who + " quét " + site + " (mã lượt " + runId + ")"
+      : mode === "queue" ? "Bắt đầu: " + who + " thêm sản phẩm của dự án " + project + " vào hàng chờ (mã lượt " + runId + ")"
+      : mode === "reviews" ? "Bắt đầu: " + who + " đọc số review trên các trang sản phẩm của dự án " + project + " (mã lượt " + runId + ")"
+      : "Bắt đầu: " + who + " điều khiển Google Flow (mã lượt " + runId + ")");
+    saveState(run.state);
+    child.stdout?.on("data", (c) => feed(run, c));
+    child.stderr?.on("data", (c) => { for (const l of c.toString("utf8").split(/\r?\n/)) { const t = sanitize(l); if (t) { run.stderr.push(t); if (run.stderr.length > 20) run.stderr.shift(); addLine(run, "Cảnh báo: " + t); } } });
+    child.on("error", (e) => finish(run, null, e.message));
+    child.on("close", (code) => finish(run, code));
+    child.stdin?.on("error", () => {});
+    try { child.stdin?.end(agy ? undefined : intro); } catch {}
     if (minutes > 0) run.timer = setTimeout(() => { if (run.ended) return; run.forced = "timeout"; killTree(child); setTimeout(() => finish(run, null), graceMs).unref?.(); }, minutes * 60000);
     run.timer?.unref?.();
     return { ok: true, status: 200, run_id: runId, started };

@@ -1780,17 +1780,29 @@ function claudeLabel(id) {
   for (const g of (modelInfo.claude.claudeModelGroups || [])) { const m = g.models.find((x) => x.id === id); if (m) return [m.label.split(" · ")[0], id]; }
   return [id, id];
 }
+// The Agent (Cấu hình, mục 5) that drives the browser for Tạo ảnh (Flow) and the other agent runs: Claude or Antigravity.
+const agentName = () => (modelInfo.claude.agentBackend === "antigravity" ? "Antigravity" : "Claude");
+function agyLabel(id) {
+  if (!id) return "model mặc định";
+  for (const g of (modelInfo.claude.agyModelGroups || [])) { const m = g.models.find((x) => x.id === id); if (m) return m.label.split(" · ")[0] === id ? id : m.label.split(" · ")[0] + " (" + id + ")"; }
+  return id;
+}
 function updateModelLine() {
   if (!ui.lblModel || !ui.cmbText) return;
   const text = ui.cmbText.value, image = ui.cmbBackend.value;
   const parts = [];
-  if (text === "claude" || image === "agent") {
+  const opt = [...(ui.cmbBackend.options || [])].find((o) => o.value === "agent"); if (opt) opt.textContent = agentName() + " (Flow)";
+  if (image === "agent" && agentName() === "Antigravity") {
+    const effort = { low: "thấp", medium: "vừa", high: "cao", xhigh: "rất cao", max: "tối đa" }[modelInfo.claude.agyEffort] || "mặc định";
+    parts.push(`Antigravity ${agyLabel(modelInfo.claude.agyModel)} · mức: ${effort}` + (run.active && run.modelInUse ? ` · đang chạy: ${run.modelInUse}` : ""));
+  }
+  if (text === "claude" || (image === "agent" && agentName() === "Claude")) {
     const [name, id] = claudeLabel(modelInfo.claude.claudeModel);
     const effort = { low: "thấp", medium: "vừa", high: "cao", xhigh: "rất cao", max: "tối đa" }[modelInfo.claude.claudeEffort] || "mặc định";
     parts.push(`Claude ${name === id ? id : name + " (" + id + ")"} · mức: ${effort}` + (run.active && run.modelInUse ? ` · đang chạy: ${run.modelInUse}` : ""));
   }
   if (text === "codex" || image === "codex") parts.push(`Codex ${modelInfo.codex || "model mặc định"}`);
-  if (text === "antigravity") parts.push("Antigravity CLI");
+  if (text === "antigravity" && !(image === "agent" && agentName() === "Antigravity")) parts.push("Antigravity CLI");
   ui.lblModel.textContent = parts.join("  |  ");
   ui.lblModel.title = ui.lblModel.textContent;
 }
@@ -1976,7 +1988,7 @@ async function startAgent() {
   if (!(await flowPreflight())) return;
   ui.txtLog.value = "";
   const r = await fetch("/api/agent/run", { method: "POST", body: JSON.stringify({ text: ui.cmbText.value }) });
-  if (!r.ok) { const body = await r.json().catch(() => ({})); return appendLog("Chưa khởi động được Claude: " + (body.error || r.status)); }
+  if (!r.ok) { const body = await r.json().catch(() => ({})); return appendLog("Chưa khởi động được " + agentName() + ": " + (body.error || r.status)); }
   attachAgent(Date.now());
 }
 // Chạy tiếp: which run can be continued (GET /api/agent/resumable), refreshed on load and after every run.
@@ -1988,7 +2000,7 @@ async function refreshResumable() {
 }
 async function resumeRun() {
   if (!ui.resumeRun) return;
-  if (ui.cmbBackend?.value !== "agent") return appendLog("Chạy tiếp chỉ dùng cho Tạo ảnh = Claude (Flow). Với Codex, bấm Bắt đầu: các link đã xong tự rời hàng chờ.");
+  if (ui.cmbBackend?.value !== "agent") return appendLog("Chạy tiếp chỉ dùng cho Tạo ảnh = " + agentName() + " (Flow). Với Codex, bấm Bắt đầu: các link đã xong tự rời hàng chờ.");
   if (!(await flowPreflight())) return;
   ui.txtLog.value = "";
   const r = await fetch("/api/agent/run", { method: "POST", body: JSON.stringify({ run: ui.resumeRun }) });
@@ -1997,7 +2009,7 @@ async function resumeRun() {
   attachAgent(Date.now());
 }
 function attachAgent(started) {
-  Object.assign(run, { agent: true, since: 0, total: countUrls(), done: 0, stopped: false, failure: false, started, resultFolder: "", ai: "Claude (Google Flow)" });
+  Object.assign(run, { agent: true, since: 0, total: countUrls(), done: 0, stopped: false, failure: false, started, resultFolder: "", ai: agentName() + " (Google Flow)" });
   setRunning(true);
   setStatus("Đang chạy", "var(--accent)");
   setBar(0, 1, true);
@@ -2016,7 +2028,7 @@ async function pollAgent() {
     if (st.model_in_use && st.model_in_use !== run.modelInUse) { run.modelInUse = st.model_in_use; updateModelLine(); }
     const elapsed = Math.floor((Date.now() - run.started) / 1000);
     const time = String(Math.floor(elapsed / 60)).padStart(2, "0") + ":" + String(elapsed % 60).padStart(2, "0");
-    ui.lblProgress.textContent = `${st.last_text || "Claude đang chuẩn bị…"}  •  ${time}  •  ${run.ai}`;
+    ui.lblProgress.textContent = `${st.last_text || agentName() + " đang chuẩn bị…"}  •  ${time}  •  ${run.ai}`;
     ui.txtLog.value = (st.tail || []).join("\n"); ui.txtLog.scrollTop = ui.txtLog.scrollHeight;
     if (!st.active) return finishAgent(st);
   } catch {}

@@ -238,5 +238,23 @@
     fillClaudeModels(r.claudeModel || DEFAULT_CM);
     fill(ceffort, CE, CE.map(effLabel), r.claudeEffort || "");
   }).catch(() => {});
+  // Agent chạy Flow: run-settings.json agentBackend (claude | antigravity) + agyModel / agyEffort of THIS window; the model list is `agy models` read by the server (static list when agy cannot answer).
+  const abackend = $(".abackend"), amodel = $(".amodel"), aeffort = $(".aeffort");
+  const fillAgy = (groups, value) => {
+    const ids = groups.flatMap((g) => g.models.map((m) => m.id));
+    const opts = groups.map((g) => { const og = el("optgroup"); og.label = g.family + (g.note ? " · " + g.note : ""); og.append(...g.models.map((m) => Object.assign(el("option", "", m.label), { value: m.id }))); return og; });
+    const extra = value && !ids.includes(value) ? [Object.assign(el("option", "", value), { value })] : [];
+    amodel.replaceChildren(Object.assign(el("option", "", "Model mặc định của Antigravity"), { value: "" }), ...extra, ...opts);
+    amodel.value = value || "";
+  };
+  const saveAgy = async () => { const r = await post("/api/run-settings", { agentBackend: abackend.value, agyModel: amodel.value, agyEffort: aeffort.value }); if (r.error) alert(r.error); };
+  fill(abackend, ["claude", "antigravity"], ["Agent: Claude", "Agent: Antigravity"], "claude");
+  fill(aeffort, CE, CE.map(effLabel), "");
+  abackend.onchange = amodel.onchange = aeffort.onchange = saveAgy;
+  fetch("/api/run-settings").then((r) => r.json()).then((r) => {
+    abackend.value = r.agentBackend === "antigravity" ? "antigravity" : "claude";
+    fillAgy(r.agyModelGroups || [], r.agyModel || "");
+    fill(aeffort, CE, CE.map(effLabel), r.agyEffort || "");
+  }).catch(() => {});
   check();
 })();
