@@ -244,6 +244,9 @@ export async function listAgyModels({ find = () => findAgy(), run = (path) => ne
   } catch {}
   return groupAgyModels(AGY_FALLBACK);
 }
+// A dropped connection to agy ("the connection to the agent was interrupted", "conversation update stream lost", "subscriber fell behind updates"): transient transport trouble, NOT a quota or
+// login error. The run is started again by itself (backoff 15 s / 30 s / 60 s, at most 5 times in a row; the count restarts when the run made progress in between).
+export const isTransientAgyError = (t) => /connection to the agent was interrupted|update stream lost|subscriber fell behind|stream lost|stalled for \d+s|ECONNRESET|EPIPE|unexpected EOF|deadline exceeded|\bunavailable\b|connection (reset|closed|refused)/i.test(String(t || "")) && !/RESOURCE_EXHAUSTED|exhausted your capacity/i.test(String(t || ""));
 export const isAgyModel = (v) => typeof v === "string" && AGY_MODEL_RE.test(v);
 // Which AI runs which task (Cấu hình, Cách chạy): the image run follows Tạo ảnh (agentBackend); Quét web, Cập nhật số review and the no-browser
 // queue / prep / index runs have their own key. A window saved before these keys existed keeps working: a missing key falls back to the old agentBackend.
@@ -378,7 +381,7 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
     try { releaseLocks(toolRoot, session, process.pid, lockTag); } catch {}
   };
   const stateFile = join(runsDir, stateName + ".json"), logFile = join(runsDir, stateName + ".log");
-  let cur = null, last = null, retry = null, capTry = { runId: "", n: 0 }; // retry = an automatic restart waiting after a capacity error
+  let cur = null, last = null, retry = null, capTry = { runId: "", n: 0 }, netTry = { n: 0 }; // retry = an automatic restart waiting after a capacity error
 
   const readState = () => { try { return JSON.parse(readFileSync(stateFile, "utf8")); } catch { return null; } };
   const saveState = (st) => { try { mkdirSync(runsDir, { recursive: true }); writeFileSync(stateFile, JSON.stringify(st, null, 2)); } catch {} };
@@ -436,6 +439,16 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
     run.abort = "[CAUSE:QUOTA] " + friendly;
     addLine(run, "⚠ " + friendly); touch(run);
     killTree(run.child); setTimeout(() => finish(run, null), graceMs).unref?.();
+  };
+  const NET_WAITS = String(process.env.PR_NET_WAITS || "").split(",").map(Number).filter((n) => n > 0).length ? String(process.env.PR_NET_WAITS).split(",").map(Number) : [15000, 30000, 60000]; // PR_NET_WAITS only for tests
+  const netRetry = (run, text) => {
+    if (run.retryDelay || run.abort || run.forced || run.ended || !run.startOpts || run.backend !== "antigravity" || !isTransientAgyError(text)) return false;
+    if ((run.evCount || 0) > 5) netTry.n = 0;   // this launch got somewhere: the count starts again
+    if (netTry.n >= 5) { run.abort = "Mất kết nối với Antigravity, đã tự chạy lại 5 lần nhưng vẫn lỗi: " + sanitize(text, 200); return false; }
+    const delay = NET_WAITS[Math.min(netTry.n, NET_WAITS.length - 1)]; netTry.n++;
+    run.retryDelay = delay; run.retryKind = "net";
+    addLine(run, "⚠ Mất kết nối với Antigravity, tự chạy lại (lần " + netTry.n + "/5, sau " + Math.round(delay / 1000) + " giây)"); touch(run);
+    return true;
   };
   const handleLine = (run, raw) => {
     // Not an event (a cut-off fragment, tool output): nothing a person can read, so it stays out of the log.
@@ -532,6 +545,7 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
       if (typeof r.num_turns === "number" && r.num_turns > 0) run.state.turns = r.num_turns;
       if (typeof r.response === "string" && r.response.trim()) run.state.last_text = sanitize(r.response);
       if (!ok && r.error) run.agyError = sanitize(r.error);
+      if (!ok && r.error) netRetry(run, String(r.error));
       addLine(run, ok ? "Antigravity đã xử lý xong các bước" : `Antigravity báo lỗi (${run.result.subtype || "không rõ"})`);
       touch(run);
     }
@@ -566,6 +580,7 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
         if (n > 0 && made === 0 && results === 0) nothing = "0/" + n + " mục hoàn tất: không có ảnh nào được tạo và không có kết quả nào. Xem lý do của từng mục trong báo cáo cuối của " + (run.who || "Claude") + ".";
       } catch {}
     }
+    if (!run.retryDelay && !run.forced && !run.abort && run.backend === "antigravity" && code !== 0 && !run.result && run.stderr.some((l) => isTransientAgyError(l))) netRetry(run, run.stderr.join(" "));
     const status = run.retryDelay && !run.forced ? "retrying" : nothing || run.abort ? "failed" : run.forced || (code === 0 && !run.result?.is_error ? "done" : "failed");
     const error = status === "failed" ? sanitize(nothing || run.abort || err || run.agyError || run.stderr.at(-1) || (run.result?.is_error ? `${run.who || "Claude"} reported ${run.result.subtype || "an error"}.` : `${run.who || "Claude"} exited with code ${code}.`))
       : status === "timeout" ? `Stopped after the ${minutes}-minute limit.` : "";
@@ -574,8 +589,8 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
     touch(run, { status, exit_code: code ?? null, error });
     last = run.state; cur = null;
     if (status === "retrying") {
-      const delay = run.retryDelay, opts = { ...run.startOpts, _retry: true };
-      retry = { wakeAt: now() + delay, n: capTry.n, timer: setTimeout(() => { retry = null; const r = start(opts); if (!r.ok) last = { ...last, status: "failed", error: r.error || "Chưa thử lại được.", updated: new Date(now()).toISOString() }; }, delay) };
+      const delay = run.retryDelay, opts = { ...run.startOpts, _retry: true, _carry: run.lines.slice() };
+      retry = { wakeAt: now() + delay, n: run.retryKind === "net" ? netTry.n : capTry.n, of: run.retryKind === "net" ? 5 : 3, kind: run.retryKind || "cap", timer: setTimeout(() => { retry = null; const r = start(opts); if (!r.ok) last = { ...last, status: "failed", error: r.error || "Chưa thử lại được.", updated: new Date(now()).toISOString() }; }, delay) };
       retry.timer.unref?.();
     }
   };
@@ -584,12 +599,12 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
   // mode "queue": put products of a project into the run queue with N scenes each (docs/queue-prompt.md, needs project and options).
   // mode "reviews": read the review number shown on each product page of a project (docs/reviews-count-prompt.md, needs project).
   // One run at a time for all: they share the one Chrome profile.
-  function start({ run: runId = newRunId(), options = "defaults", mode = "flow", site = "", max = 20, project = "", shard = "", tabs = 1, targetRun = "", phased = false, _retry = false } = {}) {
+  function start({ run: runId = newRunId(), options = "defaults", mode = "flow", site = "", max = 20, project = "", shard = "", tabs = 1, targetRun = "", phased = false, _retry = false, _carry = [] } = {}) {
     if (!/^[\w.-]{3,64}$/.test(runId)) return { ok: false, status: 400, error: "Invalid run id." };
     const lightMode = LIGHT_MODES.includes(mode);
     if ((kind === "light") !== lightMode) return { ok: false, status: 400, error: `Mode ${mode} does not run on this runner.` };
     if (retry && !_retry) return { ok: false, status: 409, error: "Antigravity đang chờ để tự thử lại: đợi xong hoặc bấm Dừng." };
-    if (!_retry) capTry = { runId, n: 0 };
+    if (!_retry) { capTry = { runId, n: 0 }; netTry = { n: 0 }; }
     if (cur) return { ok: false, status: 409, error: `An agent run is already active (started ${cur.state.started}). Wait for it or press Stop.` };
     const agentSet = readAgentSettings(workspace || join(toolRoot, "workspace"), join(toolRoot, "workspace"), mode), backend = agentSet.backend, agy = backend === "antigravity", who = AGENT_NAME[backend];
     // Antigravity makes the images itself (image-generator subagent): the image run needs no Chrome, no Playwright MCP, no Flow account.
@@ -672,11 +687,12 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
     try { child = spawnFn(cmd[0], cmd[1], { cwd: agy ? agyDir : toolRoot, env, windowsHide: true, detached: false, stdio: ["pipe", "pipe", "pipe"] }); }
     catch (e) { try { rmSync(cfg, { force: true }); } catch {} if (agyDir) { try { rmSync(agyDir, { recursive: true, force: true }); } catch {} } releaseOwn(false); return { ok: false, status: 500, error: sanitize(e.message) }; }
     const started = new Date(now()).toISOString();
-    const run = { child, cfg, lines: [], buf: "", written: 0, stderr: [], ended: false, forced: "", result: null, timer: null,
+    const run = { child, cfg, lines: _retry ? _carry : [], buf: "", written: 0, stderr: [], ended: false, forced: "", result: null, timer: null,
       state: { run_id: runId, mode, project, pid: child.pid ?? null, started, updated: started, status: "running", exit_code: null, last_text: "", turns: 0, error: "", model_in_use: asked.model, agent: backend, label_ai: agyImage ? "antigravity" : agyFlow ? "antigravity-flow" : backend } };
     run.asked = asked; run.backend = backend; run.who = who; run.agyDir = agyDir; run.agyImage = agyImage;
     run.prefix = "[" + (FEATURE[mode] || mode) + (project ? " · " + project : "") + (shard ? " · luồng " + shard : "") + "] ";
     run.startOpts = { run: runId, options, mode, site, max, project, shard, tabs, targetRun, phased };
+    if (_retry && _carry.length) run.modelLine = true; // the carried log keeps its first (model) line: it is replaced in place, not duplicated
     cur = run; if (kind === "light") lightRuns.set(lightKey, (lightRuns.get(lightKey) || 0) + 1);
     if (!_retry) { try { writeFileSync(logFile, ""); } catch {} }
     setModelLine(run, modelLineText(asked.model, asked.effort, true, backend));
@@ -732,7 +748,7 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
     return {
       active: !!run || !!(!run && retry), status: !run && retry ? "running" : shown?.status || "idle", run_id: shown?.run_id || "", mode: shown?.mode || "flow", project: shown?.project || "", started: shown?.started || "",
       elapsed_s: shown?.started ? Math.max(0, Math.round(((run ? now() : Date.parse(shown.updated) || now()) - Date.parse(shown.started)) / 1000)) : 0,
-      model_in_use: shown?.model_in_use || "", agent: shown?.agent || "", label_ai: shown?.label_ai || "", quota_reset: shown?.quota_reset || "", last_text: !run && retry ? "Antigravity báo model quá tải: tự thử lại lúc " + new Date(retry.wakeAt).toTimeString().slice(0, 5) + " (lần " + retry.n + "/3)" : shown?.last_text || "", turns: shown?.turns || 0, error: shown?.error || "", updated: shown?.updated || "", tail: lines.slice(-TAIL_LINES),
+      model_in_use: shown?.model_in_use || "", agent: shown?.agent || "", label_ai: shown?.label_ai || "", quota_reset: shown?.quota_reset || "", last_text: !run && retry ? (retry.kind === "net" ? "Mất kết nối với Antigravity: tự chạy lại lúc " : "Antigravity báo model quá tải: tự thử lại lúc ") + new Date(retry.wakeAt).toTimeString().slice(0, 5) + " (lần " + retry.n + "/" + (retry.of || 3) + ")" : shown?.last_text || "", turns: shown?.turns || 0, error: shown?.error || "", updated: shown?.updated || "", tail: lines.slice(-TAIL_LINES),
     };
   }
   return { start, stop, status, shutdown, setFinal, isActive: () => !!cur || !!retry };
