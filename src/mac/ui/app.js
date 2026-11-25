@@ -756,16 +756,12 @@ function showScanDialog() {
   status.style.whiteSpace = "pre-line";
   const openDir = at(button("Mở thư mục"), 16, 436, 120, 32);
   const toImport = at(button("Nhập vào danh sách"), 146, 436, 180, 32);
-  const scanThr = at(numeric(1, 4, cfg.threads || 1), 332, 440, 56, 26);
-  const scanThrLabel = at(label("Luồng", "muted"), 332, 424, 56, 14); scanThrLabel.style.fontSize = "11px"; scanThrLabel.style.lineHeight = "14px";
-  fetch("/api/run-settings").then((x) => x.json()).then((r) => { scanThr.value = r.scanThreads || r.threads || 1; }).catch(() => {});
-  scanThr.onchange = () => fetch("/api/run-settings", { method: "POST", body: JSON.stringify({ scanThreads: Math.min(4, Math.max(1, Math.round(Number(scanThr.value)) || 1)) }) }).catch(() => {});
   const start = at(button("Bắt đầu quét", true), 400, 436, 130, 32);
   const stop = at(button("Dừng"), 540, 436, 90, 32);
   const close = at(button("Đóng"), 640, 436, 104, 32);
   view.body.append(
     hint, at(label("Link trang chủ của web"), 16, 78, 380, 22), siteBox, at(label("Hoặc chọn dự án có sẵn"), 412, 78, 230, 22), projectBox, at(label("Tối đa"), 658, 78, 86, 22), maxBox,
-    log, status, openDir, toImport, scanThrLabel, scanThr, start, stop, close,
+    log, status, openDir, toImport, start, stop, close,
   );
   openDir.hidden = toImport.hidden = true; stop.disabled = true;
   let timer = null, scan = null, startedAt = 0;
@@ -804,7 +800,7 @@ function showScanDialog() {
     const site = siteBox.value.trim();
     if (!site) return say("Dán link trang chủ của web cần quét.", "var(--error)");
     openDir.hidden = toImport.hidden = true; log.value = ""; scan = null; startedAt = Date.now();
-    const r = await fetch("/api/scan/run", { method: "POST", body: JSON.stringify({ site, max: Number(maxBox.value) || 20, threads: Math.min(4, Math.max(1, Math.round(Number(scanThr.value)) || 1)) }) });
+    const r = await fetch("/api/scan/run", { method: "POST", body: JSON.stringify({ site, max: Number(maxBox.value) || 20 }) });
     const body = await r.json().catch(() => ({}));
     if (!r.ok) return say(body.error || "Chưa bắt đầu quét được.", "var(--error)");
     setBusy(true); say("Đang bắt đầu…", "var(--accent)"); watch();
@@ -1702,7 +1698,7 @@ function updateModelLine() {
   if (image === "codex" || (!flowRun && text === "codex")) parts.push(`Codex ${modelInfo.codex || "model mặc định"}`);
   if (!flowRun && text === "antigravity") parts.push("Antigravity CLI");
   const warn = usesFlow(image) && !flowExtensionMode() && flowLogin.state === "logged_out" ? "  ·  ⚠ chưa đăng nhập Flow (mở Cấu hình)" : "";
-  ui.lblModel.textContent = `Review: ${flowRun ? IMAGE_NAMES[image] : TEXT_NAMES[text]} · Ảnh: ${IMAGE_NAMES[image]}${usesFlow(image) ? "" : " · Luồng " + cfg.threads} · ${parts.join("  |  ")}${warn}`;
+  ui.lblModel.textContent = `Review: ${flowRun ? IMAGE_NAMES[image] : TEXT_NAMES[text]} · Ảnh: ${IMAGE_NAMES[image]} · Luồng ${cfg.threads} · ${parts.join("  |  ")}${warn}`;
   ui.lblModel.title = ui.lblModel.textContent + "\nBấm để đổi trong Cấu hình";
   ui.lblModel.style.color = warn ? "var(--warn)" : "var(--muted)";
 }

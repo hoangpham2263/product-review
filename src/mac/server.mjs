@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { randomUUID, createHash } from "node:crypto";
 import { createConfigApi } from "../../core/setup/config-api.mjs";
-import { createAgentRunner, buildPrompt, newRunId, readFlowAccount, FEATURE, CLAUDE_MODEL_GROUPS, CLAUDE_DEFAULT_MODEL, isClaudeModel, CLAUDE_EFFORTS, AGENT_BACKENDS, AGENT_TASK_KEY, AGY_EFFORTS, isAgyModel, listAgyModels, readAgentSettings } from "../../core/setup/agent-run.mjs";
+import { createAgentRunner, checkExtensionProfile, buildPrompt, newRunId, readFlowAccount, FEATURE, CLAUDE_MODEL_GROUPS, CLAUDE_DEFAULT_MODEL, isClaudeModel, CLAUDE_EFFORTS, AGENT_BACKENDS, AGENT_TASK_KEY, AGY_EFFORTS, isAgyModel, listAgyModels, readAgentSettings } from "../../core/setup/agent-run.mjs";
 import { readFlowBrowser, saveFlowBrowser, localChromeProfiles, tokenProfiles, saveExtensionToken, followFlowAccount } from "../../core/setup/flow-browser.mjs";
 import { currentSession, sessionLabel, sessionWorkspace, sharedWorkspace, registerSession, updateSession, unregisterSession, listSessions, lockHolder, releaseLocks, peekGroup, sessionTitle, profileLabelOf, projectBusyBy, setSessionProject, claimProjectFocus, readSeededJson, updateJsonLocked, SESSION_RE } from "../../core/setup/session.mjs";
 import { createFlowLogin, profileDirOf, profileGoogleAccounts, findChrome, flowOpenUrl, WINDOW_ARGS } from "../../core/setup/flow-login.mjs";
@@ -31,7 +31,7 @@ const logs = join(workspace, "logs");
 const uploads = join(workspace, "temp", "mac-uploads");
 const configApi = createConfigApi({ hubRoot: root, pwsh: PWSH, env: toolEnv });
 // Agent mode: Claude Code drives Google Flow and writes the reviews (core/setup/agent-run.mjs, docs/agent-prompt.md).
-const agent = createAgentRunner({ toolRoot: root, workspace, profileDir: profileDirOf(sharedWs), getBrowser: () => readFlowBrowser(workspace, sharedWs), session, kind: "main" });
+const agentRunner = createAgentRunner({ toolRoot: root, workspace, profileDir: profileDirOf(sharedWs), getBrowser: () => readFlowBrowser(workspace, sharedWs), session, kind: "main" });
 // The light runner: queue and prep runs (no browser, no Chrome profile, own state files runs/prep-run.*): they go on while Bắt đầu runs.
 // Luồng N (Dự án popup): up to 4 light runs at once, each on its own disjoint slice of the work (own state / log files prep-run[-k].*). `light` keeps the
 // one-runner API (start / stop / status / isActive / shutdown) over the pool, so every route and the queue order treat the shards as one run.
@@ -51,6 +51,133 @@ const light = {
 };
 const clampThreads = (v, fallback = 1) => { const n = Math.round(Number(v)); return Number.isInteger(n) ? Math.min(4, Math.max(1, n)) : fallback; };
 const savedThreads = () => { try { return clampThreads(readSeededJson(join(workspace, "config", "run-settings.json"), join(sharedWs, "config", "run-settings.json"), {}).threads, 1); } catch { return 1; } };
+// ----- Image + review run in PHASES when Luồng N > 1 -----
+// Everything that needs no browser runs N at a time; the browser step stays what it is:
+//   A  context + sign wording + custom-logo flags: N "ctx" workers on disjoint slices of the items (no browser)
+//   B  the pictures: ONE main run (Google Flow for Claude / Antigravity (Flow): sequential with the pacing rules; Antigravity's own images: its N-parallel groups)
+//   C  review writing: N "rev" workers on disjoint slices (the write-review quality gate runs inside the CLI under a lock)
+//   F  finish (results upload) one item at a time by the app itself, no AI.
+// Luồng 1 = no job: one run does everything, exactly as before. Chạy tiếp re-enters the phases and every phase skips what already exists on disk.
+let imgJob = null, jobFinal = null, jobTimer = null;
+const jobActive = () => !!imgJob;
+const runDirOf = (run) => join(workspace, "output", run);
+const jobIds = (run) => { try { const j = JSON.parse(readFileSync(join(runDirOf(run), "agent-items.json"), "utf8").replace(/^\uFEFF/, "")); return (Array.isArray(j) ? j : j.items || []).map((x) => x && x.id).filter(Boolean); } catch { return []; } };
+const hasCtx = (run, id) => existsSync(join(runDirOf(run), "logs", id + "-context.json"));
+const hasImg = (run, id) => existsSync(join(runDirOf(run), "images", id + ".png"));
+const hasRev = (run, id) => existsSync(join(runDirOf(run), "logs", id + "-review.txt"));
+function doneRows(run) { try { const r = JSON.parse(readFileSync(join(runDirOf(run), "results.json"), "utf8").replace(/^\uFEFF/, "")); return (Array.isArray(r) ? r : []).map((x) => String(x.photo_path || "").replace(/\\/g, "/").split("/").pop().replace(/\.[^.]+$/, "")); } catch { return []; } }
+function jobLog(j, text) { j.lines.push(new Date().toTimeString().slice(0, 8) + " [Tạo ảnh & review] " + text); if (j.lines.length > 200) j.lines.shift(); j.text = text; }
+function runAgentCli(args, timeout = 240000) {
+  return new Promise((resolveCli) => execFile(PWSH, psFile(join(root, "src", "agent.ps1"), args), { cwd: root, env: toolEnv, timeout, windowsHide: true, encoding: "utf8" }, (err, out) => {
+    let r = null; try { r = JSON.parse(String(out || "").trim().split(String.fromCharCode(10)).pop()); } catch { /* below */ }
+    resolveCli(r || { ok: false, error: (err && err.message) || "Không đọc được kết quả của src/agent.ps1." });
+  }));
+}
+function startImgJob(run, threads, agentName) {
+  imgJob = { run, n: clampThreads(threads), phase: "prepare", started: Date.now(), lines: [], text: "Đang chuẩn bị…", agent: agentName, stopped: false, busy: false };
+  jobFinal = null;
+  jobLog(imgJob, "Chia việc " + imgJob.n + " luồng: ngữ cảnh → tạo ảnh → review → hoàn tất");
+  jobTimer = jobTimer || setInterval(() => { jobTick().catch(() => {}); }, 2000);
+  setImmediate(() => jobTick().catch(() => {}));
+}
+function finishJob(status, error = "") {
+  const j = imgJob; if (!j) return;
+  const base = agentRunner.status();
+  jobFinal = { run_id: j.run, status, error, tail: [...(base.run_id === j.run ? base.tail || [] : []), ...j.lines].slice(-30) };
+  imgJob = null;
+  if (jobTimer) { clearInterval(jobTimer); jobTimer = null; }
+  cleanShardFiles();
+}
+// N workers of one phase on contiguous disjoint slices of ids; each is a light run (own slot, own temp prompt dir, the run's AI).
+function startPhaseWorkers(j, mode, ids) {
+  const n = Math.min(j.n, ids.length), chunk = Math.ceil(ids.length / n), stamp = newRunId().slice(6), started = [];
+  for (let k = 1; k <= n; k++) {
+    const part = ids.slice((k - 1) * chunk, k * chunk);
+    if (!part.length) continue;
+    const file = join(workspace, "tmp", "items-" + stamp + "-" + mode + k + ".json"); shardFiles.push(file);
+    try { mkdirSync(dirname(file), { recursive: true }); writeFileSync(file, JSON.stringify(part)); } catch (e) { for (const r of started) r.stop(); return { ok: false, error: e.message }; }
+    const runner = lightPool[k - 1], r = runner.start({ run: mode + "-" + stamp + "-s" + k, mode, project: "", options: "items file: " + file + "; items: " + part.length + "; image run: " + j.run, shard: k + "/" + n, targetRun: j.run });
+    if (!r.ok) { for (const x of started) x.stop(); return r; }
+    started.push(runner);
+  }
+  return { ok: true, workers: started.length };
+}
+async function jobTick() {
+  const j = imgJob;
+  if (!j || j.busy) return;
+  j.busy = true;
+  try {
+    if (j.stopped) return finishJob("stopped");
+    if (j.phase === "prepare") {
+      const r = await runAgentCli(["prepare", "-Run", j.run]);
+      if (!r.ok) return finishJob("failed", r.error || "Chưa lập được danh sách mục của lượt.");
+      j.phase = "ctx-next";
+    }
+    if (j.phase === "context" || j.phase === "review") {
+      if (lightPool.some((r) => r.isActive())) return;
+      j.phase = j.phase === "context" ? "images-next" : "finish-next";
+    }
+    if (j.phase === "ctx-next") {
+      const need = jobIds(j.run).filter((id) => !hasCtx(j.run, id) && !hasImg(j.run, id));
+      if (!need.length) { j.phase = "images-next"; }
+      else { const r = startPhaseWorkers(j, "ctx", need); if (!r.ok) return finishJob("failed", r.error); j.phase = "context"; jobLog(j, "Ngữ cảnh: " + need.length + " mục chia " + r.workers + " luồng"); return; }
+    }
+    if (j.phase === "images-next") {
+      const ids = jobIds(j.run);
+      if (ids.length && ids.every((id) => hasImg(j.run, id))) { j.phase = "review-next"; }
+      else {
+        const r = agentRunner.start({ run: j.run, mode: "flow", phased: true });
+        if (!r.ok) return finishJob("failed", r.error);
+        j.phase = "images"; jobLog(j, "Tạo ảnh"); return;
+      }
+    }
+    if (j.phase === "images") {
+      if (agentRunner.isActive()) return;
+      const st = agentRunner.status();
+      if (st.status === "stopped") return finishJob("stopped");
+      if (st.status === "failed") return finishJob("failed", st.error || "");
+      j.phase = "review-next";
+    }
+    if (j.phase === "review-next") {
+      const need = jobIds(j.run).filter((id) => hasImg(j.run, id) && !hasRev(j.run, id));
+      if (!need.length) { j.phase = "finish-next"; }
+      else { const r = startPhaseWorkers(j, "rev", need); if (!r.ok) return finishJob("failed", r.error); j.phase = "review"; jobLog(j, "Review: " + need.length + " mục chia " + r.workers + " luồng"); return; }
+    }
+    if (j.phase === "finish-next") {
+      j.phase = "finish";
+      const done = new Set(doneRows(j.run));
+      const need = jobIds(j.run).filter((id) => hasRev(j.run, id) && !done.has(id));
+      let failed = 0;
+      for (const id of need) {
+        if (j.stopped) return finishJob("stopped");
+        jobLog(j, "Hoàn tất mục " + ((id.match(/^\d+/) || [id])[0]) + " (" + (need.indexOf(id) + 1) + "/" + need.length + ")");
+        const r = await runAgentCli(["finish", "-Run", j.run, "-Item", id]);
+        if (!r.ok) { failed++; jobLog(j, "Mục " + ((id.match(/^\d+/) || [id])[0]) + " chưa hoàn tất: " + String(r.error || r.cause || "").slice(0, 160)); }
+      }
+      return finishJob("done", failed ? failed + " mục chưa hoàn tất (xem log)" : "");
+    }
+  } finally { j.busy = false; }
+}
+function jobStatus() {
+  const j = imgJob, base = agentRunner.status();
+  if (!j) return jobFinal && base.run_id === jobFinal.run_id ? { ...base, status: jobFinal.status, error: jobFinal.error || base.error, active: false, tail: jobFinal.tail || base.tail } : base;
+  const workers = lightPool.map((r) => r.status()).filter((x) => x.active), imagesNow = j.phase === "images" && base.run_id === j.run;
+  const tail = [...j.lines.slice(-4), ...(imagesNow ? base.tail || [] : workers.flatMap((x) => (x.tail || []).slice(-8)))].slice(-30);
+  const el = Math.round((Date.now() - j.started) / 1000);
+  return { active: true, status: "running", run_id: j.run, mode: "flow", project: "", started: new Date(j.started).toISOString(), elapsed_s: el, model_in_use: imagesNow ? base.model_in_use || "" : "", agent: j.agent, last_text: imagesNow ? base.last_text || j.text : j.text, turns: imagesNow ? base.turns || 0 : 0, error: "", updated: new Date().toISOString(), tail, phase: j.phase };
+}
+// `agent` = the main runner as every route knows it, made job-aware (an image job counts as an active agent run, Dừng stops the whole job).
+const agent = {
+  isActive: () => agentRunner.isActive() || jobActive(),
+  status: () => jobStatus(),
+  start: (o) => agentRunner.start(o),
+  stop: () => {
+    if (imgJob) { imgJob.stopped = true; for (const r of lightPool) if (r.isActive()) r.stop(); if (agentRunner.isActive()) agentRunner.stop(); return { ok: true, status: 200, run_id: imgJob.run }; }
+    return agentRunner.stop();
+  },
+  shutdown: () => { try { agentRunner.shutdown(); } catch {} },
+};
+
 // Starts the light shards of one action. urls = the products of the run in order (queue / prep): split into contiguous disjoint parts, one shard file
 // (JSON array of links) each, handed to the agent as "shard file:" (queue-todo / prep-todo -OnlyFile), so no two shards ever hold the same product.
 // urls = null (index): the shards split the library photos by a stable hash (-Shard k/n). threads 1 = exactly the old single run.
@@ -357,12 +484,13 @@ function progressOf(st) {
       if (!n) return { done: 0, total: 0, label: "" };
       const has = (f) => existsSync(f);
       const img = ids.filter((id) => has(join(dir, "images", id + ".png"))).length;
+      const ctxN = ids.filter((id) => has(join(dir, "logs", id + "-context.json"))).length;
       const rev = ids.filter((id) => has(join(dir, "logs", id + "-review.txt")) || has(join(dir, "logs", id + "-agent-review.json"))).length;
       const res = rj(join(dir, "results.json")), rows = Array.isArray(res) ? res : [];
       const fin = ids.filter((id) => rows.some((r) => String(r.photo_path || "").replace(/\\/g, "/").split("/").pop().replace(/\.[^.]+$/, "") === id)).length;
       const cur = ids.find((id) => !has(join(dir, "images", id + ".png"))) || ids.find((id) => !has(join(dir, "logs", id + "-review.txt")) && !has(join(dir, "logs", id + "-agent-review.json")));
       const curText = cur && st.active ? " · Mục " + (String(cur).match(/^\d+/) || [cur])[0] : "";
-      return { done: img + rev, total: 2 * n, label: "Ảnh " + img + "/" + n + " · Review " + rev + "/" + n + " · Hoàn tất " + fin + "/" + n + " · " + t + curText + eta(st, fin, n) };
+      return { done: ctxN + img + rev, total: 3 * n, label: "Ngữ cảnh " + ctxN + "/" + n + " · Ảnh " + img + "/" + n + " · Review " + rev + "/" + n + " · Hoàn tất " + fin + "/" + n + " · " + t + curText + eta(st, fin, n) };
     }
     if (st.mode === "scan") {
       const sc = scanOfRun(st.run_id);
@@ -573,6 +701,15 @@ async function handle(req, res) {
     if (login.state !== "logged_in") return send(res, 409, { error: login.state === "logged_out" ? "Chưa đăng nhập Google Flow trong Chrome riêng: bấm Mở Chrome để đăng nhập, đăng nhập xong đóng cửa sổ đó rồi Kiểm tra lại." : "Chưa chạy được Claude: " + login.detail });
     // given.run (Chạy tiếp): only an existing Claude run of this window (its folder is used as is).
     if (given.run && (!/^agent-[0-9a-z-]{6,60}$/i.test(String(given.run)) || !existsSync(join(workspace, "output", String(given.run), "agent-items.json")))) return send(res, 400, { error: "Không tìm thấy lượt để chạy tiếp." });
+    // Luồng above 1 (and nothing else on the light runners): the no-browser steps run N at a time in phases; the profile / account preflight is done HERE, before any worker.
+    const nowAgent = readAgentSettings(workspace, sharedWs), usesBrowser = nowAgent.backend === "claude" || nowAgent.agyImages === "flow", nThreads = savedThreads();
+    if (nThreads > 1 && !light.isActive()) {
+      const bc = readFlowBrowser(workspace, sharedWs);
+      if (usesBrowser && bc.mode !== "own") { const chk = checkExtensionProfile(bc.profile, { account: readFlowAccount(workspace, sharedWs) }); if (!chk.ok) return send(res, 409, { error: chk.error }); }
+      const runId = given.run || newRunId();
+      startImgJob(runId, nThreads, nowAgent.backend);
+      return send(res, 200, { ok: true, run: runId, started: new Date().toISOString() });
+    }
     const r = agent.start({ run: given.run || undefined });
     return send(res, r.status, r.ok ? { ok: true, run: r.run_id, started: r.started } : { error: r.error });
   }
@@ -604,7 +741,7 @@ async function handle(req, res) {
     const max = Math.min(200, Math.max(1, Math.round(Number(given.max)) || 20));
     if (run.proc) return send(res, 409, { error: "Đang chạy." });
     if (agent.isActive()) return send(res, 409, { error: "Đã có một lượt AI đang chạy (tạo ảnh hoặc quét). Chờ xong hoặc bấm Dừng." });
-    const r = agent.start({ run: "scan-" + newRunId().slice(6), mode: "scan", site, max, tabs: clampThreads(given.threads, savedThreads()) });
+    const r = agent.start({ run: "scan-" + newRunId().slice(6), mode: "scan", site, max });
     return send(res, r.status, r.ok ? { ok: true, run: r.run_id, started: r.started } : { error: r.error });
   }
   if (path === "/api/scan/status" && req.method === "GET") {
@@ -625,7 +762,7 @@ async function handle(req, res) {
     { const fp = focusMismatch(id); if (fp) return send(res, 409, { error: fp }); }
     if (run.proc) return send(res, 409, { error: "Đang chạy." });
     if (agent.isActive()) return send(res, 409, { error: "Đã có một lượt AI đang chạy (tạo ảnh, quét hoặc cập nhật review). Chờ xong hoặc bấm Dừng." });
-    const r = agent.start({ run: "reviews-" + newRunId().slice(6), mode: "reviews", project: id, tabs: clampThreads(given.threads, savedThreads()) });
+    const r = agent.start({ run: "reviews-" + newRunId().slice(6), mode: "reviews", project: id });
     return send(res, r.status, r.ok ? { ok: true, run: r.run_id, started: r.started } : { error: r.error });
   }
   if (path === "/api/project/reviews/status" && req.method === "GET") {

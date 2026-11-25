@@ -17,9 +17,10 @@ export const PLAYWRIGHT_TOOLS = ["browser_tabs", "browser_navigate", "browser_sn
 export const ALLOWED_TOOLS = ["Bash", "Read", "Write", "Edit", "Glob", "Grep", ...PLAYWRIGHT_TOOLS];
 // queue / prep / index runs only look at photos and call src/scan.ps1: no browser, no Playwright MCP, no Chrome profile.
 export const LIGHT_TOOLS = ["Bash", "Read", "Write", "Edit", "Glob", "Grep"];
-export const LIGHT_MODES = ["queue", "prep", "index"];
+// ctx / rev = the no-browser PHASE workers of an image run with Luồng above 1 (context + sign wording, review writing); they work on a slice of its items.
+export const LIGHT_MODES = ["queue", "prep", "index", "ctx", "rev"];
 // The name of each feature as the person knows it: every log line of a run starts with [feature · project].
-export const FEATURE = { flow: "Tạo ảnh & review (Bắt đầu)", scan: "Quét web", reviews: "Cập nhật số review", queue: "Thêm vào hàng chờ", prep: "Chuẩn bị trước", index: "Gắn nhãn kho ảnh" };
+export const FEATURE = { flow: "Tạo ảnh & review (Bắt đầu)", scan: "Quét web", reviews: "Cập nhật số review", queue: "Thêm vào hàng chờ", prep: "Chuẩn bị trước", index: "Gắn nhãn kho ảnh", ctx: "Ngữ cảnh ảnh", rev: "Viết review" };
 
 const SCRUBS = [
   [/\bBearer\s+\S+/gi, "Bearer [hidden]"],
@@ -102,6 +103,8 @@ export function friendlyTool(name, input = {}, mode = "flow", ai = "") {
     if (/flow-brief/i.test(cmd)) return m(/-Safe/i.test(cmd) ? (agy ? "Ảnh bị từ chối → thử lại 1 lần bằng mô tả an toàn" : "Flow từ chối → thử lại 1 lần bằng mô tả an toàn") : (agy ? "Chuẩn bị nội dung tạo ảnh" : "Chuẩn bị nội dung gửi Flow"));
     if (/set-sign-text/i.test(cmd)) return m("Lưu chữ trên biển đã chọn");
     if (/sign-brief/i.test(cmd)) return m("Chọn chữ trên biển theo cảnh");
+    if (/agent\.ps1\s+context-brief/i.test(cmd)) return m("Xem ảnh để lập ngữ cảnh");
+    if (/agent\.ps1\s+context\b/i.test(cmd)) return m("Lưu ngữ cảnh sản phẩm");
     if (/agent\.ps1\s+(review-brief|write-review)/i.test(cmd)) return m("Viết review");
     if (/agent\.ps1\s+finish/i.test(cmd)) return m("Hoàn tất (tải kết quả lên kho)");
     if (/flow-pace\.mjs\s+gate/i.test(cmd)) return m("Chờ nhịp rồi gửi prompt Flow");
@@ -322,7 +325,7 @@ export function checkExtensionProfile(profile, { profiles = localChromeProfiles(
 export const newRunId = (d = new Date()) => "agent-" + d.toISOString().replace(/\D/g, "").slice(0, 14) + "-" + Math.random().toString(16).slice(2, 6);
 
 // The text block of docs/agent-prompt.md (mode "flow") or docs/scan-prompt.md (mode "scan"), placeholders filled.
-export const PROMPT_FILES = { flow: "agent-prompt.md", scan: "scan-prompt.md", reviews: "reviews-count-prompt.md", queue: "queue-prompt.md", prep: "prep-prompt.md", index: "index-prompt.md" };
+export const PROMPT_FILES = { flow: "agent-prompt.md", scan: "scan-prompt.md", reviews: "reviews-count-prompt.md", queue: "queue-prompt.md", prep: "prep-prompt.md", index: "index-prompt.md", ctx: "agent-ctx-prompt.md", rev: "agent-review-prompt.md" };
 export function buildPrompt({ toolRoot, run, options = "defaults", mode = "flow", site = "", max = 20, project = "", workspace = "", agentName = "Claude Code", threads = 1, tabs = 1, selfImages = true }) {
   const agyImg = mode === "flow" && agentName === "Antigravity" && selfImages; // Antigravity makes the images itself: its own prompt file, no Flow, no Google account
   const file = agyImg ? "agent-prompt-agy-image.md" : PROMPT_FILES[mode];
@@ -549,7 +552,7 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
   // mode "queue": put products of a project into the run queue with N scenes each (docs/queue-prompt.md, needs project and options).
   // mode "reviews": read the review number shown on each product page of a project (docs/reviews-count-prompt.md, needs project).
   // One run at a time for all: they share the one Chrome profile.
-  function start({ run: runId = newRunId(), options = "defaults", mode = "flow", site = "", max = 20, project = "", shard = "", tabs = 1 } = {}) {
+  function start({ run: runId = newRunId(), options = "defaults", mode = "flow", site = "", max = 20, project = "", shard = "", tabs = 1, targetRun = "", phased = false } = {}) {
     if (!/^[\w.-]{3,64}$/.test(runId)) return { ok: false, status: 400, error: "Invalid run id." };
     const lightMode = LIGHT_MODES.includes(mode);
     if ((kind === "light") !== lightMode) return { ok: false, status: 400, error: `Mode ${mode} does not run on this runner.` };
@@ -562,7 +565,7 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
     if (!found?.found) return { ok: false, status: 400, error: agy ? "Antigravity CLI (agy) not found: install Antigravity and sign in with Google, or set PR_AGY_CLI to its path." : "Claude CLI not found: install Claude Code, or set PR_CLAUDE_CLI to its path." };
     if (!noBrowser && !npxOk()) return { ok: false, status: 400, error: "npx is not available (it comes with Node.js): the Playwright MCP cannot start." };
     let prompt;
-    try { prompt = buildPrompt({ toolRoot, run: runId, options, mode, site, max, project, workspace, agentName: agy ? "Antigravity" : "Claude Code", selfImages: !agyFlow, tabs: Math.min(4, Math.max(1, Math.round(Number(tabs)) || 1)), threads: agyImage ? readThreads(workspace || join(toolRoot, "workspace"), join(toolRoot, "workspace")) : 1 }); } catch (e) { return { ok: false, status: 500, error: sanitize(e.message) }; }
+    try { prompt = buildPrompt({ toolRoot, run: targetRun || runId, options, mode, site, max, project, workspace, agentName: agy ? "Antigravity" : "Claude Code", selfImages: !agyFlow, tabs: Math.min(4, Math.max(1, Math.round(Number(tabs)) || 1)), threads: agyImage ? readThreads(workspace || join(toolRoot, "workspace"), join(toolRoot, "workspace")) : 1 }); } catch (e) { return { ok: false, status: 500, error: sanitize(e.message) }; }
     mkdirSync(tmpDir, { recursive: true }); mkdirSync(runsDir, { recursive: true });
     const cfg = join(tmpDir, `mcp-${runId}-${randomBytes(3).toString("hex")}.json`);
     const bc = noBrowser ? {} : (getBrowser() || {}), ext = !noBrowser && bc.mode !== "own";
@@ -591,7 +594,9 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
     const asked = agy ? { model: agentSet.agyModel, effort: agentSet.agyEffort } : claudeSet;
     // Optional per-profile Playwright extension token (shared workspace/playwright-tokens.json): through this env for Claude, never in a log.
     const extToken = ext ? extensionToken(join(toolRoot, "workspace"), bc.profile) : "";
-    const note = mode === "index"
+    const note = mode === "ctx" || mode === "rev"
+      ? "RUN-NOW NOTE: this is one WORKER of an image run split between several workers (no browser, no Flow, open no page): it handles ONLY the items listed in the items file named in OPTIONS, with the CLI commands of the steps below; other workers do the other items at the same time, so run CLI commands one at a time and never touch an item that is not in your list.\n\n"
+      : mode === "index"
       ? "RUN-NOW NOTE: this run only TAGS the scene photo library (no browser needed, do not open any page): look at the numbered contact sheets with the Read tool and use the scan.ps1 scene-index commands. It never touches a project, the queue or image creation.\n\n"
       : mode === "prep"
       ? "RUN-NOW NOTE: this run only PREPARES scene picks in advance (no browser needed, do not open any page): look at photos with the Read tool and use the scan.ps1 prep commands. It never touches the queue, never starts image creation and never writes review text.\n\n"
@@ -602,7 +607,8 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
       : mode === "scan"
       ? "RUN-NOW NOTE: this run uses the tool's OWN Chrome (a dedicated profile, no sign-in needed to scan a shop)" + (headless ? ", running in the background (headless)" : "") + ". There is no Connect step and no extension: ignore any instruction to click Connect or wait for the person; start with browser_tabs or browser_navigate. If the site asks for a login or shows a captcha, stop and report it (never sign in for the person)." + "\n\n"
       : "RUN-NOW NOTE: this run uses the tool's OWN Chrome (a dedicated profile the person already signed in to Google Flow with)" + (headless ? ", running in the background (headless)" : "") + ". There is no Connect step and no extension: ignore any instruction to click Connect or wait for the person; start with browser_tabs or browser_navigate. If Flow shows a Google sign-in page, stop and report CAUSE:LOGIN (never sign in for the person)." + "\n\n";
-    const intro = (agyImage ? "" : ext && mode !== "queue" ? extensionNote({ groupName: group.name, session: sessionLabel(session), downloadsDir: join(workspace, "tmp", "flow-downloads"), tokenSet: !!extToken, flow: mode === "flow" }) : note) + prompt;
+    const phaseNote = phased ? "PHASE NOTE: this run is split in phases because Luồng is above 1. Step 2 (context, sign wording, custom-logo flags) was ALREADY done for the items by other workers: do NOT redo it for an item that has a context; an item without one, or flow-brief answering NEEDS_SIGN_TEXT, is the exception: do its step 2 yourself. Step 4 (reviews and finish) is done AFTER this run by other workers: when step 3 is over (every image registered or skipped) go to step 5 (CLI run-summary) and STOP; never write reviews and never run finish.\n\n" : "";
+    const intro = phaseNote + (agyImage ? "" : ext && mode !== "queue" ? extensionNote({ groupName: group.name, session: sessionLabel(session), downloadsDir: join(workspace, "tmp", "flow-downloads"), tokenSet: !!extToken, flow: mode === "flow" }) : note) + prompt;
     let args, agyDir = "";
     if (agy) {
       // Antigravity has no per-run MCP flag (--settings refuses mcpServers) and global config must stay untouched, so the run gets a folder of its own
@@ -638,7 +644,7 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
     cur = run; if (kind === "light") lightRuns.set(lightKey, (lightRuns.get(lightKey) || 0) + 1);
     try { writeFileSync(logFile, ""); } catch {}
     setModelLine(run, modelLineText(asked.model, asked.effort, true, backend));
-    addLine(run, mode === "index" ? "Bắt đầu: " + who + " gắn nhãn kho ảnh bối cảnh (mã lượt " + runId + ")"
+    addLine(run, mode === "ctx" ? "Bắt đầu: " + who + " lập ngữ cảnh cho các mục được giao (mã lượt " + runId + ")" : mode === "rev" ? "Bắt đầu: " + who + " viết review cho các mục được giao (mã lượt " + runId + ")" : mode === "index" ? "Bắt đầu: " + who + " gắn nhãn kho ảnh bối cảnh (mã lượt " + runId + ")"
       : mode === "prep" ? "Bắt đầu: " + who + " chuẩn bị trước ảnh bối cảnh cho các sản phẩm của dự án " + project + " (mã lượt " + runId + ")"
       : mode === "scan" ? "Bắt đầu: " + who + " quét " + site + " (mã lượt " + runId + ")"
       : mode === "queue" ? "Bắt đầu: " + who + " thêm sản phẩm của dự án " + project + " vào hàng chờ (mã lượt " + runId + ")"
