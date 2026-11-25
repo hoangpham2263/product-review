@@ -1821,7 +1821,7 @@ async function pollAgent() {
     if (st.model_in_use && st.model_in_use !== run.modelInUse) { run.modelInUse = st.model_in_use; updateModelLine(); }
     const elapsed = Math.floor((Date.now() - run.started) / 1000);
     const time = String(Math.floor(elapsed / 60)).padStart(2, "0") + ":" + String(elapsed % 60).padStart(2, "0");
-    ui.lblProgress.textContent = `${st.last_text || agentName() + " đang chuẩn bị…"}  •  ${time}  •  ${run.ai}`;
+    ui.lblProgress.textContent = `${st.last_text || (st.agent === "antigravity" ? "Antigravity" : st.agent === "claude" ? "Claude" : agentName()) + " đang chuẩn bị…"}  •  ${time}  •  ${run.ai}`;
     ui.txtLog.value = (st.tail || []).join("\n"); ui.txtLog.scrollTop = ui.txtLog.scrollHeight;
     if (!st.active) return finishAgent(st);
   } catch {}

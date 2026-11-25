@@ -28,14 +28,16 @@
 .fld.cc:has(.ccustom[style*="hidden"]) { display: none; }
 header .all { margin-left: auto; }
 /* Cài đặt and Tài khoản AI: three short cards side by side (name, state, buttons). */
-#ai, #base { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+#ai, #base { grid-auto-flow: column; grid-auto-columns: minmax(0, 1fr); }
 #ai .item, #base .item { grid-template-columns: 22px minmax(0, 1fr); align-content: start; }
 #ai .item .side, #base .item .side { grid-column: 2; flex-direction: row; flex-wrap: wrap; margin-top: 6px; }
 #ai .item .side .btn, #base .item .side .btn { min-width: 0; height: 28px; padding: 0 10px; }
 /* What Cài / cập nhật tất cả AI did, one line per AI, under the installed items. */
 #all-result { display: grid; gap: 2px; margin: 10px 0 0; }
-@media (max-width: 860px) { #ai, #base { grid-template-columns: minmax(0, 1fr); } }
-.fgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 12px 14px; }
+@media (max-width: 860px) { #ai, #base { grid-auto-flow: row; grid-auto-columns: auto; grid-template-columns: minmax(0, 1fr); } }
+.fgrid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 14px; }
+.fgrid .full { grid-column: 1 / -1; }
+@media (max-width: 600px) { .fgrid { grid-template-columns: minmax(0, 1fr); } }
 .fld > label { margin: 0 0 4px; }
 .fld .row { display: flex; gap: 6px; align-items: center; }
 .fld .row select, .fld .row input { flex: 1 1 auto; min-width: 0; width: auto; }
@@ -68,6 +70,9 @@ header .all { margin-left: auto; }
         <div class="fld"><label>Viết review</label><select class="rv-text"></select></div>
         <div class="fld"><label>Tạo ảnh</label><select class="rv-image"></select></div>
         <div class="fld"><label>Luồng</label><input class="rv-threads" type="number" min="1" max="4" step="1"></div>
+        <div class="fld"><label>Quét web</label><select class="rv-scan"></select></div>
+        <div class="fld"><label>Cập nhật review</label><select class="rv-reviews"></select></div>
+        <div class="fld"><label>Hàng chờ &amp; chuẩn bị</label><select class="rv-queue"></select></div>
       </div>
       <div id="flow-only" hidden>
         <div class="sub-title">Trình duyệt cho Claude (Flow)</div>
@@ -75,7 +80,7 @@ header .all { margin-left: auto; }
           <div class="fld"><label>Chrome profile</label><div class="row"><select class="fb-profile"></select><button class="btn fb-install" type="button" hidden>Cài extension</button></div></div>
           <div class="fld"><label>Tài khoản Flow <span class="fb-check"></span></label><select class="fb-account"></select></div>
           <div class="fld fb-token-box" hidden><label class="fb-token-label">Token Playwright (tùy chọn)</label><div class="row"><input class="fb-token" type="password" autocomplete="off" placeholder="Dán token của profile này"><button class="btn fb-token-save" type="button">Lưu</button><button class="btn fb-token-clear" type="button">Xoá</button></div></div>
-          <div class="fld"><label>Đăng nhập Google Flow</label><div class="row"><button class="btn fb-open" type="button"><span class="dot"></span>Mở Chrome để đăng nhập</button><button class="btn fb-recheck" type="button">Kiểm tra lại</button></div></div>
+          <div class="fld full"><label>Đăng nhập Google Flow</label><div class="row"><button class="btn fb-open" type="button"><span class="dot"></span>Mở Chrome để đăng nhập</button><button class="btn fb-recheck" type="button">Kiểm tra lại</button></div></div>
         </div>
       </div>
     </section>
@@ -86,7 +91,7 @@ header .all { margin-left: auto; }
       <div class="fgrid"><div class="fld"><label>Model</label><select class="cmodel"></select></div><div class="fld"><label>Mức suy nghĩ</label><select class="ceffort"></select></div><div class="fld cc"><label>Mã model</label><input class="ccustom" type="text" maxlength="60" placeholder="claude-opus-5-5" spellcheck="false" style="visibility: hidden"></div></div>
     </section>
     <section class="group wide"><h2>6. Antigravity</h2>
-      <div class="fgrid"><div class="fld"><label>Agent cho Quét web, hàng chờ, chuẩn bị</label><select class="abackend"></select></div><div class="fld"><label>Model</label><select class="amodel"></select></div><div class="fld"><label>Mức suy nghĩ</label><select class="aeffort"></select></div></div>
+      <div class="fgrid"><div class="fld"><label>Model</label><select class="amodel"></select></div><div class="fld"><label>Mức suy nghĩ</label><select class="aeffort"></select></div></div>
     </section>
     <section class="group wide"><h2>7. Lượt dùng AI</h2><div class="usage-wrap"><table class="usage"><thead><tr><th>AI · tài khoản</th><th>Hôm nay</th><th>7 ngày</th><th>30 ngày</th><th>Lỗi gần nhất</th></tr></thead><tbody id="usage"><tr><td colspan="5" class="sub">Đang đọc…</td></tr></tbody></table></div></section>
   </div>

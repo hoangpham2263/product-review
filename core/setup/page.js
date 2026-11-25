@@ -240,7 +240,7 @@
     fill(ceffort, CE, CE.map(effLabel), r.claudeEffort || "");
   }).catch(() => {});
   // Agent chạy Flow: run-settings.json agentBackend (claude | antigravity) + agyModel / agyEffort of THIS window; the model list is `agy models` read by the server (static list when agy cannot answer).
-  const abackend = $(".abackend"), amodel = $(".amodel"), aeffort = $(".aeffort");
+  const amodel = $(".amodel"), aeffort = $(".aeffort");
   const fillAgy = (groups, value) => {
     const ids = groups.flatMap((g) => g.models.map((m) => m.id));
     const opts = groups.map((g) => { const og = el("optgroup"); og.label = g.family + (g.note ? " · " + g.note : ""); og.append(...g.models.map((m) => Object.assign(el("option", "", m.label), { value: m.id }))); return og; });
@@ -248,18 +248,17 @@
     amodel.replaceChildren(Object.assign(el("option", "", "Model mặc định của Antigravity"), { value: "" }), ...extra, ...opts);
     amodel.value = value || "";
   };
-  const saveAgy = async () => { const r = await post("/api/run-settings", { agentBackend: abackend.value, agyModel: amodel.value, agyEffort: aeffort.value }); if (r.error) alert(r.error); };
-  fill(abackend, ["claude", "antigravity"], ["Agent: Claude", "Agent: Antigravity"], "claude");
+  const saveAgy = async () => { const r = await post("/api/run-settings", { agyModel: amodel.value, agyEffort: aeffort.value }); if (r.error) alert(r.error); };
   fill(aeffort, CE, CE.map(effLabel), "");
-  abackend.onchange = amodel.onchange = aeffort.onchange = saveAgy;
+  amodel.onchange = aeffort.onchange = saveAgy;
   fetch("/api/run-settings").then((r) => r.json()).then((r) => {
-    abackend.value = r.agentBackend === "antigravity" ? "antigravity" : "claude";
     fillAgy(r.agyModelGroups || [], r.agyModel || "");
     fill(aeffort, CE, CE.map(effLabel), r.agyEffort || "");
   }).catch(() => {});
   // ----- Cách chạy: everything the main window used to hold (Viết review, Tạo ảnh, Luồng, Chrome profile, Tài khoản Flow, token, Mở Chrome),
   // saved in the same run-settings.json / flow-browser files through the same endpoints. The main window re-reads them when it is shown again
   // (Quay lại, focus), so nothing needs a reload. Shown only on Product Review's server (the others have no /api/run-settings).
+  const rvScan = $(".rv-scan"), rvReviews = $(".rv-reviews"), rvQueue = $(".rv-queue");
   const runSec = $("#run-sec"), rvText = $(".rv-text"), rvImage = $(".rv-image"), rvThreads = $(".rv-threads"), flowOnly = $("#flow-only");
   const fbProfile = $(".fb-profile"), fbInstall = $(".fb-install"), fbAccount = $(".fb-account"), fbCheck = $(".fb-check"), tokBox = $(".fb-token-box"), tokLabel = $(".fb-token-label");
   const tokInput = $(".fb-token"), tokSave = $(".fb-token-save"), tokClear = $(".fb-token-clear"), fbOpen = $(".fb-open"), fbRecheck = $(".fb-recheck"), fbDot = $(".fb-open .dot");
@@ -313,6 +312,8 @@
     fill(rvText, ["codex", "antigravity", "claude"], ["Codex", "Antigravity CLI", "Claude"], ["codex", "antigravity", "claude"].includes(r.textBackend) ? r.textBackend : "codex");
     fill(rvImage, ["codex", "agent", "agent-agy"], ["Codex", "Claude (Flow)", "Antigravity"], imageValue(r));
     rvThreads.value = r.threads || 2;
+    // Quét web / Cập nhật review / Hàng chờ & chuẩn bị: Claude or Antigravity (Codex has no browser mode). Older windows: the server answers with their old single agent.
+    for (const [box, key] of [[rvScan, "scanAgent"], [rvReviews, "reviewsAgent"], [rvQueue, "queueAgent"]]) fill(box, ["claude", "antigravity"], ["Claude", "Antigravity"], r[key] === "antigravity" ? "antigravity" : "claude");
     loadAccounts(r);
     await loadFb();
     refreshFlowMode();
@@ -322,10 +323,11 @@
     // Claude (Flow) and Antigravity are the same agent run driven by a different agent (agentBackend); Codex leaves the agent as it is.
     const v = rvImage.value, part = v === "codex" ? { imageBackend: "codex" } : { imageBackend: "agent", agentBackend: v === "agent-agy" ? "antigravity" : "claude" };
     await saveRs(part);
-    if (part.agentBackend) abackend.value = part.agentBackend;
     refreshFlowMode();
   };
-  abackend.addEventListener("change", () => { if (rvImage.value !== "codex") { rvImage.value = abackend.value === "antigravity" ? "agent-agy" : "agent"; refreshFlowMode(); } });
+  rvScan.onchange = () => saveRs({ scanAgent: rvScan.value });
+  rvReviews.onchange = () => saveRs({ reviewsAgent: rvReviews.value });
+  rvQueue.onchange = () => saveRs({ queueAgent: rvQueue.value });
   rvThreads.onchange = () => { const n = Math.max(1, Math.min(4, Math.round(Number(rvThreads.value) || 2))); rvThreads.value = n; saveRs({ threads: n }); };
   fbProfile.onchange = async () => {
     const v = fbProfile.value;

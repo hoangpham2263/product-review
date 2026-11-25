@@ -236,11 +236,16 @@ export async function listAgyModels({ find = () => findAgy(), run = (path) => ne
   return groupAgyModels(AGY_FALLBACK);
 }
 export const isAgyModel = (v) => typeof v === "string" && AGY_MODEL_RE.test(v);
-export function readAgentSettings(workspaceDir, seedDir = "") {
+// Which AI runs which task (Cấu hình, Cách chạy): the image run follows Tạo ảnh (agentBackend); Quét web, Cập nhật số review and the no-browser
+// queue / prep / index runs have their own key. A window saved before these keys existed keeps working: a missing key falls back to the old agentBackend.
+// Codex cannot run these: the runner only starts the Claude or the Antigravity CLI.
+export const AGENT_TASK_KEY = { flow: "agentBackend", scan: "scanAgent", reviews: "reviewsAgent", queue: "queueAgent", prep: "queueAgent", index: "queueAgent" };
+export function readAgentSettings(workspaceDir, seedDir = "", mode = "flow") {
   try {
     const f = (d) => join(d, "config", "run-settings.json");
     const s = readSeededJson(f(workspaceDir), seedDir ? f(seedDir) : "", {});
-    return { backend: AGENT_BACKENDS.includes(s.agentBackend) ? s.agentBackend : "claude", agyModel: isAgyModel(s.agyModel) ? s.agyModel : AGY_DEFAULT_MODEL, agyEffort: AGY_EFFORTS.includes(s.agyEffort) ? s.agyEffort : "" };
+    const legacy = AGENT_BACKENDS.includes(s.agentBackend) ? s.agentBackend : "claude", own = s[AGENT_TASK_KEY[mode] || "agentBackend"];
+    return { backend: AGENT_BACKENDS.includes(own) ? own : legacy, agyModel: isAgyModel(s.agyModel) ? s.agyModel : AGY_DEFAULT_MODEL, agyEffort: AGY_EFFORTS.includes(s.agyEffort) ? s.agyEffort : "" };
   } catch { return { backend: "claude", agyModel: AGY_DEFAULT_MODEL, agyEffort: "" }; }
 }
 // The Antigravity CLI: env PR_AGY_CLI, else the first `agy` on PATH, else its default install folders.
@@ -492,7 +497,7 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
     const lightMode = LIGHT_MODES.includes(mode);
     if ((kind === "light") !== lightMode) return { ok: false, status: 400, error: `Mode ${mode} does not run on this runner.` };
     if (cur) return { ok: false, status: 409, error: `An agent run is already active (started ${cur.state.started}). Wait for it or press Stop.` };
-    const agentSet = readAgentSettings(workspace || join(toolRoot, "workspace"), join(toolRoot, "workspace")), backend = agentSet.backend, agy = backend === "antigravity", who = AGENT_NAME[backend];
+    const agentSet = readAgentSettings(workspace || join(toolRoot, "workspace"), join(toolRoot, "workspace"), mode), backend = agentSet.backend, agy = backend === "antigravity", who = AGENT_NAME[backend];
     // Antigravity makes the images itself (image-generator subagent): the image run needs no Chrome, no Playwright MCP, no Flow account.
     const agyImage = agy && mode === "flow", noBrowser = lightMode || agyImage;
     const found = agy ? findAgyCli() : findCli();
@@ -569,7 +574,7 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
     catch (e) { try { rmSync(cfg, { force: true }); } catch {} if (agyDir) { try { rmSync(agyDir, { recursive: true, force: true }); } catch {} } try { releaseLocks(toolRoot, session, process.pid, kind); } catch {} return { ok: false, status: 500, error: sanitize(e.message) }; }
     const started = new Date(now()).toISOString();
     const run = { child, cfg, lines: [], buf: "", written: 0, stderr: [], ended: false, forced: "", result: null, timer: null,
-      state: { run_id: runId, mode, project, pid: child.pid ?? null, started, updated: started, status: "running", exit_code: null, last_text: "", turns: 0, error: "", model_in_use: asked.model } };
+      state: { run_id: runId, mode, project, pid: child.pid ?? null, started, updated: started, status: "running", exit_code: null, last_text: "", turns: 0, error: "", model_in_use: asked.model, agent: backend } };
     run.asked = asked; run.backend = backend; run.who = who; run.agyDir = agyDir; run.agyImage = agyImage;
     run.prefix = "[" + (FEATURE[mode] || mode) + (project ? " · " + project : "") + "] ";
     cur = run;
@@ -612,7 +617,7 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
     return {
       active: !!run, status: shown?.status || "idle", run_id: shown?.run_id || "", mode: shown?.mode || "flow", project: shown?.project || "", started: shown?.started || "",
       elapsed_s: shown?.started ? Math.max(0, Math.round(((run ? now() : Date.parse(shown.updated) || now()) - Date.parse(shown.started)) / 1000)) : 0,
-      model_in_use: shown?.model_in_use || "", last_text: shown?.last_text || "", turns: shown?.turns || 0, error: shown?.error || "", updated: shown?.updated || "", tail: lines.slice(-TAIL_LINES),
+      model_in_use: shown?.model_in_use || "", agent: shown?.agent || "", last_text: shown?.last_text || "", turns: shown?.turns || 0, error: shown?.error || "", updated: shown?.updated || "", tail: lines.slice(-TAIL_LINES),
     };
   }
   return { start, stop, status, shutdown, isActive: () => !!cur };
