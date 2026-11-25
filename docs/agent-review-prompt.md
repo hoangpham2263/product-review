@@ -9,7 +9,7 @@ OPTIONS: {{OPTIONS}}
 TOOL: {{TOOL}}
 ITEMS: OPTIONS names an items file ("items file: <path>"): a JSON array of item ids. Read it first and work ONLY on those items, in that order. Other workers handle the other items of the run at the same time.
 STEPS (follow RUNBOOK.md, in order, do not skip; every command prints one JSON line {ok,...}; CLI = powershell -NoProfile -ExecutionPolicy Bypass -File src/agent.ps1 <command> -Run {{RUN}} [-Item <id>]):
-1. Setup: cd {{TOOL}}; read AGENTS.md (sections 0, 1, 5, 8) + RUNBOOK.md; read the items file. Do NOT run prepare (the run already exists).
+1. Setup: cd {{TOOL}}; read AGENTS.md (sections 0, 1, 5, 8) (open RUNBOOK.md only if a step below is unclear, it is long); read the items file. Do NOT run prepare (the run already exists).
 4. Reviews, per item: CLI review-brief -Item <id> (prints prompt_file, rating, name, image); read prompt_file and write the review as a .txt file; CLI write-review -Item <id> -File <txt> (ok:false + problems: fix exactly what it names (it quotes a reused phrase) and run write-review again, up to 3 repairs; the 4th draft is kept as it is, so an item is never dropped for its review wording);
 3. Report: reply in Vietnamese with how many reviews you wrote, and any item you could not do and why; then STOP.
 STATUS LINES (the person reads them in the app while the run goes): one short Vietnamese sentence, item first, then the result, e.g. "Mục 035: xong ngữ cảnh", "Mục 013: bỏ qua, lỗi". No English, no internal jargon (no CLI names, no CAUSE codes) in these lines.
