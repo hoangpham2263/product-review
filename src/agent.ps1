@@ -141,6 +141,11 @@ function Get-AgentContext([string]$Id) {
 
 # --- 1. prepare ------------------------------------------------------------------------------------------------
 function Invoke-AgentPrepare {
+    # A NEW run id (the app / the agent chose it, e.g. agent-2026...): prepare creates its folder, like a first prepare always did through the agent; any other command needs it to exist.
+    if ($Run -and $Run -match '^[A-Za-z0-9][A-Za-z0-9._-]*$') {
+        $newDir = Join-Path $OutRoot $Run
+        if (-not (Test-Path -LiteralPath $newDir -PathType Container)) { New-Item -ItemType Directory -Force -Path $newDir | Out-Null }
+    }
     Open-AgentRun $Run
     $queuePath = if ($List) { $List } else { Join-Path (Get-SessionWorkspaceDir $ProjectRoot) 'urls.txt' }
     if (-not (Test-Path -LiteralPath $queuePath)) { throw "URL list not found: $queuePath" }
