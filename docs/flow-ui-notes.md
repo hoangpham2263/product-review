@@ -17,6 +17,7 @@ Nhãn đúng như UI. Rút từ các lượt chạy thành công (khoảng 40 �
 11. Chờ kết quả (~25-50 s): ô `[role=group]` ĐẦU TIÊN có `img` `src` bắt đầu `http`, khác danh sách ô trước khi gửi, và không còn "%" trong text. Nhãn ô kết quả dạng "Edit <tên> image". Đừng dùng waitForFunction.
 12. Tải: `download-lock acquire --tag <mục>`; chuột phải ô kết quả (hoặc hover + nút "Tuỳ chọn khác") > "Tải xuống" (hover/click để mở menu con) > "1K" ("Kích thước gốc"); mọi click `force:true`; chờ ~6-7 s.
 13. Lấy file ngay: file mới nhất ở Downloads (`Edit_..._image_xxxx.jpg`, <60 s) đổi tên `workspace/tmp/flow-downloads/<mục>.<ext>`, kiểm kích thước và NHÌN ảnh, rồi `download-lock release`. Sau đó `register-image`.
+14. Trong lúc chờ: KHÔNG đứng đợi một nhóm render xong mới gửi nhóm sau. Giữ tối đa 2 nhóm (≤ 6 prompt) đang render: gửi nhóm tiếp qua cùng `flow-pace gate` (trước MỖI prompt, giới hạn nguyên vẹn), rồi từng bước một: xem ô nào đã xong, tải (khoá tải), kiểm đúng mục, `register-image`. Cảnh báo / "unusual activity" / hết hạn mức / 3 prompt liền thất bại = dừng gửi, báo lỗi.
 
 ## Hay vướng
 - Cửa sổ Chrome rất nhỏ (viewport ~2000x272, DPR 0.25): ảnh chụp màn hình vô dụng và nút bị che. Làm bằng DOM/`getByRole` + `force:true`; không resize.
