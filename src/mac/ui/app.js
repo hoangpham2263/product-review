@@ -1676,7 +1676,7 @@ function claudeLabel(id) {
 // The Agent (Cấu hình, mục Agent) that drives the browser for Tạo ảnh (Flow) and the other agent runs: Claude or Antigravity.
 // The AI of a task as chosen in Cấu hình (scanAgent / reviewsAgent / queueAgent) and of a run (status.agent): never a hard-coded Claude.
 const taskAi = (key) => (modelInfo.claude[key] === "antigravity" ? "Antigravity" : "Claude");
-const runAi = (st) => (st?.agent === "antigravity" ? "Antigravity" : st?.agent === "claude" ? "Claude" : agentName());
+const runAi = (st) => (st?.label_ai === "antigravity-flow" ? "Antigravity (Flow)" : st?.agent === "antigravity" ? "Antigravity" : st?.agent === "claude" ? "Claude" : agentName());
 const agentName = () => (modelInfo.claude.agentBackend === "antigravity" ? "Antigravity" : "Claude");
 function agyLabel(id) {
   if (!id) return "model mặc định";
@@ -1840,7 +1840,7 @@ async function refreshResumable() {
 }
 async function resumeRun() {
   if (!ui.resumeRun) return;
-  if (!isFlow(cfg.image)) return appendLog("Chạy tiếp chỉ dùng khi Tạo ảnh = Claude (Flow) hoặc Antigravity (chọn trong Cấu hình). Với Codex, bấm Bắt đầu: các link đã xong tự rời hàng chờ.");
+  if (!isFlow(cfg.image)) return appendLog("Chạy tiếp chỉ dùng khi Tạo ảnh = Claude (Flow), Antigravity hoặc Antigravity (Flow) (chọn trong Cấu hình). Với Codex, bấm Bắt đầu: các link đã xong tự rời hàng chờ.");
   if (!(await flowPreflight())) return;
   ui.txtLog.value = "";
   const r = await fetch("/api/agent/run", { method: "POST", body: JSON.stringify({ run: ui.resumeRun }) });
@@ -1896,7 +1896,7 @@ async function finishAgent(st) {
   if (st.status === "stopped") { setStatus("Đã dừng", "var(--muted)"); appendLog("Đã dừng. Các link chưa hoàn tất được giữ lại."); }
   else if (st.status === "done" && pending > 0) { setStatus("Chờ bạn duyệt", "var(--ok)"); appendLog(`${runAi(st)} đã xong. ${pending} ảnh chờ bạn duyệt: bấm Duyệt & xuất file (Giữ/Bỏ từng ảnh). ${runAi(st)} không tự Giữ/Bỏ.`); }
   else if (st.status === "done") { setStatus("! Cần kiểm tra", "var(--warn)"); appendLog(`${runAi(st)} đã dừng nhưng chưa có ảnh nào chờ duyệt. Xem tiến trình ở trên.`); }
-  else { setStatus("! Cần thử lại", "var(--warn)"); appendLog("Lượt " + runAi(st) + " chưa hoàn tất" + (st.error ? ": " + st.error : ".")); }
+  else { setStatus("! Cần thử lại", "var(--warn)"); appendLog(quota ? "Hết hạn mức " + runAi(st) + (st.quota_reset ? " (hồi lúc " + new Date(st.quota_reset).toTimeString().slice(0, 5) + ")" : "") + ". Chọn Antigravity (Flow) hoặc Codex trong Cấu hình rồi bấm Chạy tiếp." : "Lượt " + runAi(st) + " chưa hoàn tất" + (st.error ? ": " + String(st.error).replace(/\[CAUSE:[A-Z_]+\]\s*/g, "") : ".")); }
 }
 async function poll() {
   if (!run.active) return;

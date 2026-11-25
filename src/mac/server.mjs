@@ -73,8 +73,8 @@ function runAgentCli(args, timeout = 240000) {
     resolveCli(r || { ok: false, error: (err && err.message) || "Không đọc được kết quả của src/agent.ps1." });
   }));
 }
-function startImgJob(run, threads, agentName) {
-  imgJob = { run, n: clampThreads(threads), phase: "prepare", started: Date.now(), lines: [], text: "Đang chuẩn bị…", agent: agentName, stopped: false, busy: false };
+function startImgJob(run, threads, agentName, labelAi = agentName) {
+  imgJob = { run, n: clampThreads(threads), phase: "prepare", started: Date.now(), lines: [], text: "Đang chuẩn bị…", agent: agentName, label_ai: labelAi, stopped: false, busy: false };
   jobFinal = null;
   jobLog(imgJob, "Chia việc " + imgJob.n + " luồng: ngữ cảnh → tạo ảnh → review → hoàn tất");
   jobTimer = jobTimer || setInterval(() => { jobTick().catch(() => {}); }, 2000);
@@ -164,7 +164,7 @@ function jobStatus() {
   const workers = lightPool.map((r) => r.status()).filter((x) => x.active), imagesNow = j.phase === "images" && base.run_id === j.run;
   const tail = [...j.lines.slice(-4), ...(imagesNow ? base.tail || [] : workers.flatMap((x) => (x.tail || []).slice(-8)))].slice(-30);
   const el = Math.round((Date.now() - j.started) / 1000);
-  return { active: true, status: "running", run_id: j.run, mode: "flow", project: "", started: new Date(j.started).toISOString(), elapsed_s: el, model_in_use: imagesNow ? base.model_in_use || "" : "", agent: j.agent, last_text: imagesNow ? base.last_text || j.text : j.text, turns: imagesNow ? base.turns || 0 : 0, error: "", updated: new Date().toISOString(), tail, phase: j.phase };
+  return { active: true, status: "running", run_id: j.run, mode: "flow", project: "", started: new Date(j.started).toISOString(), elapsed_s: el, model_in_use: imagesNow ? base.model_in_use || "" : "", agent: j.agent, label_ai: j.label_ai, last_text: imagesNow ? base.last_text || j.text : j.text, turns: imagesNow ? base.turns || 0 : 0, error: "", updated: new Date().toISOString(), tail, phase: j.phase };
 }
 // `agent` = the main runner as every route knows it, made job-aware (an image job counts as an active agent run, Dừng stops the whole job).
 const agent = {
@@ -698,7 +698,7 @@ async function handle(req, res) {
     if (agent.isActive()) return send(res, 409, { error: "Đã có một lượt AI đang chạy." });
     // Antigravity makes the images itself: no Flow, no Chrome, so no Flow sign-in check.
     const agentNow = readAgentSettings(workspace, sharedWs), login = (agentNow.backend === "antigravity" && agentNow.agyImages !== "flow") || readFlowBrowser(workspace, sharedWs).mode !== "own" ? { state: "logged_in" } : await flowLogin.status();
-    if (login.state !== "logged_in") return send(res, 409, { error: login.state === "logged_out" ? "Chưa đăng nhập Google Flow trong Chrome riêng: bấm Mở Chrome để đăng nhập, đăng nhập xong đóng cửa sổ đó rồi Kiểm tra lại." : "Chưa chạy được Claude: " + login.detail });
+    if (login.state !== "logged_in") return send(res, 409, { error: login.state === "logged_out" ? "Chưa đăng nhập Google Flow trong Chrome riêng: bấm Mở Chrome để đăng nhập, đăng nhập xong đóng cửa sổ đó rồi Kiểm tra lại." : "Chưa chạy được " + (agentNow.backend === "antigravity" ? "Antigravity" : "Claude") + ": " + login.detail });
     // given.run (Chạy tiếp): only an existing Claude run of this window (its folder is used as is).
     if (given.run && (!/^agent-[0-9a-z-]{6,60}$/i.test(String(given.run)) || !existsSync(join(workspace, "output", String(given.run), "agent-items.json")))) return send(res, 400, { error: "Không tìm thấy lượt để chạy tiếp." });
     // Luồng above 1 (and nothing else on the light runners): the no-browser steps run N at a time in phases; the profile / account preflight is done HERE, before any worker.
@@ -707,7 +707,7 @@ async function handle(req, res) {
       const bc = readFlowBrowser(workspace, sharedWs);
       if (usesBrowser && bc.mode !== "own") { const chk = checkExtensionProfile(bc.profile, { account: readFlowAccount(workspace, sharedWs) }); if (!chk.ok) return send(res, 409, { error: chk.error }); }
       const runId = given.run || newRunId();
-      startImgJob(runId, nThreads, nowAgent.backend);
+      startImgJob(runId, nThreads, nowAgent.backend, nowAgent.backend === "antigravity" ? (nowAgent.agyImages === "flow" ? "antigravity-flow" : "antigravity") : "claude");
       return send(res, 200, { ok: true, run: runId, started: new Date().toISOString() });
     }
     const r = agent.start({ run: given.run || undefined });

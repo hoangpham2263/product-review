@@ -401,20 +401,23 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
   };
   // Antigravity's own image generation ran out of quota (HTTP 429 RESOURCE_EXHAUSTED, "reset after 3h28m59s"): stop the whole run at once (the remaining items
   // would only fail the same way), write when it resets, and tell the person what to switch to.
+  // Real exhaustion = RESOURCE_EXHAUSTED (or "exhausted your capacity") WITH a reset time / capacity text; a short "please retry in 12s" is agy retrying by itself.
+  const realQuota = (t) => (/RESOURCE_EXHAUSTED/.test(t) || /exhausted your capacity/i.test(t)) && (/reset after\s*\d/i.test(t) || /exhausted your capacity/i.test(t));
+  const agyErrorText = (ev) => { const s = ev.step_update || {}, r = ev.result || {}; return [s.tool_info?.error?.message, typeof s.tool_info?.output === "string" ? s.tool_info.output : "", s.error?.message, String(r.status || "").toUpperCase() !== "SUCCESS" ? r.error : ""].filter((x) => typeof x === "string").join(" "); };
   const quotaStop = (run, text) => {
     if (run.abort || run.ended) return;
     const m = String(text).match(/reset after\s*(?:(\d+)h)?\s*(?:(\d+)m)?\s*(?:(\d+)s)?/i);
     const ms = m ? (((+m[1] || 0) * 3600) + ((+m[2] || 0) * 60) + (+m[3] || 0)) * 1000 : 0, at = ms ? new Date(now() + ms) : null;
-    run.abort = "[CAUSE:QUOTA] Hết hạn mức tạo ảnh của Antigravity" + (at ? " (hồi lúc " + at.toTimeString().slice(0, 5) + ")" : "") + ". Chọn Antigravity (Flow) hoặc Codex trong Cấu hình rồi bấm Chạy tiếp.";
+    const friendly = (run.agyImage ? "Hết hạn mức tạo ảnh của Antigravity" : "Hết hạn mức model của Antigravity") + (at ? " (hồi lúc " + at.toTimeString().slice(0, 5) + ")" : "") + ". Chọn Antigravity (Flow) hoặc Codex trong Cấu hình rồi bấm Chạy tiếp.";
+    run.abort = "[CAUSE:QUOTA] " + friendly;
     if (at) run.state.quota_reset = at.toISOString();
-    addLine(run, "⚠ " + run.abort); touch(run);
+    addLine(run, "⚠ " + friendly); touch(run);
     killTree(run.child); setTimeout(() => finish(run, null), graceMs).unref?.();
   };
   const handleLine = (run, raw) => {
-    if (run.agyImage && /RESOURCE_EXHAUSTED/.test(raw)) quotaStop(run, raw);
     // Not an event (a cut-off fragment, tool output): nothing a person can read, so it stays out of the log.
     let ev; try { ev = JSON.parse(raw); } catch { return; }
-    if (run.backend === "antigravity") return handleAgy(run, ev);
+    if (run.backend === "antigravity") { const qt = agyErrorText(ev); if (qt && realQuota(qt)) quotaStop(run, qt); return handleAgy(run, ev); }
     if (ev.type === "system" && ev.subtype === "init" && typeof ev.model === "string" && ev.model) {
       run.state.model_in_use = ev.model;
       setModelLine(run, modelLineText(ev.model, run.asked?.effort));
@@ -464,7 +467,8 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
         // run any subagent is foreign; inside it only image-generator is allowed. No type info at all by the end of the step = a warning, not a kill.
         const subs = s.subagent_info?.subagents || [], imgRun = run.agyImage;
         run.agyShown = run.agyShown || new Set();
-        const bad = !imgRun ? "subagent không phải image-generator" : subs.length && !subs.every((x) => /^image-generator$/i.test(String(x.type_name || ""))) ? "subagent không phải image-generator" : "";
+        const gen = subs.some((x) => /^image-generator$/i.test(String(x.type_name || "")));
+        const bad = !imgRun ? (gen && run.state.label_ai === "antigravity-flow" ? "subagent image-generator khi ảnh do Flow tạo (không cho dùng image-generator)" : "một subagent") : subs.length && !subs.every((x) => /^image-generator$/i.test(String(x.type_name || ""))) ? "subagent không phải image-generator" : "";
         if (bad) {
           run.abort = "Antigravity dùng " + bad + ", không phải việc của lượt chạy: đã dừng.";
           addLine(run, "⚠ " + run.abort); touch(run);
@@ -616,10 +620,11 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
       // .agents/plugins/prreview/mcp_config.json that carries the same Playwright MCP as the Claude path (agy loads it for this cwd only). Removed in finish().
       agyDir = join(tmpdir(), "pr-agy-" + runId + "-" + randomBytes(3).toString("hex"));
       try {
-        mkdirSync(join(agyDir, ".agents", "plugins", AGY_PLUGIN), { recursive: true });
+        mkdirSync(agyDir, { recursive: true });
         writeFileSync(join(agyDir, "prompt.md"), agyNote(lightMode, agyImage) + intro, "utf8");
-        writeFileSync(join(agyDir, ".agents", "plugins", AGY_PLUGIN, "plugin.json"), JSON.stringify({ name: AGY_PLUGIN }));
         if (!noBrowser) {
+          mkdirSync(join(agyDir, ".agents", "plugins", AGY_PLUGIN), { recursive: true });
+          writeFileSync(join(agyDir, ".agents", "plugins", AGY_PLUGIN, "plugin.json"), JSON.stringify({ name: AGY_PLUGIN }));
           const server = { ...mcpConfig({ plat, profile: profileDir, headless, extension: ext ? { profile: bc.profile, name: group.name, color: group.color } : null }).mcpServers.playwright };
           // agy starts the MCP from its own language server: the extension token travels in this file (a private temp folder, deleted when the run ends).
           if (extToken) server.env = { ...(server.env || {}), PLAYWRIGHT_MCP_EXTENSION_TOKEN: extToken };
@@ -652,7 +657,7 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
       : (agyImage ? "Bắt đầu: Antigravity (tạo ảnh) tạo ảnh và viết review (mã lượt " + runId + ")" : "Bắt đầu: " + who + " điều khiển Google Flow (mã lượt " + runId + ")"));
     saveState(run.state);
     child.stdout?.on("data", (c) => feed(run, c));
-    child.stderr?.on("data", (c) => { for (const l of c.toString("utf8").split(/\r?\n/)) { if (run.agyImage && /RESOURCE_EXHAUSTED/.test(l)) quotaStop(run, l); const bg = l.match(/idle; waiting for (\d+) background task/i); if (bg) { run.idleHint = true; addLine(run, "Antigravity đang chờ " + bg[1] + " tác vụ nền …"); continue; } const t = sanitize(l); if (t) { run.stderr.push(t); if (run.stderr.length > 20) run.stderr.shift(); addLine(run, "Cảnh báo: " + t); } } });
+    child.stderr?.on("data", (c) => { for (const l of c.toString("utf8").split(/\r?\n/)) { if (run.backend === "antigravity" && realQuota(l)) quotaStop(run, l); const bg = l.match(/idle; waiting for (\d+) background task/i); if (bg) { run.idleHint = true; addLine(run, "Antigravity đang chờ " + bg[1] + " tác vụ nền …"); continue; } const t = sanitize(l); if (t) { run.stderr.push(t); if (run.stderr.length > 20) run.stderr.shift(); addLine(run, "Cảnh báo: " + t); } } });
     child.on("error", (e) => finish(run, null, e.message));
     child.on("close", (code) => finish(run, code));
     child.stdin?.on("error", () => {});
@@ -684,7 +689,7 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
     return {
       active: !!run, status: shown?.status || "idle", run_id: shown?.run_id || "", mode: shown?.mode || "flow", project: shown?.project || "", started: shown?.started || "",
       elapsed_s: shown?.started ? Math.max(0, Math.round(((run ? now() : Date.parse(shown.updated) || now()) - Date.parse(shown.started)) / 1000)) : 0,
-      model_in_use: shown?.model_in_use || "", agent: shown?.agent || "", quota_reset: shown?.quota_reset || "", last_text: shown?.last_text || "", turns: shown?.turns || 0, error: shown?.error || "", updated: shown?.updated || "", tail: lines.slice(-TAIL_LINES),
+      model_in_use: shown?.model_in_use || "", agent: shown?.agent || "", label_ai: shown?.label_ai || "", quota_reset: shown?.quota_reset || "", last_text: shown?.last_text || "", turns: shown?.turns || 0, error: shown?.error || "", updated: shown?.updated || "", tail: lines.slice(-TAIL_LINES),
     };
   }
   return { start, stop, status, shutdown, isActive: () => !!cur };

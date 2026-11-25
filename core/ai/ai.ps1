@@ -13,6 +13,7 @@ $script:HubAIUsageFile = if ($env:HUB_AI_USAGE_FILE) { $env:HUB_AI_USAGE_FILE } 
 function Add-HubAIUsage([string]$Ai, [string]$Kind, [string]$Account, [bool]$Ok, [string]$Cause = '', [int]$Ms = 0, $Tokens = $null) {
     $entry = [ordered]@{ t = [DateTime]::UtcNow.ToString('o'); ai = $Ai; kind = $Kind; account = $Account; ok = $Ok; ms = $Ms }
     if ($Cause) { $entry.cause = $Cause }
+    if ($env:PR_SESSION) { $entry.session = $env:PR_SESSION } # which window made the call (the log itself is one file per install)
     if ($Tokens) { $entry.in = [long]$Tokens.Input; $entry.cached = [long]$Tokens.Cached; $entry.out = [long]$Tokens.Output }
     $line = (ConvertTo-Json -InputObject $entry -Compress) + "`n"
     # Parallel workers append to the same file: one at a time, and never fail a call over it.

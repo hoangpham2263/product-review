@@ -137,6 +137,10 @@ Codex Windows sandbox: mỗi `-C WorkDir` có capability SID riêng (`~/.codex/c
 
 - Picker Tạo ảnh = Antigravity chạy `docs/agent-prompt-agy-image.md` (runner `core/setup/agent-run.mjs`): Antigravity tự tạo ảnh bằng subagent `image-generator` (`generate_image`, ảnh tham chiếu = 2 file `uploads` của `flow-brief`), không Google Flow, không Chrome, không Playwright. Mọi luật ảnh vẫn nằm trong `flow-brief`/bước context (chữ trên biển, logo thay, ảnh mặc cắt gần, khung hình từng mục); `register-image` nhận cả jpg. Chi tiết: RUNBOOK.md mục "Agent backend".
 
+## Cửa sổ (phiên) độc lập
+
+- Mỗi cửa sổ có workspace, cổng, run-settings (Luồng, AI từng việc, chỉ chép một lần từ cửa sổ mặc định khi tạo), hàng chờ, log chạy, file tạm (shard/items, thư mục `pr-agy-*` có mã lượt) và bộ đếm slot riêng; Dừng chỉ dừng lượt của cửa sổ đó. Chia sẻ CÓ CHỦ Ý: khóa theo dự án / kho ảnh / Chrome riêng (thông báo nêu cửa sổ đang giữ), prepared.csv, scene-index.json, nhịp Flow và dự án Flow theo từng profile Chrome, khóa tải Downloads, file `ai-usage.jsonl` (mỗi dòng ghi cửa sổ gọi), danh sách phiên đang mở.
+
 ## Bài học đã đúc kết
 
 Bài học được đúc kết thành nguyên tắc ngắn để áp dụng lần sau, không chép lời phản hồi hoặc kể lịch sử xử lý. Chỉ áp dụng đúng URL/danh mục; yêu cầu mới nhất của người dùng có ưu tiên cao nhất. Comment giữ mã và phạm vi để app đọc, bật/tắt bài học.
