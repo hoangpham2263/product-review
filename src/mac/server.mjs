@@ -523,6 +523,9 @@ async function handle(req, res) {
       if (!AGENT_BACKENDS.includes(s2.agentBackend)) s2.agentBackend = "claude";
       for (const k of ["scanAgent", "reviewsAgent", "queueAgent"]) if (!AGENT_BACKENDS.includes(s2[k])) s2[k] = s2.agentBackend; // older windows: the old single agent
       if (s2.agyModel && !isAgyModel(s2.agyModel)) delete s2.agyModel;
+      s2.threadsSaved = Number.isInteger(s2.threads) && s2.threads >= 1 && s2.threads <= 4;
+      if (!s2.threadsSaved) s2.threads = 1;
+      s2.codexThreads = s2.threadsSaved ? s2.threads : 2; // the Codex run always started 2 links at once until the person chose otherwise
       if (s2.agyEffort && !AGY_EFFORTS.includes(s2.agyEffort)) delete s2.agyEffort; // e.g. the old "max"
       s2.agyModelGroups = await listAgyModels();
       s2.flowAccounts = flowAccountsFor(readFlowBrowser(workspace, sharedWs));

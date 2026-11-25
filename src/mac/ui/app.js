@@ -143,11 +143,21 @@ function openWindow(title, w, h, { white = false } = {}) {
     win.style.left = Math.max(0, Math.round((viewWidth() - win.offsetWidth) / 2)) + "px";
     win.style.top = Math.max(0, Math.round((viewHeight() - win.offsetHeight) / 2)) + "px";
   };
-  place();
+  // Every dialog (Duyệt, Dự án, Quét web, product, messages ...) is capped to the viewport here, in ONE place: when it is taller / wider than the page
+  // its body scrolls inside the window, so the title bar and every control stay reachable (also when the page is scaled down at the minimum size).
+  const cap = () => {
+    const maxH = Math.max(160, Math.floor(viewHeight()) - 31 - 24), maxW = Math.max(240, Math.floor(viewWidth()) - 24);
+    body.style.maxHeight = maxH + "px"; body.style.maxWidth = maxW + "px";
+    body.style.overflow = h > maxH || w > maxW ? "auto" : "";
+    place();
+  };
+  cap();
+  addEventListener("resize", cap);
   const view = { body, win, onClose: null, closed: false, cancel: null };
   view.close = () => {
     if (view.closed) return;
     view.closed = true;
+    removeEventListener("resize", cap);
     modal.remove();
     stack.splice(stack.indexOf(view), 1);
     updateActionAvailability();
@@ -211,14 +221,16 @@ const run = { active: false, since: 0, total: 0, done: 0, index: 0, stages: new 
 // What the next run uses, read from the server (run-settings.json + flow-browser); edited in Cấu hình.
 const TEXT_NAMES = { codex: "Codex", antigravity: "Antigravity CLI", claude: "Claude" };
 const IMAGE_NAMES = { codex: "Codex", agent: "Claude (Flow)", "agent-agy": "Antigravity" };
-const cfg = { text: "codex", image: "codex", threads: 2, account: "" };
+const cfg = { text: "codex", image: "codex", threads: 1, account: "" };
 async function loadCfg() {
   try {
     const saved = await (await fetch("/api/run-settings")).json();
     modelInfo.claude = saved;
     cfg.text = ["codex", "antigravity", "claude"].includes(saved.textBackend) ? saved.textBackend : "codex";
     cfg.image = saved.imageBackend === "agent" ? (saved.agentBackend === "antigravity" ? "agent-agy" : "agent") : "codex";
-    cfg.threads = Number.isInteger(Number(saved.threads)) && saved.threads >= 1 && saved.threads <= 4 ? Number(saved.threads) : 2;
+    // the server answers the effective Luồng (saved, else 1); the Codex run keeps its old default 2 until a value is saved (codexThreads)
+    cfg.threads = Number.isInteger(Number(saved.threads)) && saved.threads >= 1 && saved.threads <= 4 ? Number(saved.threads) : 1;
+    if (cfg.image === "codex" && Number.isInteger(Number(saved.codexThreads))) cfg.threads = Number(saved.codexThreads);
     cfg.account = String(saved.flowAccount || "").toLowerCase();
   } catch {}
   try {
@@ -321,7 +333,7 @@ function buildMain() {
   ui.btnSessions.onclick = () => { const open = ui.sessionsPanel.style.display !== "none"; ui.sessionsPanel.style.display = open ? "none" : ""; if (!open) loadSessionPicker(); };
   document.addEventListener("mousedown", (e) => { if (ui.sessionsPanel.style.display !== "none" && !ui.sessionsPanel.contains(e.target) && e.target !== ui.btnSessions) ui.sessionsPanel.style.display = "none"; });
   document.addEventListener("keydown", (e) => { if (e.key === "Escape") ui.sessionsPanel.style.display = "none"; });
-  header.append(ui.btnReload, ui.btnSetup, ui.btnUpdate, ui.syncLabel, ui.syncBar, ui.btnSessions, ui.sessionsPanel);
+  header.append(ui.btnSessions, ui.btnReload, ui.btnSetup, ui.btnUpdate, ui.syncLabel, ui.syncBar, ui.sessionsPanel); // Tab follows the visual left-to-right order
 
 
   // Link sản phẩm & ảnh (full width). Every setting lives in Cấu hình; this window only holds what is needed to RUN.
@@ -352,7 +364,7 @@ function buildMain() {
   // In the order they are used: review the results, open them, then support. Cấu hình is in the header. Right-anchored: the last one is at the edge.
   { let rx = 14;
     for (const [key, text, w] of [["btnClearLog", "Xóa thông báo", 108], ["btnLogs", "Báo lỗi", 80], ["btnOut", "Mở kết quả", 96], ["btnReview", "Duyệt & xuất file", 126]]) {
-      ui[key] = at(button(text), null, 12, w, 36, { right: rx, left: false }); rx += w + 6; cardRun.append(ui[key]);
+      ui[key] = at(button(text), null, 12, w, 36, { right: rx, left: false }); rx += w + 6;
     } }
   // What the next run uses (read-only; everything is chosen in Cấu hình): one compact line, a click opens Cấu hình.
   ui.lblModel = at(label("", ""), 14, 56, null, 18, { right: 14 });
@@ -367,7 +379,7 @@ function buildMain() {
   ui.lblTokens = at(label("", "muted"), 14, 78, 440, 16);
   ui.lblQuota = at(label("", "muted"), 460, 78, null, 16, { right: 14 });
   for (const l of [ui.lblTokens, ui.lblQuota]) Object.assign(l.style, { fontSize: "11px", lineHeight: "16px" });
-  cardRun.append(ui.btnRun, ui.btnResume, ui.btnStop, ui.lblStatus, ui.lblTokens, ui.lblQuota, ui.lblModel);
+  cardRun.append(ui.btnRun, ui.btnResume, ui.btnStop, ui.lblStatus, ui.btnReview, ui.btnOut, ui.btnLogs, ui.btnClearLog, ui.lblModel, ui.lblTokens, ui.lblQuota);
 
   // Tiến trình & thông báo (20,508 1060x282, all anchors).
   const cardLog = at(el("div", "card"), 20, 484, null, null, { right: 24, bottom: 10 });
@@ -469,10 +481,17 @@ function runLines(rs) {
 // The image run of this window draws its own (pollAgent).
 function showOtherProgress(rs) {
   if (!ui.bar || run.active) return;
-  const live = (rs.running || []).find((x) => x.progress && x.mode !== "flow");
-  if (live) { ui.extProgress = true; const pr = live.progress; if (pr.total > 0) setBar(pr.done, pr.total); else setBar(0, 1, true); ui.lblProgress.textContent = pr.label || ""; return; }
-  if (ui.extProgress && rs.last && rs.last.progress && rs.last.mode !== "flow") {
-    const pr = rs.last.progress, ok = rs.last.status === "done";
+  const clock = (sec) => String(Math.floor(sec / 60)).padStart(2, "0") + ":" + String(sec % 60).padStart(2, "0");
+  const live = (rs.running || []).find((x) => x.mode !== "flow" && x.kind !== "codex");
+  if (live) {
+    ui.extProgress = true; const pr = live.progress;
+    // no counts (e.g. after a server restart): a neutral moving bar with the status word and the elapsed time, never the previous run's numbers
+    if (pr && pr.total > 0) setBar(pr.done, pr.total, false); else setBar(0, 1, true);
+    ui.lblProgress.textContent = pr && pr.label ? pr.label : (live.feature || "Đang chạy") + ": đang chạy · " + clock(live.elapsed_s || 0);
+    return;
+  }
+  if (ui.extProgress && rs.last && rs.last.mode !== "flow" && rs.last.kind !== "codex") {
+    const pr = rs.last.progress || { total: 0, done: 0, label: (rs.last.feature || "") + ": " + clock(rs.last.elapsed_s || 0) }, ok = rs.last.status === "done";
     ui.extProgress = false;
     setBar(ok ? 1 : pr.total > 0 ? pr.done : 0, ok || !(pr.total > 0) ? 1 : pr.total, false, rs.last.status === "failed");
     ui.lblProgress.textContent = (pr.label || "").replace(/ · \d\d:\d\d.*$/, "") + (ok ? " • xong" : rs.last.status === "stopped" ? " • đã dừng" : " • chưa hoàn tất");

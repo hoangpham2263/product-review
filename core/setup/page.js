@@ -312,7 +312,7 @@
     rs = r; runSec.hidden = false;
     fill(rvText, ["codex", "antigravity", "claude"], ["Codex", "Antigravity CLI", "Claude"], ["codex", "antigravity", "claude"].includes(r.textBackend) ? r.textBackend : "codex");
     fill(rvImage, ["codex", "agent", "agent-agy"], ["Codex", "Claude (Flow)", "Antigravity"], imageValue(r));
-    rvThreads.value = r.threads || 2;
+    rvThreads.value = r.threadsSaved ? r.threads : rvImage.value === "codex" ? 2 : 1; // Codex keeps its old default 2 until a value is saved
     // Quét web / Cập nhật review / Hàng chờ & chuẩn bị: Claude or Antigravity (Codex has no browser mode). Older windows: the server answers with their old single agent.
     for (const [box, key] of [[rvScan, "scanAgent"], [rvReviews, "reviewsAgent"], [rvQueue, "queueAgent"]]) fill(box, ["claude", "antigravity"], ["Claude", "Antigravity"], r[key] === "antigravity" ? "antigravity" : "claude");
     loadAccounts(r);
@@ -324,12 +324,13 @@
     // Claude (Flow) and Antigravity are the same agent run driven by a different agent (agentBackend); Codex leaves the agent as it is.
     const v = rvImage.value, part = v === "codex" ? { imageBackend: "codex" } : { imageBackend: "agent", agentBackend: v === "agent-agy" ? "antigravity" : "claude" };
     await saveRs(part);
+    if (!rs.threadsSaved) rvThreads.value = v === "codex" ? 2 : 1;
     refreshFlowMode();
   };
   rvScan.onchange = () => saveRs({ scanAgent: rvScan.value });
   rvReviews.onchange = () => saveRs({ reviewsAgent: rvReviews.value });
   rvQueue.onchange = () => saveRs({ queueAgent: rvQueue.value });
-  rvThreads.onchange = () => { const n = Math.max(1, Math.min(4, Math.round(Number(rvThreads.value) || 2))); rvThreads.value = n; saveRs({ threads: n }); };
+  rvThreads.onchange = () => { const n = Math.max(1, Math.min(4, Math.round(Number(rvThreads.value)) || 1)); rvThreads.value = n; rs.threadsSaved = true; saveRs({ threads: n }); };
   fbProfile.onchange = async () => {
     const v = fbProfile.value;
     const r = await post("/api/flow-browser", v === "own" ? { mode: "own" } : { mode: "extension", profile: v });
