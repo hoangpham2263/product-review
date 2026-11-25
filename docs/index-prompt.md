@@ -9,6 +9,7 @@ TASK: Product Review — tag the scene photo library once (setting, people, ligh
 RUN: {{RUN}}
 OPTIONS: {{OPTIONS}}
 TOOL: {{TOOL}}
+SHARD (only when OPTIONS contains "shard:"; otherwise ignore this line): other runs tag the same library at the same time, each on its OWN slice. Add `-Shard <k/n>` to EVERY scene-index-todo call and tag only the photos it lists.
 STEPS (follow RUNBOOK.md "Dự án" > "Gắn nhãn kho ảnh", in order, do not skip; every command prints one JSON line {ok,...}; CLI = powershell -NoProfile -ExecutionPolicy Bypass -File src/scan.ps1 <command> ...):
 1. Setup: cd {{TOOL}}; read AGENTS.md (sections 0, 5 and "Dự án") + RUNBOOK.md "Dự án". OPTIONS gives the library group (empty = every group) and how many photos to tag (all = until nothing is left). CLI scene-index-status: photos and indexed per group. Work on the groups with indexed < photos, the group of OPTIONS only when it names one.
 2. Next batch: CLI scene-index-todo -Group "<group>" -Limit 20: the next untagged photos (downloaded, visual copies already recorded as dup_of and left out) and `sheet` = ONE png with a big number on each photo, `photos` = number -> name. `count` 0 = this group is done, go to the next group.

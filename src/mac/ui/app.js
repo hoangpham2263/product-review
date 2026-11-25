@@ -720,12 +720,16 @@ function showScanDialog() {
   status.style.whiteSpace = "pre-line";
   const openDir = at(button("Mở thư mục"), 16, 436, 120, 32);
   const toImport = at(button("Nhập vào danh sách"), 146, 436, 180, 32);
+  const scanThr = at(numeric(1, 4, cfg.threads || 1), 332, 440, 56, 26);
+  const scanThrLabel = at(label("Luồng", "muted"), 332, 424, 56, 14); scanThrLabel.style.fontSize = "11px"; scanThrLabel.style.lineHeight = "14px";
+  fetch("/api/run-settings").then((x) => x.json()).then((r) => { scanThr.value = r.scanThreads || r.threads || 1; }).catch(() => {});
+  scanThr.onchange = () => fetch("/api/run-settings", { method: "POST", body: JSON.stringify({ scanThreads: Math.min(4, Math.max(1, Math.round(Number(scanThr.value)) || 1)) }) }).catch(() => {});
   const start = at(button("Bắt đầu quét", true), 400, 436, 130, 32);
   const stop = at(button("Dừng"), 540, 436, 90, 32);
   const close = at(button("Đóng"), 640, 436, 104, 32);
   view.body.append(
     hint, at(label("Link trang chủ của web"), 16, 78, 380, 22), siteBox, at(label("Hoặc chọn dự án có sẵn"), 412, 78, 230, 22), projectBox, at(label("Tối đa"), 658, 78, 86, 22), maxBox,
-    log, status, openDir, toImport, start, stop, close,
+    log, status, openDir, toImport, scanThrLabel, scanThr, start, stop, close,
   );
   openDir.hidden = toImport.hidden = true; stop.disabled = true;
   let timer = null, scan = null, startedAt = 0;
@@ -764,7 +768,7 @@ function showScanDialog() {
     const site = siteBox.value.trim();
     if (!site) return say("Dán link trang chủ của web cần quét.", "var(--error)");
     openDir.hidden = toImport.hidden = true; log.value = ""; scan = null; startedAt = Date.now();
-    const r = await fetch("/api/scan/run", { method: "POST", body: JSON.stringify({ site, max: Number(maxBox.value) || 20 }) });
+    const r = await fetch("/api/scan/run", { method: "POST", body: JSON.stringify({ site, max: Number(maxBox.value) || 20, threads: Math.min(4, Math.max(1, Math.round(Number(scanThr.value)) || 1)) }) });
     const body = await r.json().catch(() => ({}));
     if (!r.ok) return say(body.error || "Chưa bắt đầu quét được.", "var(--error)");
     setBusy(true); say("Đang bắt đầu…", "var(--accent)"); watch();
@@ -811,8 +815,13 @@ function showProjectsDialog(pick = "") {
   head.append(...["Sản phẩm", "Danh mục", "Dùng", "Review", "Kiểm tra"].map((t) => el("div", "", { text: t, style: oneLine() })));
   const tableBox = at(el("div", "flow"), 282, 76, 602, 344);
   Object.assign(tableBox.style, { background: "#fff", border: "1px solid #000" });
-  const status = at(label(""), 16, 426, 868, 40);
+  const status = at(label(""), 16, 426, 760, 40);
   Object.assign(status.style, { whiteSpace: "pre-line", lineHeight: "20px" });
+  // Luồng for the next action of this popup (Thêm vào hàng chờ, Chuẩn bị trước, Gắn nhãn kho ảnh: that many runs at once; Quét cập nhật, Cập nhật số review: that many tabs
+  // at once). Remembered per window (projectThreads), first value = Luồng of Cấu hình.
+  const thrLabel = at(label("Luồng", "muted"), 800, 424, 64, 14); thrLabel.style.fontSize = "11px"; thrLabel.style.lineHeight = "14px";
+  const runThreads = at(numeric(1, 4, cfg.threads || 1), 800, 440, 64, 26);
+  const thr = () => Math.min(4, Math.max(1, Math.round(Number(runThreads.value)) || 1));
   // Two SEPARATE groups, each with its own numbers (remembered per session) and its own button; labels above the boxes.
   const group = (title, x) => { const t = at(label(title, ""), x, 470, 200, 18); t.style.fontWeight = "600"; return t; };
   const small = (text, x, w) => { const l = at(label(text, "muted"), x, 490, w, 16); l.style.fontSize = "11px"; return l; };
@@ -847,15 +856,17 @@ function showProjectsDialog(pick = "") {
   Object.assign(indexLine.style, oneLine({ fontSize: "11px" }));
   const indexBtn = at(button("Gắn nhãn kho ảnh"), 720, 640, 160, 32);
   indexBtn.title = "Claude xem mỗi ảnh trong kho MỘT lần (trên tấm ảnh ghép) và gắn nhãn: nơi chốn, có người, ánh sáng, chỗ tường trống, hợp loại sản phẩm nào. Chuẩn bị trước và Thêm vào hàng chờ dùng nhãn này để chỉ xem ít ảnh hợp nhất. Chỉ gắn ảnh chưa có nhãn; chạy được khi Bắt đầu đang chạy.";
-  view.body.append(listTitle, unpick, projectLine, listBox, addWeb, catLabel, catBox, unusedOnly, countLabel, tableBox, status, qTitle, qCountHint, queueCount, qSceneHint, sceneCount, queueBtn, divider, pTitle, retrySkipped, pCountHint, prepCount, pSceneHint, prepScenes, prepBtn, scanBtn, reviewsBtn, openDir, stop, stopMain, close, runBox, indexLine, indexBtn);
+  view.body.append(listTitle, unpick, projectLine, listBox, addWeb, catLabel, catBox, unusedOnly, countLabel, tableBox, status, thrLabel, runThreads, qTitle, qCountHint, queueCount, qSceneHint, sceneCount, queueBtn, divider, pTitle, retrySkipped, pCountHint, prepCount, pSceneHint, prepScenes, prepBtn, scanBtn, reviewsBtn, openDir, stop, stopMain, close, runBox, indexLine, indexBtn);
   // each pair is remembered separately (this session's run-settings); the buttons read only their own boxes
   fetch("/api/run-settings").then((x) => x.json()).then((s) => {
+    runThreads.value = s.projectThreads || s.threads || 1;
     if (s.queueCount) queueCount.value = s.queueCount; if (s.queueScenes) sceneCount.value = s.queueScenes;
     if (s.prepCount !== undefined) prepCount.value = s.prepCount; if (s.prepScenes) prepScenes.value = s.prepScenes;
     retrySkipped.input.checked = s.prepRetrySkipped === true;
     refreshPrepared();
   }).catch(() => {});
-  const remember = () => fetch("/api/run-settings", { method: "POST", body: JSON.stringify({ queueCount: queueCount.value, queueScenes: sceneCount.value, prepCount: prepCount.value, prepScenes: prepScenes.value, prepRetrySkipped: retrySkipped.input.checked }) }).catch(() => {});
+  const remember = () => fetch("/api/run-settings", { method: "POST", body: JSON.stringify({ queueCount: queueCount.value, queueScenes: sceneCount.value, prepCount: prepCount.value, prepScenes: prepScenes.value, prepRetrySkipped: retrySkipped.input.checked, projectThreads: thr() }) }).catch(() => {});
+  runThreads.onchange = remember;
   queueCount.onchange = remember; prepCount.onchange = remember; prepScenes.onchange = remember; retrySkipped.input.onchange = remember;
   sceneCount.onchange = () => { remember(); refreshPrepared(); }; // the footer counts the prepared rows the queue can use with THIS number of scenes
 
@@ -875,7 +886,7 @@ function showProjectsDialog(pick = "") {
     queueBtn.disabled = orderActive || (lightBusy && runningLight === "queue") || !has || !data.rows.length;
     prepBtn.disabled = lightBusy || otherLight || !has || !data.rows.length;
     indexBtn.disabled = lightBusy || otherLight || orderActive;
-    queueCount.enabled = !lightBusy; sceneCount.enabled = !lightBusy; prepCount.enabled = !lightBusy; prepScenes.enabled = !lightBusy;
+    runThreads.enabled = !lightBusy; queueCount.enabled = !lightBusy; sceneCount.enabled = !lightBusy; prepCount.enabled = !lightBusy; prepScenes.enabled = !lightBusy;
     openDir.disabled = !has;
     stop.disabled = !(mainBusy || lightBusy || orderActive);
     // each Dừng says what it stops; with two runs at once (main + light) there are two buttons
@@ -1050,7 +1061,7 @@ function showProjectsDialog(pick = "") {
   const begin = async (url, body, kind, failText) => {
     const isLight = kind === "queue" || kind === "prep" || kind === "index";
     if (!isLight && run.active) return say("Đang có một lượt chạy trong cửa sổ chính. Chờ xong rồi chạy.", "var(--warn)");
-    const r = await fetch(url, { method: "POST", body: JSON.stringify(body) });
+    const r = await fetch(url, { method: "POST", body: JSON.stringify({ ...body, threads: thr() }) });
     const answer = await r.json().catch(() => ({}));
     if (!r.ok) return say(answer.error || failText, "var(--error)");
     ticks = 0;
@@ -1076,7 +1087,7 @@ function showProjectsDialog(pick = "") {
       return say(`Đã thêm ${answer.added} sản phẩm (không ảnh bối cảnh). Xem danh sách ở cửa sổ chính.`, "var(--ok)");
     }
     queueBtn.disabled = prepBtn.disabled = true; say("Đang lấy từ kho đã chuẩn bị…", "var(--accent)");
-    const r = await fetch("/api/project/queue/run", { method: "POST", body: JSON.stringify({ project: current, category: catBox.value, unused_only: unusedOnly.input.checked, count: queueCount.value, scenes: sceneCount.value }) });
+    const r = await fetch("/api/project/queue/run", { method: "POST", body: JSON.stringify({ project: current, category: catBox.value, unused_only: unusedOnly.input.checked, count: queueCount.value, scenes: sceneCount.value, threads: thr() }) });
     const a = await r.json().catch(() => ({}));
     if (!r.ok) { refreshButtons(); say(a.error || "Chưa thêm vào hàng chờ được.", "var(--error)"); return; }
     await loadState().catch(() => {});

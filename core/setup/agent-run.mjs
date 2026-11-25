@@ -316,7 +316,7 @@ export const newRunId = (d = new Date()) => "agent-" + d.toISOString().replace(/
 
 // The text block of docs/agent-prompt.md (mode "flow") or docs/scan-prompt.md (mode "scan"), placeholders filled.
 export const PROMPT_FILES = { flow: "agent-prompt.md", scan: "scan-prompt.md", reviews: "reviews-count-prompt.md", queue: "queue-prompt.md", prep: "prep-prompt.md", index: "index-prompt.md" };
-export function buildPrompt({ toolRoot, run, options = "defaults", mode = "flow", site = "", max = 20, project = "", workspace = "", agentName = "Claude Code", threads = 1 }) {
+export function buildPrompt({ toolRoot, run, options = "defaults", mode = "flow", site = "", max = 20, project = "", workspace = "", agentName = "Claude Code", threads = 1, tabs = 1 }) {
   const agyImg = mode === "flow" && agentName === "Antigravity"; // Antigravity makes the images itself: its own prompt file, no Flow, no Google account
   const file = agyImg ? "agent-prompt-agy-image.md" : PROMPT_FILES[mode];
   if (!file) throw new Error("Unknown run mode: " + mode);
@@ -327,7 +327,7 @@ export function buildPrompt({ toolRoot, run, options = "defaults", mode = "flow"
   if (mode === "flow" && !agyImg) acct = readFlowAccount(workspace || join(toolRoot, "workspace"), join(toolRoot, "workspace"));
   const acctText = acct ? `\nGOOGLE ACCOUNT FOR FLOW: use ONLY the already signed-in Google account ${acct}. The profile may hold several Google accounts and Flow opens the first one. Before creating the project open https://accounts.google.com/AccountChooser?continue=https%3A%2F%2Fflow.google.com%2F and click THAT email (no password is needed for a signed-in account); on Flow check the avatar menu shows the same email. If that email is not in the list, or Flow says the credits are used up on it: STOP and report. Never sign out, never remove or add an account, never use another account.` : "";
   return m[1].replace(/\{\{TOOL\}\}/g, toolRoot).replace(/\{\{RUN\}\}/g, run).replace(/\{\{OPTIONS\}\}/g, options)
-    .replace(/\{\{SITE\}\}/g, site).replace(/\{\{MAX\}\}/g, String(max)).replace(/\{\{PROJECT\}\}/g, project).replace(/agent: Claude Code/g, "agent: " + agentName).replace(/{{THREADS}}/g, String(threads)) + acctText;
+    .replace(/\{\{SITE\}\}/g, site).replace(/\{\{MAX\}\}/g, String(max)).replace(/\{\{PROJECT\}\}/g, project).replace(/agent: Claude Code/g, "agent: " + agentName).replace(/{{THREADS}}/g, String(threads)).replace(/{{TABS}}/g, String(tabs)) + acctText;
 }
 
 const defaultKill = (child, plat) => {
@@ -354,11 +354,12 @@ export function findClaude(plat = osPlatform()) {
   } catch { return { found: false, path: "" }; }
 }
 
-export function createAgentRunner({ toolRoot, workspace, profileDir = join(workspace, "chrome-profile"), headless = process.env.PR_FLOW_HEADLESS === "1", getBrowser = () => ({ mode: "extension", profile: "Profile 1" }), session = "", kind = "main", checkProfile = checkExtensionProfile, findCli = findClaude, findAgyCli = findAgy, plat = osPlatform(), spawnFn = spawn, killTree = (c) => defaultKill(c, plat), npxOk = () => defaultNpx(plat), now = () => Date.now(), graceMs = 4000, minutes = DEFAULT_MINUTES, maxTurns = 0 }) {
+export function createAgentRunner({ toolRoot, workspace, profileDir = join(workspace, "chrome-profile"), headless = process.env.PR_FLOW_HEADLESS === "1", getBrowser = () => ({ mode: "extension", profile: "Profile 1" }), session = "", kind = "main", slot = 0, checkProfile = checkExtensionProfile, findCli = findClaude, findAgyCli = findAgy, plat = osPlatform(), spawnFn = spawn, killTree = (c) => defaultKill(c, plat), npxOk = () => defaultNpx(plat), now = () => Date.now(), graceMs = 4000, minutes = DEFAULT_MINUTES, maxTurns = 0 }) {
   const runsDir = join(workspace, "runs"), tmpDir = join(workspace, "tmp");
   // Two runner instances per server: "main" (Flow images + reviews, scan, review count) and "light" (queue, prep: no browser). Own state and log files,
   // so a prep / queue run goes on while Bắt đầu runs; two light runs at once stay forbidden (each runner is one run at a time).
-  const stateName = kind === "light" ? "prep-run" : "agent-run";
+  // slot 0 = the one light run of old; slots 1-3 = the other shards of a Luồng N run (own state / log files, own lock tag).
+  const stateName = kind === "light" ? (slot ? "prep-run-" + slot : "prep-run") : "agent-run", lockTag = slot ? kind + slot : kind;
   const stateFile = join(runsDir, stateName + ".json"), logFile = join(runsDir, stateName + ".log");
   let cur = null, last = null;
 
@@ -472,7 +473,7 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
     try { rmSync(run.cfg, { force: true }); } catch {}
     // Antigravity: the per-run folder (prompt, plugin with the Playwright MCP config and its token) is always removed, on success, failure and stop.
     if (run.agyDir) { try { rmSync(run.agyDir, { recursive: true, force: true }); } catch {} }
-    try { releaseLocks(toolRoot, session, process.pid, kind); } catch {}
+    try { releaseLocks(toolRoot, session, process.pid, lockTag); } catch {}
     // An image run (mode "flow") that finished its process cleanly but produced nothing for ANY of its items (no image, no result) is a failed run,
     // not a success: the final state must not look like "done, 0 errors" when 0 of N items were completed.
     let nothing = "";
@@ -501,7 +502,7 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
   // mode "queue": put products of a project into the run queue with N scenes each (docs/queue-prompt.md, needs project and options).
   // mode "reviews": read the review number shown on each product page of a project (docs/reviews-count-prompt.md, needs project).
   // One run at a time for all: they share the one Chrome profile.
-  function start({ run: runId = newRunId(), options = "defaults", mode = "flow", site = "", max = 20, project = "" } = {}) {
+  function start({ run: runId = newRunId(), options = "defaults", mode = "flow", site = "", max = 20, project = "", shard = "", tabs = 1 } = {}) {
     if (!/^[\w.-]{3,64}$/.test(runId)) return { ok: false, status: 400, error: "Invalid run id." };
     const lightMode = LIGHT_MODES.includes(mode);
     if ((kind === "light") !== lightMode) return { ok: false, status: 400, error: `Mode ${mode} does not run on this runner.` };
@@ -513,7 +514,7 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
     if (!found?.found) return { ok: false, status: 400, error: agy ? "Antigravity CLI (agy) not found: install Antigravity and sign in with Google, or set PR_AGY_CLI to its path." : "Claude CLI not found: install Claude Code, or set PR_CLAUDE_CLI to its path." };
     if (!noBrowser && !npxOk()) return { ok: false, status: 400, error: "npx is not available (it comes with Node.js): the Playwright MCP cannot start." };
     let prompt;
-    try { prompt = buildPrompt({ toolRoot, run: runId, options, mode, site, max, project, workspace, agentName: agy ? "Antigravity" : "Claude Code", threads: agyImage ? readThreads(workspace || join(toolRoot, "workspace"), join(toolRoot, "workspace")) : 1 }); } catch (e) { return { ok: false, status: 500, error: sanitize(e.message) }; }
+    try { prompt = buildPrompt({ toolRoot, run: runId, options, mode, site, max, project, workspace, agentName: agy ? "Antigravity" : "Claude Code", tabs: Math.min(4, Math.max(1, Math.round(Number(tabs)) || 1)), threads: agyImage ? readThreads(workspace || join(toolRoot, "workspace"), join(toolRoot, "workspace")) : 1 }); } catch (e) { return { ok: false, status: 500, error: sanitize(e.message) }; }
     mkdirSync(tmpDir, { recursive: true }); mkdirSync(runsDir, { recursive: true });
     const cfg = join(tmpDir, `mcp-${runId}-${randomBytes(3).toString("hex")}.json`);
     const bc = noBrowser ? {} : (getBrowser() || {}), ext = !noBrowser && bc.mode !== "own";
@@ -521,19 +522,19 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
     // Sessions (several windows): the own Chrome profile and a project are used by one live session at a time.
     const holderText = (h) => "phiên \"" + sessionLabel(h.session) + "\"";
     if (!noBrowser && !ext) {
-      const c = claimLock(toolRoot, "chrome", "own", session, process.pid, kind);
+      const c = claimLock(toolRoot, "chrome", "own", session, process.pid, lockTag);
       if (!c.ok) return { ok: false, status: 409, error: "Chrome riêng của tool đang được " + holderText(c.holder) + " dùng. Chọn Chrome thật (profile có sẵn trên máy) hoặc đợi phiên đó chạy xong." };
     }
     let projectId = project;
     if (!projectId && mode === "scan" && site) { try { projectId = new URL(site).hostname.replace(/^www\./, "").replace(/\./g, "-"); } catch {} }
     if (projectId) {
-      const c = claimLock(toolRoot, "project", projectId, session, process.pid, kind);
-      if (!c.ok) { releaseLocks(toolRoot, session, process.pid, kind); return { ok: false, status: 409, error: "Dự án " + projectId + " đang được " + holderText(c.holder) + " dùng. Chọn dự án khác hoặc đợi phiên đó xong để khỏi ghi đè dữ liệu của nhau." }; }
+      const c = claimLock(toolRoot, "project", projectId, session, process.pid, lockTag);
+      if (!c.ok) { releaseLocks(toolRoot, session, process.pid, lockTag); return { ok: false, status: 409, error: "Dự án " + projectId + " đang được " + holderText(c.holder) + " dùng. Chọn dự án khác hoặc đợi phiên đó xong để khỏi ghi đè dữ liệu của nhau." }; }
     }
     // Gắn nhãn kho ảnh: the library index is shared by every session, so one index run at a time on this machine (no two windows tagging the same photos).
     if (mode === "index") {
-      const c = claimLock(toolRoot, "library", "scene-index", session, process.pid, kind);
-      if (!c.ok) { releaseLocks(toolRoot, session, process.pid, kind); return { ok: false, status: 409, error: "Kho ảnh đang được " + holderText(c.holder) + " gắn nhãn. Đợi lượt đó xong." }; }
+      const c = claimLock(toolRoot, "library", "scene-index", session, process.pid, lockTag);
+      if (!c.ok) { releaseLocks(toolRoot, session, process.pid, lockTag); return { ok: false, status: 409, error: "Kho ảnh đang được " + holderText(c.holder) + " gắn nhãn. Đợi lượt đó xong." }; }
     }
     const group = ext ? takeGroup(workspace, session) : null;
     if (!noBrowser) writeFileSync(cfg, JSON.stringify(mcpConfig({ plat, profile: profileDir, headless, extension: ext ? { profile: bc.profile, name: group.name, color: group.color, background: mode !== "flow" } : null })));
@@ -570,7 +571,7 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
           if (extToken) server.env = { ...(server.env || {}), PLAYWRIGHT_MCP_EXTENSION_TOKEN: extToken };
           writeFileSync(join(agyDir, ".agents", "plugins", AGY_PLUGIN, "mcp_config.json"), JSON.stringify({ mcpServers: { [AGY_SERVER]: server } }));
         }
-      } catch (e) { try { rmSync(agyDir, { recursive: true, force: true }); } catch {} try { rmSync(cfg, { force: true }); } catch {} try { releaseLocks(toolRoot, session, process.pid, kind); } catch {} return { ok: false, status: 500, error: sanitize(e.message) }; }
+      } catch (e) { try { rmSync(agyDir, { recursive: true, force: true }); } catch {} try { rmSync(cfg, { force: true }); } catch {} try { releaseLocks(toolRoot, session, process.pid, lockTag); } catch {} return { ok: false, status: 500, error: sanitize(e.message) }; }
       const task = "Your full task is in the file " + join(agyDir, "prompt.md") + ". Read it first with view_file, then do exactly what it says, following its numbered steps in order. Reply only as the task asks.";
       args = ["-p", task, "--output-format", "stream-json", "--dangerously-skip-permissions", "--add-dir", toolRoot, ...(asked.model ? ["--model", asked.model] : []), ...(asked.effort && !(asked.model && /-(low|medium|high|xhigh)$/.test(asked.model)) ? ["--effort", asked.effort] : [])];
     } else {
@@ -580,12 +581,12 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
     const cmd = plat === "win32" && /\.(cmd|bat)$/i.test(found.path) ? ["cmd", ["/c", found.path, ...args]] : [found.path, args];
     let child;
     try { child = spawnFn(cmd[0], cmd[1], { cwd: agy ? agyDir : toolRoot, env, windowsHide: true, detached: false, stdio: ["pipe", "pipe", "pipe"] }); }
-    catch (e) { try { rmSync(cfg, { force: true }); } catch {} if (agyDir) { try { rmSync(agyDir, { recursive: true, force: true }); } catch {} } try { releaseLocks(toolRoot, session, process.pid, kind); } catch {} return { ok: false, status: 500, error: sanitize(e.message) }; }
+    catch (e) { try { rmSync(cfg, { force: true }); } catch {} if (agyDir) { try { rmSync(agyDir, { recursive: true, force: true }); } catch {} } try { releaseLocks(toolRoot, session, process.pid, lockTag); } catch {} return { ok: false, status: 500, error: sanitize(e.message) }; }
     const started = new Date(now()).toISOString();
     const run = { child, cfg, lines: [], buf: "", written: 0, stderr: [], ended: false, forced: "", result: null, timer: null,
       state: { run_id: runId, mode, project, pid: child.pid ?? null, started, updated: started, status: "running", exit_code: null, last_text: "", turns: 0, error: "", model_in_use: asked.model, agent: backend } };
     run.asked = asked; run.backend = backend; run.who = who; run.agyDir = agyDir; run.agyImage = agyImage;
-    run.prefix = "[" + (FEATURE[mode] || mode) + (project ? " · " + project : "") + "] ";
+    run.prefix = "[" + (FEATURE[mode] || mode) + (project ? " · " + project : "") + (shard ? " · luồng " + shard : "") + "] ";
     cur = run;
     try { writeFileSync(logFile, ""); } catch {}
     setModelLine(run, modelLineText(asked.model, asked.effort, true, backend));

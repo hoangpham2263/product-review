@@ -33,7 +33,47 @@ const configApi = createConfigApi({ hubRoot: root, pwsh: PWSH, env: toolEnv });
 // Agent mode: Claude Code drives Google Flow and writes the reviews (core/setup/agent-run.mjs, docs/agent-prompt.md).
 const agent = createAgentRunner({ toolRoot: root, workspace, profileDir: profileDirOf(sharedWs), getBrowser: () => readFlowBrowser(workspace, sharedWs), session, kind: "main" });
 // The light runner: queue and prep runs (no browser, no Chrome profile, own state files runs/prep-run.*): they go on while Bắt đầu runs.
-const light = createAgentRunner({ toolRoot: root, workspace, profileDir: profileDirOf(sharedWs), session, kind: "light" });
+// Luồng N (Dự án popup): up to 4 light runs at once, each on its own disjoint slice of the work (own state / log files prep-run[-k].*). `light` keeps the
+// one-runner API (start / stop / status / isActive / shutdown) over the pool, so every route and the queue order treat the shards as one run.
+const lightPool = [0, 1, 2, 3].map((slot) => createAgentRunner({ toolRoot: root, workspace, profileDir: profileDirOf(sharedWs), session, kind: "light", slot }));
+const light = {
+  isActive: () => lightPool.some((r) => r.isActive()),
+  start: (opts) => lightPool[0].start(opts),
+  stop: () => { let res = null; for (const r of lightPool) if (r.isActive()) res = r.stop(); return res || { ok: false, status: 409, error: "No run is active." }; },
+  shutdown: () => { for (const r of lightPool) { try { r.shutdown(); } catch {} } },
+  status: () => {
+    const act = lightPool.filter((r) => r.isActive()).map((r) => r.status());
+    if (act.length) { const st = { ...act[0] }; if (act.length > 1) { st.shards = act.length; st.turns = act.reduce((a, x) => a + (x.turns || 0), 0); } return st; }
+    const all = lightPool.map((r) => r.status()).filter((x) => x.started).sort((a, b) => String(b.updated || b.started).localeCompare(String(a.updated || a.started)));
+    return all.find((x) => x.status === "failed") || all[0] || lightPool[0].status();
+  },
+};
+const clampThreads = (v, fallback = 1) => { const n = Math.round(Number(v)); return Number.isInteger(n) ? Math.min(4, Math.max(1, n)) : fallback; };
+const savedThreads = () => { try { return clampThreads(readSeededJson(join(workspace, "config", "run-settings.json"), join(sharedWs, "config", "run-settings.json"), {}).threads, 1); } catch { return 1; } };
+// Starts the light shards of one action. urls = the products of the run in order (queue / prep): split into contiguous disjoint parts, one shard file
+// (JSON array of links) each, handed to the agent as "shard file:" (queue-todo / prep-todo -OnlyFile), so no two shards ever hold the same product.
+// urls = null (index): the shards split the library photos by a stable hash (-Shard k/n). threads 1 = exactly the old single run.
+function startLightShards({ mode, project, options, threads = 1, urls = null, tag = "" }) {
+  let n = clampThreads(threads);
+  if (urls && urls.length) n = Math.min(n, urls.length);
+  const stamp = newRunId().slice(6);
+  if (n <= 1 || lightPool.some((r) => r.isActive())) return lightPool[0].start({ run: (tag || mode) + "-" + stamp, mode, project, options });
+  const chunk = urls ? Math.ceil(urls.length / n) : 0, started = [];
+  for (let k = 1; k <= n; k++) {
+    let opt = options + "; shard: " + k + "/" + n;
+    if (urls) {
+      const part = urls.slice((k - 1) * chunk, k * chunk);
+      if (!part.length) continue;
+      const file = join(workspace, "tmp", "shard-" + stamp + "-" + k + ".json");
+      try { mkdirSync(dirname(file), { recursive: true }); writeFileSync(file, JSON.stringify(part)); } catch (e) { for (const r of started) r.stop(); return { ok: false, status: 500, error: e.message }; }
+      opt = opt.replace(/(products to (?:queue|prepare): )[^;]+/, "$1" + part.length) + "; shard file: " + file;
+    }
+    const runner = lightPool[k - 1], r = runner.start({ run: (tag || mode) + "-" + stamp + "-s" + k, mode, project, options: opt, shard: k + "/" + n });
+    if (!r.ok) { for (const x of started) x.stop(); return r; }
+    started.push(runner); if (!started.first) started.first = r;
+  }
+  return started.first;
+}
 // Quét web: the project of a run is the one whose session.json names the run (src/scan.ps1 start -Run); older scans keep a scan.json.
 // Paths use "/" for the window.
 const readJsonFile = (p) => JSON.parse(readFileSync(p, "utf8").replace(/^\uFEFF/, ""));
@@ -246,10 +286,18 @@ function finishOrder(state, message = "") {
   queueOrder.state = state; queueOrder.active = false; queueOrder.message = message || (state === "done" ? "Đã thêm đủ." : "");
   if (queueOrderTimer) { clearInterval(queueOrderTimer); queueOrderTimer = null; }
 }
-function startOrderClaude(need) {
+async function startOrderClaude(need) {
   const o2 = queueOrder;
   const options = `category: ${o2.category ? `"${o2.category}"` : "(all categories)"}; only unused (used = F): ${o2.unused_only ? "T" : "F"}; products to queue: ${need}; scenes per product: ${o2.scenes}`;
-  const r = light.start({ run: "queue-" + newRunId().slice(6), mode: "queue", project: o2.project, options });
+  // Luồng N: the first `need` products to handle (top-ups of ready rows first, then new products, table order) are split between the shards.
+  let urls = null;
+  if (o2.threads > 1) {
+    const top = await runScan(["queue-todo", "-Project", o2.project, "-TopUp", "-SceneCount", String(o2.scenes), "-Limit", String(need), ...o2.filters], 90000);
+    const fresh = await runScan(["queue-todo", "-Project", o2.project, "-Limit", String(need), ...o2.filters], 90000);
+    const list = [...(top.ok ? top.products || [] : []), ...(fresh.ok ? fresh.products || [] : [])].map((x) => x.url);
+    urls = [...new Set(list)].slice(0, need);
+  }
+  const r = startLightShards({ mode: "queue", project: o2.project, options, threads: o2.threads, urls });
   if (r.ok) { o2.state = "claude"; o2.claudeNeed = need; }
   return r;
 }
@@ -273,7 +321,7 @@ async function orderTick() {
         // the prep run ended: whatever is still missing goes to Claude now (or the order ends when nothing is left to queue)
         const rest = o2.total - orderAdded();
         if (!(await productsLeft(o2.project, o2.scenes, o2.filters))) return finishOrder("done", "Không còn sản phẩm nào để thêm: đã thêm " + orderAdded() + "/" + o2.total + ".");
-        const r = startOrderClaude(rest);
+        const r = await startOrderClaude(rest);
         if (!r.ok) return finishOrder("stopped", r.error || "Chưa chạy được " + queueAiName() + ".");
       }
     } else if (o2.state === "claude" && !light.isActive()) {
@@ -428,7 +476,7 @@ async function handle(req, res) {
         if (typeof given.flowAccount === "string") { const v = given.flowAccount.trim(); if (!v) delete cur.flowAccount; else if (v.length <= 120 && /^[^\s@"<>]+@[^\s@"<>]+\.[^\s@"<>]+$/.test(v)) cur.flowAccount = v; }
         // the two separate pairs of the Dự án popup: Thêm vào hàng chờ (count 1-200, scenes 1-4) and Chuẩn bị trước (count 0-500, 0 = all; scenes 1-4)
         const int = (v, lo, hi) => (Number.isInteger(v) && v >= lo && v <= hi ? v : undefined);
-        for (const [k, lo, hi] of [["queueCount", 1, 200], ["queueScenes", 1, 4], ["prepCount", 0, 500], ["prepScenes", 1, 4]]) { const v = int(given[k], lo, hi); if (v !== undefined) cur[k] = v; }
+        for (const [k, lo, hi] of [["queueCount", 1, 200], ["queueScenes", 1, 4], ["prepCount", 0, 500], ["prepScenes", 1, 4], ["projectThreads", 1, 4], ["scanThreads", 1, 4]]) { const v = int(given[k], lo, hi); if (v !== undefined) cur[k] = v; }
         if (typeof given.prepRetrySkipped === "boolean") cur.prepRetrySkipped = given.prepRetrySkipped;
         delete cur.runMode;
         return cur;
@@ -483,7 +531,7 @@ async function handle(req, res) {
     const max = Math.min(200, Math.max(1, Math.round(Number(given.max)) || 20));
     if (run.proc) return send(res, 409, { error: "Đang chạy." });
     if (agent.isActive()) return send(res, 409, { error: "Đã có một lượt AI đang chạy (Flow hoặc quét). Chờ xong hoặc bấm Dừng." });
-    const r = agent.start({ run: "scan-" + newRunId().slice(6), mode: "scan", site, max });
+    const r = agent.start({ run: "scan-" + newRunId().slice(6), mode: "scan", site, max, tabs: clampThreads(given.threads, savedThreads()) });
     return send(res, r.status, r.ok ? { ok: true, run: r.run_id, started: r.started } : { error: r.error });
   }
   if (path === "/api/scan/status" && req.method === "GET") {
@@ -504,7 +552,7 @@ async function handle(req, res) {
     { const fp = focusMismatch(id); if (fp) return send(res, 409, { error: fp }); }
     if (run.proc) return send(res, 409, { error: "Đang chạy." });
     if (agent.isActive()) return send(res, 409, { error: "Đã có một lượt AI đang chạy (Flow, quét hoặc cập nhật review). Chờ xong hoặc bấm Dừng." });
-    const r = agent.start({ run: "reviews-" + newRunId().slice(6), mode: "reviews", project: id });
+    const r = agent.start({ run: "reviews-" + newRunId().slice(6), mode: "reviews", project: id, tabs: clampThreads(given.threads, savedThreads()) });
     return send(res, r.status, r.ok ? { ok: true, run: r.run_id, started: r.started } : { error: r.error });
   }
   if (path === "/api/project/reviews/status" && req.method === "GET") {
@@ -539,9 +587,9 @@ async function handle(req, res) {
     // 2. nothing left that Claude could queue: say so instead of starting it
     if (!(await productsLeft(id, scenes, filters))) return send(res, 200, { ok: true, from_prepared: got, needs_claude: 0, dropped, finished: true, message: got ? "Chỉ còn " + got + " sản phẩm để thêm: đã thêm hết (các sản phẩm khác đã dùng hoặc đã ở hàng chờ)." : "Không còn sản phẩm nào để thêm vào hàng chờ (đã dùng hoặc đã ở hàng chờ)." });
     // 3. the shortfall is NEVER dropped: an order of this session fills it (from the stock while a prep run adds rows, then Claude for the rest)
-    queueOrder = { active: true, project: id, total: count, scenes, category, unused_only: !!given.unused_only, filters, base, fromPrepared: got, state: "", message: "", lastMtime: 0, lastPull: 0, claudeNeed: 0, dropped };
+    queueOrder = { active: true, project: id, threads: clampThreads(given.threads, savedThreads()), total: count, scenes, category, unused_only: !!given.unused_only, filters, base, fromPrepared: got, state: "", message: "", lastMtime: 0, lastPull: 0, claudeNeed: 0, dropped };
     if (light.isActive()) queueOrder.state = "waiting";
-    else { const r = startOrderClaude(need); if (!r.ok) { queueOrder.active = false; return send(res, r.status || 500, { error: r.error, from_prepared: got, needs_claude: need }); } }
+    else { const r = await startOrderClaude(need); if (!r.ok) { queueOrder.active = false; return send(res, r.status || 500, { error: r.error, from_prepared: got, needs_claude: need }); } }
     queueOrderTimer = queueOrderTimer || setInterval(() => { orderTick().catch(() => {}); }, 3000);
     return send(res, 200, { ok: true, from_prepared: got, needs_claude: need, started: queueOrder.state === "claude", waiting: queueOrder.state === "waiting", order: orderStatus(), dropped });
   }
@@ -558,7 +606,13 @@ async function handle(req, res) {
     const limit = Math.min(500, Math.max(0, Math.round(Number(given.limit)) || 0));
     if (light.isActive()) return send(res, 409, { error: "Đã có một lượt chuẩn bị / thêm hàng chờ đang chạy. Chờ xong hoặc bấm Dừng." });
     const options = `category: ${category ? `"${category}"` : "(all categories)"}; only unused (used = F): ${given.unused_only ? "T" : "F"}; products to prepare: ${limit || "all"}; scenes per product: ${scenes}; retry skipped (no-fit) products: ${given.retry_skipped ? "T" : "F"}`;
-    const r = light.start({ run: "prep-" + newRunId().slice(6), mode: "prep", project: id, options });
+    let urls = null;
+    const threads = clampThreads(given.threads, savedThreads());
+    if (threads > 1) {
+      const todo = await runScan(["prep-todo", "-Project", id, ...(limit ? ["-Limit", String(limit)] : []), ...projectArgs({ ...given, category }), ...(given.retry_skipped ? ["-RetrySkipped"] : [])], 120000);
+      if (todo.ok) urls = (todo.products || []).map((x) => x.url);
+    }
+    const r = startLightShards({ mode: "prep", project: id, options, threads, urls });
     return send(res, r.status, r.ok ? { ok: true, run: r.run_id, started: r.started } : { error: r.error });
   }
   // "Gắn nhãn kho ảnh": the scene library tag index (workspace/source-photos/scene-index.json, shared by every project and session).
@@ -573,7 +627,7 @@ async function handle(req, res) {
     const limit = Math.min(5000, Math.max(0, Math.round(Number(given.limit)) || 0));
     if (light.isActive()) return send(res, 409, { error: "Đã có một lượt chuẩn bị / thêm hàng chờ / gắn nhãn đang chạy trong cửa sổ này. Chờ xong hoặc bấm Dừng." });
     const options = `library group: ${group ? `"${group}"` : "(every group)"}; photos to tag: ${limit || "all"}`;
-    const r = light.start({ run: "index-" + newRunId().slice(6), mode: "index", project: "", options });
+    const r = startLightShards({ mode: "index", project: "", options, threads: clampThreads(given.threads, savedThreads()) });
     return send(res, r.status, r.ok ? { ok: true, run: r.run_id, started: r.started } : { error: r.error });
   }
   if (path === "/api/library/index/stop" && req.method === "POST") {

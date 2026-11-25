@@ -23,7 +23,7 @@ param(
     [string]$Url = '', [string]$Title = '', [string]$Collection = '', [string]$CollectionUrl = '', [string]$ImageUrl = '', [string]$ImageFile = '', [string]$File = '',
     [int]$Count = -1, [string]$Rating = '', [string]$Source = '', [string]$Used = '', [int]$Limit = 0,
     [string]$Group = '', [string]$Category = '', [string]$SceneNames = '', [int]$SceneCount = 0, [switch]$UnusedOnly, [switch]$AllowReuse, [switch]$Prefetch, [switch]$Skip, [string]$Reason = '', [switch]$TopUp, [switch]$RetrySkipped,
-    [string]$Fits = '', [string]$Setting = '', [int]$Cols = 4, [string]$Out = '', [switch]$Grouped, [switch]$Sheet, [string]$Files = '', [string]$Names = '',
+    [string]$Shard = '', [string]$OnlyFile = '', [string]$Fits = '', [string]$Setting = '', [int]$Cols = 4, [string]$Out = '', [switch]$Grouped, [switch]$Sheet, [string]$Files = '', [string]$Names = '',
     [Parameter(ValueFromRemainingArguments = $true)]$Rest
 )
 
@@ -442,6 +442,37 @@ function Get-TagWords([string]$Text) {
     return @(([string]$Text).ToLowerInvariant() -split '[^a-z0-9]+' | Where-Object { $_.Length -ge 3 -and $stop -notcontains $_ } | ForEach-Object { if ($_.EndsWith('s') -and $_.Length -gt 3) { $_.Substring(0, $_.Length - 1) } else { $_ } } | Sort-Object -Unique)
 }
 
+# ---- Several light runs at once (Luồng in the Dự án popup): each run gets a DISJOINT slice of the work ----
+# -OnlyFile <json array of product links>: keep only those products (queue-todo / prep-todo; the app makes the exact split, so no two runs share a product).
+# -Shard k/n: keep the items whose stable hash (Test-InShard) falls in slice k of n (scene-index-todo, library photos).
+function Select-OnlyFile($Rows, [scriptblock]$KeyOf) {
+    if (-not $OnlyFile) { return @($Rows) }
+    if (-not (Test-Path -LiteralPath $OnlyFile)) { Fail-Scan "-OnlyFile not found: $OnlyFile" 'BAD_ONLYFILE' }
+    $keys = New-Object System.Collections.Generic.HashSet[string]
+    foreach ($u in @([IO.File]::ReadAllText($OnlyFile) | ConvertFrom-Json)) { [void]$keys.Add((Get-ScanUrlKey ([string]$u))) }
+    return @($Rows | Where-Object { $keys.Contains((Get-ScanUrlKey ([string](& $KeyOf $_)))) })
+}
+function Test-InShard([string]$Key) {
+    if (-not $Shard) { return $true }
+    if ($Shard -notmatch '^([1-4])/([1-4])$' -or [int]$Matches[1] -gt [int]$Matches[2]) { Fail-Scan '-Shard must look like 1/2 (slice k of n, n 1-4).' 'BAD_SHARD' }
+    $k = [int]$Matches[1]; $n = [int]$Matches[2]
+    $h = 0
+    foreach ($c in $Key.ToCharArray()) { $h = ($h * 31 + [int]$c) % 1000003 }
+    return (($h % $n) -eq ($k - 1))
+}
+# queue-add holds this lock from the first check to the queue write: two runs never queue the same link or take the same scene at the same moment.
+function Enter-QueueAddLock {
+    $path = Join-Path (Get-SessionWorkspaceDir $ProjectRoot) 'queue-add.lock'
+    $deadline = (Get-Date).AddSeconds(90)
+    while ($true) {
+        try { return [IO.File]::Open($path, [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None) }
+        catch [IO.IOException] {
+            if ((Get-Date) -gt $deadline) { Fail-Scan '[CAUSE:LOCK_BUSY] queue-add is busy (another run is adding); try again in a few seconds.' 'LOCK_BUSY' }
+            Start-Sleep -Milliseconds (80 + (Get-Random -Maximum 120))
+        }
+    }
+}
+
 # ---- Grouped product lists (prep-todo / queue-todo -Grouped): products of one kind together, so Claude decides the type once per group ----
 # The key is the product's collection (category of the shop); rows without one fall back to a type word of the title. Big groups are split in
 # chunks of 20 (one product sheet each). This only GROUPS products: it never chooses a scene.
@@ -596,6 +627,7 @@ try {
                 })
             if ($TopUp) { $todoRows = @($todoRows | Where-Object { $k = Get-ScanUrlKey $_.product_url; $readyRows.ContainsKey($k) -and ($SceneCount -le 0 -or [int]$readyRows[$k].scene_count -lt $SceneCount) }) }
             else { $todoRows = @($todoRows | Where-Object { -not $readyRows.ContainsKey((Get-ScanUrlKey $_.product_url)) }) }
+            $todoRows = @(Select-OnlyFile $todoRows { param($r) $r.product_url })
             if ($Limit -gt 0) { $todoRows = @($todoRows | Select-Object -First $Limit) }
             $answer = ([ordered]@{ project = $ProjectId; top_up = [bool]$TopUp; count = $todoRows.Count; products = @($todoRows | ForEach-Object {
                         $item = [ordered]@{ url = $_.product_url; title = $_.title; collection = $_.collection; image = (Join-Path (Join-Path $dir 'images') $_.product_image) }
@@ -672,6 +704,7 @@ try {
             Import-QueueLibs
             $dir = Get-ScanDir $ProjectId
             if (-not $Url) { Fail-Scan '-Url is required.' 'BAD_URL' }
+            $addLock = Enter-QueueAddLock
             if (-not $Group) { Fail-Scan '-Group is required (the library group the scenes come from).' 'BAD_GROUP' }
             $key = Get-ScanUrlKey $Url
             $row = @(Read-ScanRows (Join-Path $dir 'products.csv') | Where-Object { (Get-ScanUrlKey $_.product_url) -eq $key })
@@ -714,6 +747,7 @@ try {
             }
             [void](Add-QueueEntry $dir $row[0] $picked)
             Save-PHashCache
+            $addLock.Dispose()
             # Keep the stock coherent: the product's prepared row (a top-up, or none yet) becomes consumed with the scenes really queued.
             $consumedBy = if ($env:PR_SESSION) { $env:PR_SESSION } else { 'default' }
             [void](Use-PreparedLock $dir {
@@ -733,6 +767,7 @@ try {
             $have = New-Object System.Collections.Generic.HashSet[string]
             foreach ($pr in @(Read-PreparedRows $dir)) { if ($RetrySkipped -and ([string]$pr.status).StartsWith('skipped')) { continue }; [void]$have.Add((Get-ScanUrlKey $pr.product_url)) }
             $todo = @(Get-ProjectCandidates $dir | Where-Object { -not $queued.Contains((Get-ScanUrlKey $_.product_url)) -and -not $have.Contains((Get-ScanUrlKey $_.product_url)) })
+            $todo = @(Select-OnlyFile $todo { param($r) $r.product_url })
             if ($Limit -gt 0) { $todo = @($todo | Select-Object -First $Limit) }
             # -Grouped: products by kind (collection, else a type word of the title), chunks of 20, each with a product contact sheet when -Sheet.
             if ($Grouped) { Write-ScanJson ([ordered]@{ project = $ProjectId; count = $todo.Count; groups = @(Get-ProductGroups $todo $dir ([bool]$Sheet)) }) }
@@ -864,6 +899,7 @@ try {
             $all = @(Get-LibraryPhotosCached $Group | Where-Object { -not $Category -or $_.category -eq $Category })
             if (-not $all.Count) { Fail-Scan "No photos in group $Group." 'UNKNOWN_GROUP' }
             $todo = @($all | Where-Object { -not (Get-SceneIndexEntry $index $Group $_) } | Sort-Object @{ Expression = { [string]$_.md5 } })
+            if ($Shard) { $todo = @($todo | Where-Object { Test-InShard ([string]$_.name) }) }
             $known = @($index.Values | Where-Object { $_.phash -and -not $_.dup_of })
             $picked = @(); $dups = @{}; $failed = @()
             foreach ($photo in $todo) {
