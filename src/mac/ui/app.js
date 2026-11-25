@@ -1471,7 +1471,8 @@ async function showReviewDialog() {
   };
   // One checkbox per run (newest first); none is chosen when Duyệt opens; the ones already chosen stay chosen when the list is drawn again.
   const drawRuns = (all, keep) => {
-    runs = all.map((x) => {
+    // A run with no picture has nothing to review or export: it is not listed.
+    runs = all.filter((x) => x.images > 0).map((x) => {
       const row = el("label", "check runrow");
       const input = el("input", "", { type: "checkbox" });
       input.checked = !!keep && keep.has(x.path);
@@ -1497,7 +1498,7 @@ async function showReviewDialog() {
   };
   const all = list(await api("reviewBatches"));
   drawRuns(all);
-  if (!all.length) status.textContent = "Chưa có lần chạy nào để duyệt. Lần chạy tạo ra ảnh sẽ hiện ở đây.";
+  if (!all.some((x) => x.images > 0)) status.textContent = "Chưa có lần chạy nào để duyệt. Lần chạy tạo ra ảnh sẽ hiện ở đây.";
   else await load();
   return new Promise((resolve) => { view.onClose = resolve; });
 }
