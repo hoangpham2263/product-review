@@ -219,8 +219,12 @@ const AGY_FALLBACK = [
 export function groupAgyModels(pairs) {
   const fams = [["Gemini 4", /^gemini-4-/, "Gemini mới nhất, mức suy nghĩ nằm trong tên model"], ["Orchestrator", /orchestrator/, "Điều phối nhiều bước"], ["Gemini 3.8", /^gemini-3/, "Nhẹ, nhanh"], ["Claude", /^claude-/, "Claude chạy qua Antigravity"], ["Khác", /./, ""]];
   const out = fams.map(([family, re, note]) => ({ family, re, note, models: [] }));
-  for (const [id, name] of pairs) { const g = out.find((f) => f.re.test(id)); g.models.push({ id, label: `${name} · ${id}` }); }
-  return out.filter((g) => g.models.length).map(({ family, note, models }) => ({ family, note, models }));
+  // Flash Low / Medium are the fast ones for browser-driving work ("nhanh"); every High / XHigh model thinks for minutes per step.
+  const FAST = /flash-(low|medium)$/, order = (id) => (FAST.test(id) ? 0 : 1);
+  for (const [id, name] of pairs) { const g = out.find((f) => f.re.test(id)); g.models.push({ id, label: `${FAST.test(id) ? "nhanh · " : ""}${name} · ${id}` }); }
+  for (const g of out) g.models.sort((a, b) => order(a.id) - order(b.id));
+  out.sort((a, b) => (/^Gemini 3/.test(a.family) ? -1 : 0) - (/^Gemini 3/.test(b.family) ? -1 : 0));
+  return out.filter((g) => g.models.length).map(({ family, note, models }) => ({ family, note: /^Gemini 3/.test(family) ? "Nhanh: hợp việc điều khiển trình duyệt" : /^Gemini 4/.test(family) ? "Mạnh hơn nhưng chậm: High / XHigh mất vài phút mỗi bước" : note, models }));
 }
 export function parseAgyModels(text) {
   const pairs = [];
@@ -286,6 +290,7 @@ export const AGY_FORBIDDEN_TOOL = /^(browser_|open_browser_url$|capture_browser|
 export const agyImageNote = `ANTIGRAVITY TOOL MAP (you are Antigravity, not Claude; the task below uses Claude's tool names, use yours):
 - "Bash" = run_command (a PowerShell on Windows: write the powershell / node commands exactly as given, from the TOOL folder).
 - "Read" = view_file (also for photos: LOOK at them); "Write" / "Edit" = write_to_file / replace_file_content, only for the temp files the steps ask for.
+- FOREGROUND ONLY: do every step in the foreground, one command at a time. Never use manage_task, background tasks, schedule or timer / wait tools for the work (they leave you idle for minutes); wait only through the task's own commands.
 - This run has NO browser and no Google Flow: never call browser_* tools, never use call_mcp_tool, search_web or read_url_content. Images are made ONLY by invoke_subagent with type_name image-generator (any other subagent stops the run).
 
 `;
@@ -293,6 +298,7 @@ export const agyImageNote = `ANTIGRAVITY TOOL MAP (you are Antigravity, not Clau
 export const agyNote = (light, image = false) => image ? agyImageNote : `ANTIGRAVITY TOOL MAP (you are Antigravity, not Claude; the task below uses Claude's tool names, use yours):
 - "Bash" = run_command (a PowerShell on Windows: write "node core/flow-pace.mjs ..." and "powershell -NoProfile -ExecutionPolicy Bypass -File src/agent.ps1 ..." exactly as given, from the TOOL folder).
 - "Read" = view_file (also for photos and contact sheets: LOOK at them); "Write" / "Edit" = write_to_file / replace_file_content, only for the temp files the steps ask for.
+- FOREGROUND ONLY: do every step in the foreground, one command at a time. Never use manage_task, background tasks, schedule or timer / wait tools for the work (they leave you idle for minutes); wait only through the task's own commands.
 ` + (light ? `- This run has NO browser: never call any browser_* tool.\n` : `- Every Playwright browser tool of the task (browser_tabs, browser_navigate, browser_snapshot, browser_click, browser_type, browser_press_key, browser_wait_for, browser_run_code_unsafe, browser_take_screenshot, browser_evaluate, browser_file_upload) is called through call_mcp_tool with ServerName "${AGY_MCP_SERVER}", ToolName = that tool's name and Arguments = its arguments (browser_run_code_unsafe takes {"code": "async (page) => {...}"}).
 - NEVER use your own built-in browser tools (open_browser_url, browser_click_element, browser_input, browser_get_dom, browser_subagent, capture_browser_screenshot, execute_browser_javascript, ...), generate_image, search_web or read_url_content, and never another MCP server than "${AGY_MCP_SERVER}": the run is stopped at once if you do.\n`) + `\n`;
 
@@ -467,6 +473,13 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
       } else if ((s.step_type === "tool" || s.step_type === "subagent") && s.tool_name && !run.agySteps.has(idx)) {
         run.agySteps.add(idx);
         const p = s.tool_info?.parameters || {};
+        if (s.tool_name === "manage_task" || s.tool_name === "schedule") {
+          // slow, not harmful: counted and shown, the run goes on
+          run.bgCount = (run.bgCount || 0) + 1; run.lastTool = s.tool_name;
+          addLine(run, "⚠ Antigravity dùng tác vụ nền (" + s.tool_name + ") lần " + run.bgCount + ": chậm hơn, lượt vẫn chạy"); touch(run);
+          return;
+        }
+        run.lastTool = s.tool_name;
         const imgRun = run.agyImage, noMcp = LIGHT_MODES.includes(run.state.mode) || imgRun;
         const bad = (imgRun && s.tool_name === "generate_image") ? ""
           : AGY_FORBIDDEN_TOOL.test(s.tool_name) ? "công cụ " + s.tool_name + " của chính Antigravity"
@@ -494,6 +507,7 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
     }
   };
   const feed = (run, chunk) => {
+    run.lastEventAt = now(); run.idleNoted = false;
     run.buf += chunk.toString("utf8");
     let i;
     while ((i = run.buf.indexOf("\n")) >= 0) { const l = run.buf.slice(0, i).trim(); run.buf = run.buf.slice(i + 1); if (l) handleLine(run, l); }
@@ -501,7 +515,7 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
   };
   const finish = (run, code, err) => {
     if (run.ended) return; run.ended = true;
-    clearTimeout(run.timer);
+    clearTimeout(run.timer); if (run.idleTimer) clearInterval(run.idleTimer);
     if (run.buf.trim()) handleLine(run, run.buf.trim());
     try { rmSync(run.cfg, { force: true }); } catch {}
     // Antigravity: the per-run folder (prompt, plugin with the Playwright MCP config and its token) is always removed, on success, failure and stop.
@@ -632,13 +646,15 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
       : (agyImage ? "Bắt đầu: Antigravity (tạo ảnh) tạo ảnh và viết review (mã lượt " + runId + ")" : "Bắt đầu: " + who + " điều khiển Google Flow (mã lượt " + runId + ")"));
     saveState(run.state);
     child.stdout?.on("data", (c) => feed(run, c));
-    child.stderr?.on("data", (c) => { for (const l of c.toString("utf8").split(/\r?\n/)) { if (run.agyImage && /RESOURCE_EXHAUSTED/.test(l)) quotaStop(run, l); const t = sanitize(l); if (t) { run.stderr.push(t); if (run.stderr.length > 20) run.stderr.shift(); addLine(run, "Cảnh báo: " + t); } } });
+    child.stderr?.on("data", (c) => { for (const l of c.toString("utf8").split(/\r?\n/)) { if (run.agyImage && /RESOURCE_EXHAUSTED/.test(l)) quotaStop(run, l); const bg = l.match(/idle; waiting for (\d+) background task/i); if (bg) { run.idleHint = true; addLine(run, "Antigravity đang chờ " + bg[1] + " tác vụ nền …"); continue; } const t = sanitize(l); if (t) { run.stderr.push(t); if (run.stderr.length > 20) run.stderr.shift(); addLine(run, "Cảnh báo: " + t); } } });
     child.on("error", (e) => finish(run, null, e.message));
     child.on("close", (code) => finish(run, code));
     child.stdin?.on("error", () => {});
     try { child.stdin?.end(agy ? undefined : intro); } catch {}
     if (minutes > 0) run.timer = setTimeout(() => { if (run.ended) return; run.forced = "timeout"; killTree(child); setTimeout(() => finish(run, null), graceMs).unref?.(); }, minutes * 60000);
     run.timer?.unref?.();
+    // Antigravity stream batches / background-task waits can leave minutes without an event: say so in the run log after 30 s instead of looking frozen.
+    if (agy) { run.lastEventAt = now(); run.idleTimer = setInterval(() => { if (run.ended || run.idleNoted) return; const gap = Math.round((now() - (run.lastEventAt || now())) / 1000); if (gap < 30) return; run.idleNoted = true; addLine(run, run.lastTool === "manage_task" || run.idleHint ? "Antigravity đang chờ tác vụ nền … (" + gap + " giây chưa có hoạt động mới)" : "Antigravity đang chờ … (" + gap + " giây chưa có hoạt động mới)"); }, 10000); run.idleTimer.unref?.(); }
     return { ok: true, status: 200, run_id: runId, started };
   }
 
