@@ -253,7 +253,7 @@
   amodel.onchange = aeffort.onchange = saveAgy;
   fetch("/api/run-settings").then((r) => r.json()).then((r) => {
     fillAgy(r.agyModelGroups || [], r.agyModel || "");
-    fill(aeffort, CE, CE.map(effLabel), r.agyEffort || "");
+    fill(aeffort, CE.filter((x) => x !== "max"), CE.filter((x) => x !== "max").map(effLabel), r.agyEffort || "");
   }).catch(() => {});
   // ----- Cách chạy: everything the main window used to hold (Viết review, Tạo ảnh, Luồng, Chrome profile, Tài khoản Flow, token, Mở Chrome),
   // saved in the same run-settings.json / flow-browser files through the same endpoints. The main window re-reads them when it is shown again

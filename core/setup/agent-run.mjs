@@ -198,7 +198,8 @@ export function modelMatches(asked, actual) {
 export const AGENT_BACKENDS = ["claude", "antigravity"];
 export const AGENT_NAME = { claude: "Claude", antigravity: "Antigravity" };
 export const AGY_MODEL_RE = /^[A-Za-z0-9._\-]{1,60}$/;
-export const AGY_EFFORTS = ["low", "medium", "high", "xhigh", "max"];
+// agy rejects "max" on its models (the default gemini-4-neon only has low..xhigh), so it is not offered.
+export const AGY_EFFORTS = ["low", "medium", "high", "xhigh"];
 // "" = no --model flag: agy uses its own default and the run reports the model agy says it runs (init event).
 export const AGY_DEFAULT_MODEL = "";
 // The plugin + server name of the per-run Playwright MCP; agy exposes its tools as call_mcp_tool(ServerName "<plugin>_<server>", ToolName "browser_*").
@@ -571,7 +572,7 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
         }
       } catch (e) { try { rmSync(agyDir, { recursive: true, force: true }); } catch {} try { rmSync(cfg, { force: true }); } catch {} try { releaseLocks(toolRoot, session, process.pid, kind); } catch {} return { ok: false, status: 500, error: sanitize(e.message) }; }
       const task = "Your full task is in the file " + join(agyDir, "prompt.md") + ". Read it first with view_file, then do exactly what it says, following its numbered steps in order. Reply only as the task asks.";
-      args = ["-p", task, "--output-format", "stream-json", "--dangerously-skip-permissions", "--add-dir", toolRoot, ...(asked.model ? ["--model", asked.model] : []), ...(asked.effort ? ["--effort", asked.effort] : [])];
+      args = ["-p", task, "--output-format", "stream-json", "--dangerously-skip-permissions", "--add-dir", toolRoot, ...(asked.model ? ["--model", asked.model] : []), ...(asked.effort && !(asked.model && /-(low|medium|high|xhigh)$/.test(asked.model)) ? ["--effort", asked.effort] : [])];
     } else {
       args = ["-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "default", "--model", claudeSet.model, ...(claudeSet.effort ? ["--effort", claudeSet.effort] : []), ...(maxTurns > 0 ? ["--max-turns", String(maxTurns)] : []), "--allowedTools", (lightMode ? LIGHT_TOOLS : ALLOWED_TOOLS).join(","), "--add-dir", toolRoot, ...(lightMode ? ["--strict-mcp-config"] : ["--mcp-config", cfg])];
     }
