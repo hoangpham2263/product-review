@@ -94,7 +94,7 @@ if ($agy) {
 # PR_CLAUDE_CLI, else the first claude on PATH (or ~/.local/bin). Sign-in is Claude's own (claude, then /login).
 $claudeCli = $null
 if ($env:PR_CLAUDE_CLI -and (Test-Path -LiteralPath $env:PR_CLAUDE_CLI)) { $claudeCli = $env:PR_CLAUDE_CLI }
-if (-not $claudeCli) { $claudeCli = Get-Command claude -ErrorAction SilentlyContinue | Where-Object { $_.CommandType -eq 'Application' } | Select-Object -First 1 -ExpandProperty Source }
+if (-not $claudeCli) { $claudeCli = Get-Command claude -ErrorAction SilentlyContinue | Where-Object { $_.CommandType -in @('Application', 'ExternalScript') } | Select-Object -First 1 -ExpandProperty Source }
 if (-not $claudeCli) { $claudeCli = @((Join-Path $HOME '.local/bin/claude'), (Join-Path $HOME '.local/bin/claude.exe')) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1 }
 $claudeState = if ($claudeCli) { 'ok' } else { 'warn' }
 $claudeDetail = if ($claudeCli) { 'Đã cài. Nếu Viết review báo chưa đăng nhập, chạy claude trong Terminal rồi /login.' } else { 'Chưa cài (không bắt buộc). Cài Claude Code để chọn Viết review: Claude.' }
