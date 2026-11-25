@@ -16,6 +16,24 @@ $OutputEncoding = [Text.UTF8Encoding]::new($false)
 [Console]::OutputEncoding = $OutputEncoding
 $ProjectRoot = Split-Path $PSScriptRoot -Parent
 
+# Several workers (Luồng above 1) run CLI commands of ONE run at the same time: the commands that read-modify-write shared run files (set-sign-text writes agent-items.json
+# and checks the wording of the other items; write-review checks the reviews already written; finish appends to results.json) hold one lock per run, so no two of them
+# interleave. The lock file lives in THIS window's own workspace tmp (PR_WORKSPACE), named after the run: another window never waits for it.
+function Enter-RunCliLock([string]$RunName) {
+    $base = if ($env:PR_WORKSPACE) { $env:PR_WORKSPACE } else { Join-Path $ProjectRoot 'workspace' }
+    $dir = Join-Path $base 'tmp'
+    New-Item -ItemType Directory -Force -Path $dir | Out-Null
+    $path = Join-Path $dir ('cli-' + ($RunName -replace '[^\w.-]', '_') + '.lock')
+    $deadline = (Get-Date).AddSeconds(120)
+    while ($true) {
+        try { return [IO.File]::Open($path, [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None) }
+        catch [IO.IOException] {
+            if ((Get-Date) -gt $deadline) { throw '[CAUSE:LOCK_BUSY] another worker of this run is writing; try again in a few seconds.' }
+            Start-Sleep -Milliseconds (80 + (Get-Random -Maximum 120))
+        }
+    }
+}
+
 # stdout carries one JSON line only: the workflow functions' progress text is dropped here.
 function Write-Host { }
 function Write-Warning { }
@@ -508,7 +526,7 @@ try {
         'context-brief' { Invoke-AgentContextBrief }
         'context' { Invoke-AgentContext }
         'sign-brief' { Invoke-AgentSignBrief }
-        'set-sign-text' { Invoke-AgentSetSignText }
+        'set-sign-text' { $runLock = Enter-RunCliLock $Run; try { Invoke-AgentSetSignText } finally { $runLock.Dispose() } }
         'flow-brief' { Invoke-AgentFlowBrief }
         'register-image' { Invoke-AgentRegisterImage }
         { $_ -in @('review-brief', 'write-review', 'finish', 'run-summary') } {
@@ -517,7 +535,7 @@ try {
             $splat = ConvertTo-ArgumentHash $Rest
             foreach ($pair in @{ Run = $Run; Item = $Item; File = $File; From = $From }.GetEnumerator()) { if ($pair.Value) { $splat[$pair.Key] = $pair.Value } }
             if ($Limit) { $splat['Limit'] = $Limit }
-            & $fn @splat
+            if ($Command -in @('write-review', 'finish') -and $Run) { $runLock = Enter-RunCliLock $Run; try { & $fn @splat } finally { $runLock.Dispose() } } else { & $fn @splat }
         }
         default { throw "Unknown command '$Command'. Use: prepare | context-brief | context | sign-brief | set-sign-text | flow-brief | register-image | review-brief | write-review | finish | run-summary" }
     }
