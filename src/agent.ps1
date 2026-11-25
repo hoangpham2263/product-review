@@ -146,6 +146,16 @@ function Invoke-AgentPrepare {
     if (-not (Test-Path -LiteralPath $queuePath)) { throw "URL list not found: $queuePath" }
     $queue = Read-UrlQueue $queuePath
     $existing = @(Read-AgentItems)
+    # A continuation: the error files of items that will be retried (no image yet) are old news. They are moved to logs/old-errors/ so no later command (run-summary,
+    # finish ...) echoes them and nothing can mistake an old 429 text for a new one.
+    $oldErrors = Join-Path $script:Batch.Logs 'old-errors'
+    foreach ($e in $existing) {
+        $errFile = Join-Path $script:Batch.Logs "$($e.id)-agent-error.txt"
+        if ((Test-Path -LiteralPath $errFile) -and -not (Test-Path -LiteralPath (Join-Path $script:Batch.Images "$($e.id).png"))) {
+            New-Item -ItemType Directory -Force -Path $oldErrors | Out-Null
+            Move-Item -LiteralPath $errFile -Destination (Join-Path $oldErrors ("$($e.id)-agent-error-" + (Get-Date).ToString('yyyyMMddHHmmss') + '.txt')) -Force
+        }
+    }
     # A new run (no items yet) uses exact sign wording; a run that already has items keeps the mode it was created with.
     if (-not $existing.Count -and -not (Test-Path -LiteralPath (Get-AgentRunFlagsPath))) {
         [IO.File]::WriteAllText((Get-AgentRunFlagsPath), (ConvertTo-Json -InputObject ([ordered]@{ sign_wording = 'exact'; created = (Get-Date).ToString('s') })), $script:Utf8)

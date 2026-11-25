@@ -200,7 +200,7 @@ function Invoke-AgentRunSummary([Parameter(Mandatory)][string]$Run) {
         $inResults = @($rows | Where-Object { [IO.Path]::GetFileNameWithoutExtension([string]$_.photo_path) -eq $id }).Count -gt 0
         $cause = $null
         $status = if ($inResults) { $d = [string]$decisions[$id]; if ($d -eq 'ok') { 'kept' } elseif ($d -eq 'bad') { 'rejected' } else { 'awaiting_user_review' } }
-        elseif (Test-Path -LiteralPath $p.Error) { $cause = (Get-Content -LiteralPath $p.Error -Raw -Encoding UTF8).Trim(); 'error' }
+        elseif (Test-Path -LiteralPath $p.Error) { $rawCause = (Get-Content -LiteralPath $p.Error -Raw -Encoding UTF8).Trim(); $cause = if ($rawCause -match '\[CAUSE:([A-Z_]+)\]') { $Matches[1] } else { $short = ($rawCause -replace '\s+', ' '); $short.Substring(0, [Math]::Min(60, $short.Length)) }; 'error' }
         elseif ($state -and $state.status -eq 'review_failed') { $cause = 'Review quality check failed'; 'error' }
         elseif (Test-Path -LiteralPath $p.Image) { 'needs_review_text' }
         else { 'needs_image' }

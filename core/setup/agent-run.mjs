@@ -403,7 +403,18 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
   // would only fail the same way), write when it resets, and tell the person what to switch to.
   // Real exhaustion = RESOURCE_EXHAUSTED (or "exhausted your capacity") WITH a reset time / capacity text; a short "please retry in 12s" is agy retrying by itself.
   const realQuota = (t) => (/RESOURCE_EXHAUSTED/.test(t) || /exhausted your capacity/i.test(t)) && (/reset after\s*\d/i.test(t) || /exhausted your capacity/i.test(t));
-  const agyErrorText = (ev) => { const s = ev.step_update || {}, r = ev.result || {}; return [s.tool_info?.error?.message, typeof s.tool_info?.output === "string" ? s.tool_info.output : "", s.error?.message, String(r.status || "").toUpperCase() !== "SUCCESS" ? r.error : ""].filter((x) => typeof x === "string").join(" "); };
+    // STRICT sources only: an agy error event, a failed result, and the failure of an image-generator subagent step. NEVER the output of run_command / view_file / read_file /
+  // any other tool: those echo old logs and error files (a 10:45 incident text inside a run-summary once stopped a healthy run).
+  const agyErrorText = (ev) => {
+    const s = ev.step_update || {}, r = ev.result || {}, out = [];
+    if (ev.event === "error") out.push(ev.error && ev.error.message, typeof ev.error === "string" ? ev.error : "", ev.message);
+    if (ev.event === "result" && String(r.status || "").toUpperCase() !== "SUCCESS") out.push(r.error);
+    if (s.step_type === "subagent" || s.tool_name === "invoke_subagent" || s.tool_name === "generate_image") {
+      out.push(s.error && s.error.message, s.tool_info && s.tool_info.error && s.tool_info.error.message);
+      for (const x of (s.subagent_info && s.subagent_info.subagents) || []) out.push(x.error, x.output, x.result, x.response);
+    }
+    return out.filter((x) => typeof x === "string").join(" ");
+  };
   // Google's per-model CAPACITY throttle (HTTP 429 RESOURCE_EXHAUSTED, "reset after 3h26m"), NOT the account usage limit. The exact text is kept in the log and in the run state
   // (quota_raw). First the run is retried by itself with a growing wait (30 s, 2 min, 5 min); only when the third retry fails too does it stop with a message that names the ways out.
   const CAP_WAITS = String(process.env.PR_CAP_WAITS || "").split(",").map(Number).filter((n) => n > 0).length ? String(process.env.PR_CAP_WAITS).split(",").map(Number) : [30000, 120000, 300000]; // PR_CAP_WAITS only for tests
