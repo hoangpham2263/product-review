@@ -5,7 +5,7 @@ import { createServer } from "node:http";
 import { spawn, execFile } from "node:child_process";
 import { createInterface } from "node:readline";
 import { writeFile, mkdir, copyFile, rm, stat, appendFile, readFile } from "node:fs/promises";
-import { createReadStream, existsSync, mkdirSync, openSync, renameSync, statSync, appendFileSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createReadStream, rmSync, existsSync, mkdirSync, openSync, renameSync, statSync, appendFileSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, dirname, extname, resolve, sep, basename } from "node:path";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
@@ -43,6 +43,7 @@ const light = {
   shutdown: () => { for (const r of lightPool) { try { r.shutdown(); } catch {} } },
   status: () => {
     const act = lightPool.filter((r) => r.isActive()).map((r) => r.status());
+    if (!act.length) cleanShardFiles();
     if (act.length) { const st = { ...act[0] }; if (act.length > 1) { st.shards = act.length; st.turns = act.reduce((a, x) => a + (x.turns || 0), 0); } return st; }
     const all = lightPool.map((r) => r.status()).filter((x) => x.started).sort((a, b) => String(b.updated || b.started).localeCompare(String(a.updated || a.started)));
     return all.find((x) => x.status === "failed") || all[0] || lightPool[0].status();
@@ -64,7 +65,7 @@ function startLightShards({ mode, project, options, threads = 1, urls = null, ta
     if (urls) {
       const part = urls.slice((k - 1) * chunk, k * chunk);
       if (!part.length) continue;
-      const file = join(workspace, "tmp", "shard-" + stamp + "-" + k + ".json");
+      const file = join(workspace, "tmp", "shard-" + stamp + "-" + k + ".json"); shardFiles.push(file);
       try { mkdirSync(dirname(file), { recursive: true }); writeFileSync(file, JSON.stringify(part)); } catch (e) { for (const r of started) r.stop(); return { ok: false, status: 500, error: e.message }; }
       opt = opt.replace(/(products to (?:queue|prepare): )[^;]+/, "$1" + part.length) + "; shard file: " + file;
     }
@@ -330,6 +331,71 @@ async function orderTick() {
   } finally { o2.busy = false; }
 }
 
+// ----- Progress of a run, counted from FACTS ON DISK (never from the model's text): { done, total, label }. total 0 = unknown (the bar moves, the label counts). -----
+const clock = (sec) => String(Math.floor(sec / 60)).padStart(2, "0") + ":" + String(sec % 60).padStart(2, "0");
+const rj = (f) => { try { return readJsonFile(f); } catch { return {}; } };
+const stampMs = (t) => { const x = Date.parse(String(t || "")); return Number.isFinite(x) ? x : 0; };
+const eta = (st, done, total) => { const el = st.elapsed_s || 0; if (done < 3 || total <= done || el < 30) return ""; const min = Math.max(1, Math.round(((total - done) * (el / done)) / 60)); return " · còn ~" + min + " phút"; };
+let prepMeta = null, indexMeta = null, shardFiles = [];
+function productRows(id) {
+  const out = [];
+  try {
+    const lines = readFileSync(join(sharedWs, "projects", id, "products.csv"), "utf8").replace(/^\uFEFF/, "").split(/\r?\n/).filter((l) => l.trim());
+    const head = csvCells(lines[0]), at = head.indexOf("reviews_checked_at");
+    for (const l of lines.slice(1)) { const c = csvCells(l); out.push({ url: c[0], checked: at >= 0 ? c[at] : "" }); }
+  } catch {}
+  return out;
+}
+function progressOf(st) {
+  if (!st || !st.mode || !st.run_id) return null;
+  const t = clock(st.elapsed_s || 0), shards = st.shards > 1 ? " · " + st.shards + " luồng" : "", started = stampMs(st.started);
+  try {
+    if (st.mode === "flow") {
+      const dir = join(workspace, "output", st.run_id), j = rj(join(dir, "agent-items.json"));
+      const ids = (Array.isArray(j) ? j : j.items || []).map((x) => x && x.id).filter(Boolean), n = ids.length;
+      if (!n) return { done: 0, total: 0, label: "" };
+      const has = (f) => existsSync(f);
+      const img = ids.filter((id) => has(join(dir, "images", id + ".png"))).length;
+      const rev = ids.filter((id) => has(join(dir, "logs", id + "-review.txt")) || has(join(dir, "logs", id + "-agent-review.json"))).length;
+      const res = rj(join(dir, "results.json")), rows = Array.isArray(res) ? res : [];
+      const fin = ids.filter((id) => rows.some((r) => String(r.photo_path || "").replace(/\\/g, "/").split("/").pop().replace(/\.[^.]+$/, "") === id)).length;
+      const cur = ids.find((id) => !has(join(dir, "images", id + ".png"))) || ids.find((id) => !has(join(dir, "logs", id + "-review.txt")) && !has(join(dir, "logs", id + "-agent-review.json")));
+      const curText = cur && st.active ? " · Mục " + (String(cur).match(/^\d+/) || [cur])[0] : "";
+      return { done: img + rev, total: 2 * n, label: "Ảnh " + img + "/" + n + " · Review " + rev + "/" + n + " · Hoàn tất " + fin + "/" + n + " · " + t + curText + eta(st, fin, n) };
+    }
+    if (st.mode === "scan") {
+      const sc = scanOfRun(st.run_id);
+      if (!sc) return { done: 0, total: 0, label: "" };
+      let total = 0;
+      try { const mf = join(sc.dir, "menu.json"); if (statSync(mf).mtimeMs >= started - 3000) { const m = rj(mf); total = Array.isArray(m) ? m.length : 0; } } catch {}
+      const session = rj(join(sc.dir, "session.json")), done = Object.keys(session.added || {}).length;
+      return { done, total, label: total ? "Danh mục " + Math.min(done, total) + "/" + total + " · " + (sc.added || 0) + " sản phẩm · " + t + eta(st, done, total) : "Đang đọc menu · " + t };
+    }
+    if (st.mode === "reviews") {
+      const rows = productRows(st.project), total = rows.length, done = rows.filter((r) => stampMs(r.checked) >= started - 1000).length;
+      return { done, total, label: "Đã kiểm tra " + done + "/" + total + " link · " + t + eta(st, done, total) };
+    }
+    if (st.mode === "queue" && queueOrder && queueOrder.project === st.project) {
+      const done = orderAdded();
+      return { done, total: queueOrder.total, label: "Hàng chờ: đã thêm " + done + "/" + queueOrder.total + shards + " · " + t + eta(st, done, queueOrder.total) };
+    }
+    if (st.mode === "prep" && prepMeta && prepMeta.project === st.project) {
+      let done = 0;
+      try { const lines = readFileSync(join(sharedWs, "projects", st.project, "prepared.csv"), "utf8").replace(/^\uFEFF/, "").split(/\r?\n/).filter((l) => l.trim()); const head = csvCells(lines[0]), at = head.indexOf("prepared_at"); for (const l of lines.slice(1)) if (at >= 0 && stampMs(csvCells(l)[at]) >= prepMeta.startedMs - 1000) done++; } catch {}
+      return { done, total: prepMeta.total, label: "Chuẩn bị trước: " + done + (prepMeta.total ? "/" + prepMeta.total : " sản phẩm") + shards + " · " + t + (prepMeta.total ? eta(st, done, prepMeta.total) : "") };
+    }
+    if (st.mode === "index" && indexMeta) {
+      let n = 0; try { n = Object.keys(rj(join(sharedWs, "source-photos", "scene-index.json"))).length; } catch {}
+      const done = Math.max(0, n - indexMeta.base);
+      return { done, total: 0, label: "Gắn nhãn kho ảnh: +" + done + " ảnh" + shards + " · " + t };
+    }
+  } catch {}
+  return null;
+}
+const withProgress = (st) => ({ ...st, progress: progressOf(st) });
+// The shard files of a sharded run are removed when no light run is active any more (only the ones this server wrote).
+function cleanShardFiles() { if (!shardFiles.length || light.isActive()) return; for (const f of shardFiles.splice(0)) { try { rmSync(f, { force: true }); } catch {} } }
+
 // Runs src/scan.ps1 in this session (PR_WORKSPACE) and returns its one JSON line.
 function runScan(args, timeout = 180000) {
   return new Promise((resolveScan) => execFile(PWSH, psFile(join(root, "src", "scan.ps1"), args), { cwd: root, env: toolEnv, timeout, windowsHide: true, encoding: "utf8" }, (err, out) => {
@@ -518,7 +584,7 @@ async function handle(req, res) {
   }
   if (path === "/api/agent/status" && req.method === "GET") {
     const st = agent.status(), dir = st.run_id ? join(workspace, "output", st.run_id) : "";
-    return send(res, 200, { ...st, result_folder: dir && existsSync(dir) ? dir : "" });
+    return send(res, 200, { ...withProgress(st), result_folder: dir && existsSync(dir) ? dir : "" });
   }
   // Quét web: Claude scans a shop website (docs/scan-prompt.md) through the same runner; one agent run at a time (one Chrome profile).
   if (path === "/api/scan/run" && req.method === "POST") {
@@ -530,14 +596,14 @@ async function handle(req, res) {
     if (!host) return send(res, 400, { error: "Dán link trang chủ của web cần quét, ví dụ https://shop.com." });
     const max = Math.min(200, Math.max(1, Math.round(Number(given.max)) || 20));
     if (run.proc) return send(res, 409, { error: "Đang chạy." });
-    if (agent.isActive()) return send(res, 409, { error: "Đã có một lượt AI đang chạy (Flow hoặc quét). Chờ xong hoặc bấm Dừng." });
+    if (agent.isActive()) return send(res, 409, { error: "Đã có một lượt AI đang chạy (tạo ảnh hoặc quét). Chờ xong hoặc bấm Dừng." });
     const r = agent.start({ run: "scan-" + newRunId().slice(6), mode: "scan", site, max, tabs: clampThreads(given.threads, savedThreads()) });
     return send(res, r.status, r.ok ? { ok: true, run: r.run_id, started: r.started } : { error: r.error });
   }
   if (path === "/api/scan/status" && req.method === "GET") {
     const st = agent.status();
     if (st.mode !== "scan") return send(res, 200, { mode: st.mode, scan_run: false, other_active: st.active, active: false, status: "idle", tail: [] });
-    return send(res, 200, { ...st, scan_run: true, other_active: false, scan: scanOfRun(st.run_id) });
+    return send(res, 200, { ...withProgress(st), scan_run: true, other_active: false, scan: scanOfRun(st.run_id) });
   }
   if (path === "/api/scan/stop" && req.method === "POST") {
     if (agent.status().mode !== "scan") return send(res, 409, { error: "Không có lượt quét nào đang chạy." });
@@ -551,14 +617,14 @@ async function handle(req, res) {
     if (!/^[a-z0-9][a-z0-9-]{1,60}$/.test(id) || !existsSync(join(sharedWs, "projects", id, "project.json"))) return send(res, 400, { error: "Chọn một dự án có sẵn." });
     { const fp = focusMismatch(id); if (fp) return send(res, 409, { error: fp }); }
     if (run.proc) return send(res, 409, { error: "Đang chạy." });
-    if (agent.isActive()) return send(res, 409, { error: "Đã có một lượt AI đang chạy (Flow, quét hoặc cập nhật review). Chờ xong hoặc bấm Dừng." });
+    if (agent.isActive()) return send(res, 409, { error: "Đã có một lượt AI đang chạy (tạo ảnh, quét hoặc cập nhật review). Chờ xong hoặc bấm Dừng." });
     const r = agent.start({ run: "reviews-" + newRunId().slice(6), mode: "reviews", project: id, tabs: clampThreads(given.threads, savedThreads()) });
     return send(res, r.status, r.ok ? { ok: true, run: r.run_id, started: r.started } : { error: r.error });
   }
   if (path === "/api/project/reviews/status" && req.method === "GET") {
     const st = agent.status();
     if (st.mode !== "reviews") return send(res, 200, { mode: st.mode, reviews_run: false, other_active: st.active, active: false, status: "idle", tail: [] });
-    return send(res, 200, { ...st, reviews_run: true, other_active: false });
+    return send(res, 200, { ...withProgress(st), reviews_run: true, other_active: false });
   }
   if (path === "/api/project/reviews/stop" && req.method === "POST") {
     if (agent.status().mode !== "reviews") return send(res, 409, { error: "Không có lượt cập nhật review nào đang chạy." });
@@ -608,10 +674,11 @@ async function handle(req, res) {
     const options = `category: ${category ? `"${category}"` : "(all categories)"}; only unused (used = F): ${given.unused_only ? "T" : "F"}; products to prepare: ${limit || "all"}; scenes per product: ${scenes}; retry skipped (no-fit) products: ${given.retry_skipped ? "T" : "F"}`;
     let urls = null;
     const threads = clampThreads(given.threads, savedThreads());
-    if (threads > 1) {
+    {
       const todo = await runScan(["prep-todo", "-Project", id, ...(limit ? ["-Limit", String(limit)] : []), ...projectArgs({ ...given, category }), ...(given.retry_skipped ? ["-RetrySkipped"] : [])], 120000);
       if (todo.ok) urls = (todo.products || []).map((x) => x.url);
     }
+    prepMeta = { project: id, startedMs: Date.now(), total: urls ? urls.length : 0 };
     const r = startLightShards({ mode: "prep", project: id, options, threads, urls });
     return send(res, r.status, r.ok ? { ok: true, run: r.run_id, started: r.started } : { error: r.error });
   }
@@ -627,6 +694,7 @@ async function handle(req, res) {
     const limit = Math.min(5000, Math.max(0, Math.round(Number(given.limit)) || 0));
     if (light.isActive()) return send(res, 409, { error: "Đã có một lượt chuẩn bị / thêm hàng chờ / gắn nhãn đang chạy trong cửa sổ này. Chờ xong hoặc bấm Dừng." });
     const options = `library group: ${group ? `"${group}"` : "(every group)"}; photos to tag: ${limit || "all"}`;
+    { let n = 0; try { n = Object.keys(rj(join(sharedWs, "source-photos", "scene-index.json"))).length; } catch {} indexMeta = { base: n }; }
     const r = startLightShards({ mode: "index", project: "", options, threads: clampThreads(given.threads, savedThreads()) });
     return send(res, r.status, r.ok ? { ok: true, run: r.run_id, started: r.started } : { error: r.error });
   }
@@ -647,7 +715,7 @@ async function handle(req, res) {
   // ONE status for the run line of every view: what runs now (main runner, light runner, the Codex Bắt đầu run) and the last finished run.
   if (path === "/api/runs/status" && req.method === "GET") {
     const view = (st, kind) => ({ kind, feature: FEATURE[st.mode] || st.mode, mode: st.mode, project: st.project ? projectNameOf(st.project) : "", active: !!st.active, elapsed_s: st.elapsed_s || 0,
-      last_text: st.last_text || "", status: st.status, error: st.error || "", started: st.started || "", updated: st.updated || "" });
+      last_text: st.last_text || "", status: st.status, error: st.error || "", started: st.started || "", updated: st.updated || "", progress: progressOf(st) });
     const m = agent.status(), l = light.status(), running = [];
     if (run.proc) running.push({ kind: "codex", feature: FEATURE.flow, mode: "flow", project: selfProject() ? projectNameOf(selfProject()) : "", active: true, elapsed_s: Math.round((Date.now() - (run.startedAt || Date.now())) / 1000), last_text: "", status: "running", error: "" });
     if (m.active) running.push(view(m, "main"));
@@ -655,7 +723,7 @@ async function handle(req, res) {
     const done = [[m, "main"], [l, "light"]].filter(([s]) => !s.active && s.started && s.status && s.status !== "idle").map(([s, k]) => view(s, k)).sort((a, b) => String(b.updated || b.started).localeCompare(String(a.updated || a.started)));
     return send(res, 200, { running, last: done[0] || null });
   }
-  if (path === "/api/light/status" && req.method === "GET") return send(res, 200, { ...light.status(), light: true });
+  if (path === "/api/light/status" && req.method === "GET") return send(res, 200, { ...withProgress(light.status()), light: true });
   if ((path === "/api/project/queue/stop" || path === "/api/project/prep/stop") && req.method === "POST") {
     const hadOrder = !!(queueOrder && queueOrder.active);
     if (hadOrder) finishOrder("cancelled", "Đã dừng lệnh Thêm vào hàng chờ.");
@@ -677,7 +745,7 @@ async function handle(req, res) {
       send(res, 500, { error: r?.error || (err && err.message) || "Chưa thêm vào hàng chờ được." });
     });
   }
-  if (path === "/api/project/queue/status" && req.method === "GET") return send(res, 200, { ...light.status(), light: true });
+  if (path === "/api/project/queue/status" && req.method === "GET") return send(res, 200, { ...withProgress(light.status()), light: true });
   // Own Chrome sign-in for Claude (Flow): status (short headless check), open (normal Chrome window for the person to sign in).
   // Which browser Claude (Flow) drives: everyday Chrome (a profile chosen from this machine) or the tool's own Chrome.
   // token_saved per profile (a bool only: the Playwright extension token itself never goes back to the page)
@@ -759,7 +827,7 @@ function startMenuBar() {
   menuBar = spawn("osascript", ["-l", "JavaScript", join(here, "menubar.js")], { env: { ...process.env, PR_PORT: String(PORT) }, stdio: "ignore" });
   menuBar.on("error", () => { menuBar = null; });
 }
-process.on("exit", () => { try { menuBar?.kill(); } catch {} try { agent.shutdown(); } catch {} try { light.shutdown(); } catch {} try { releaseLocks(root, session); unregisterSession(root, session); } catch {} });
+process.on("exit", () => { try { menuBar?.kill(); } catch {} try { agent.shutdown(); } catch {} try { light.shutdown(); } catch {} try { for (const f of shardFiles.splice(0)) rmSync(f, { force: true }); } catch {} try { releaseLocks(root, session); unregisterSession(root, session); } catch {} });
 for (const sig of ["SIGINT", "SIGTERM"]) process.on(sig, () => process.exit(0));
 
 // The Google accounts the Flow account combo may list: those signed in in the chosen Chrome profile (extension mode), or in the tool's own Chrome.

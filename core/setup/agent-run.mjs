@@ -578,7 +578,7 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
     } else {
       args = ["-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "default", "--model", claudeSet.model, ...(claudeSet.effort ? ["--effort", claudeSet.effort] : []), ...(maxTurns > 0 ? ["--max-turns", String(maxTurns)] : []), "--allowedTools", (lightMode ? LIGHT_TOOLS : ALLOWED_TOOLS).join(","), "--add-dir", toolRoot, ...(lightMode ? ["--strict-mcp-config"] : ["--mcp-config", cfg])];
     }
-    const env = { ...process.env, ...(extToken && !agy ? { PLAYWRIGHT_MCP_EXTENSION_TOKEN: extToken } : {}) };
+    const env = { ...process.env, PR_AGENT_ENGINE: backend, ...(extToken && !agy ? { PLAYWRIGHT_MCP_EXTENSION_TOKEN: extToken } : {}) };
     const cmd = plat === "win32" && /\.(cmd|bat)$/i.test(found.path) ? ["cmd", ["/c", found.path, ...args]] : [found.path, args];
     let child;
     try { child = spawnFn(cmd[0], cmd[1], { cwd: agy ? agyDir : toolRoot, env, windowsHide: true, detached: false, stdio: ["pipe", "pipe", "pipe"] }); }
@@ -619,6 +619,7 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
     if (!cur) return;
     cur.forced = cur.forced || "stopped"; killTree(cur.child);
     try { rmSync(cur.cfg, { force: true }); } catch {}
+    if (cur.agyDir) { try { rmSync(cur.agyDir, { recursive: true, force: true }); } catch {} }
     touch(cur, { status: "stopped" });
   }
   function status() {

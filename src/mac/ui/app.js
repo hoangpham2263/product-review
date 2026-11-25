@@ -391,8 +391,9 @@ function appendLog(text) { if (text) { ui.txtLog.value += text + "\n"; ui.txtLog
 function setStatus(text, color) { ui.lblStatus.textContent = text; ui.lblStatus.style.color = color || "var(--muted)"; }
 function countUrls() { return new Set(state.rows.map((r) => r.url.trim()).filter(Boolean)).size; }
 function updateStatus() { if (!run.active) setStatus(`Sẵn sàng • ${countUrls()} sản phẩm`); }
-function setBar(value, max, marquee = false) {
+function setBar(value, max, marquee = false, fail = false) {
   ui.bar.classList.toggle("marquee", marquee);
+  ui.bar.classList.toggle("fail", fail);
   ui.bar.firstChild.style.width = marquee ? "" : `${Math.min(100, (value / Math.max(1, max)) * 100)}%`;
 }
 
@@ -464,12 +465,26 @@ function runLines(rs) {
   const result = l.status === "done" ? "đã xong" : l.status === "stopped" ? "đã dừng" : "dừng vì lỗi";
   return ["Đang rảnh · Lượt trước: " + what + " · " + result + at + (l.status !== "done" && l.status !== "stopped" && l.error ? " (" + l.error.slice(0, 120) + ")" : "")];
 }
+// Same bar and line for every other run type (Quét web, Cập nhật số review, Thêm vào hàng chờ, Chuẩn bị trước, Gắn nhãn): the first running one with counts.
+// The image run of this window draws its own (pollAgent).
+function showOtherProgress(rs) {
+  if (!ui.bar || run.active) return;
+  const live = (rs.running || []).find((x) => x.progress && x.mode !== "flow");
+  if (live) { ui.extProgress = true; const pr = live.progress; if (pr.total > 0) setBar(pr.done, pr.total); else setBar(0, 1, true); ui.lblProgress.textContent = pr.label || ""; return; }
+  if (ui.extProgress && rs.last && rs.last.progress && rs.last.mode !== "flow") {
+    const pr = rs.last.progress, ok = rs.last.status === "done";
+    ui.extProgress = false;
+    setBar(ok ? 1 : pr.total > 0 ? pr.done : 0, ok || !(pr.total > 0) ? 1 : pr.total, false, rs.last.status === "failed");
+    ui.lblProgress.textContent = (pr.label || "").replace(/ · \d\d:\d\d.*$/, "") + (ok ? " • xong" : rs.last.status === "stopped" ? " • đã dừng" : " • chưa hoàn tất");
+  }
+}
 async function refreshRunLine() {
   const rs = await fetch("/api/runs/status").then((x) => x.json()).catch(() => null);
   if (!rs || !ui.runLine) return rs;
   const lines = runLines(rs);
   ui.runLine.textContent = lines.join("  |  ");
   ui.runLine.title = lines.join("\n");
+  showOtherProgress(rs);
   ui.runLine.style.color = rs.running && rs.running.length ? "var(--accent)" : !rs.last ? "var(--muted)" : rs.last.status === "done" ? "var(--ok)" : rs.last.status === "stopped" ? "var(--muted)" : "var(--error)";
   return rs;
 }
@@ -709,7 +724,7 @@ function showLibraryPicker() {
 // "Nhập vào danh sách" opens Nhập hàng loạt on that table -----
 function showScanDialog() {
   const view = openWindow("Quét web", 760, 480);
-  const hint = at(label("Claude mở web trong Chrome riêng của app, đọc menu, lấy sản phẩm và ảnh chính từng danh mục, rồi lưu vào dự án của web đó (products.csv cho Nhập hàng loạt, cột used = F, chạy xong link nào tự đổi thành T). Quét lại web đã có chỉ thêm sản phẩm mới."), 16, 10, 728, 62);
+  const hint = at(label("AI mở web trong Chrome riêng của app, đọc menu, lấy sản phẩm và ảnh chính từng danh mục, rồi lưu vào dự án của web đó (products.csv cho Nhập hàng loạt, cột used = F, chạy xong link nào tự đổi thành T). Quét lại web đã có chỉ thêm sản phẩm mới."), 16, 10, 728, 62);
   Object.assign(hint.style, { whiteSpace: "normal", lineHeight: "20px" });
   const siteBox = at(el("input", "text", { value: "", placeholder: "https://ten-shop.com" }), 16, 102, 380, 25);
   const projectBox = at(combo(["", ]), 412, 102, 230, 25);
@@ -749,7 +764,7 @@ function showScanDialog() {
   const poll = async () => {
     const st = await fetch("/api/scan/status").then((x) => x.json()).catch(() => null);
     if (!st) return;
-    if (st.other_active) { setBusy(false); start.disabled = true; say("Đang có một lượt Claude khác chạy (tạo ảnh Flow). Chờ xong rồi quét.", "var(--warn)"); return; }
+    if (st.other_active) { setBusy(false); start.disabled = true; say("Đang có một lượt AI khác chạy (tạo ảnh). Chờ xong rồi quét.", "var(--warn)"); return; }
     if (!st.scan_run) return;
     if (!startedAt) startedAt = Date.now() - (st.elapsed_s || 0) * 1000;
     scan = st.scan || scan;
@@ -829,20 +844,20 @@ function showProjectsDialog(pick = "") {
   const qCountHint = small("Số sản phẩm", 16, 90), queueCount = at(numeric(1, 200, 10), 16, 508, 64, 28);
   queueCount.title = "Số sản phẩm đưa vào hàng chờ (theo danh mục và ô Chỉ chưa dùng đang chọn), 1-200";
   const qSceneHint = small("Ảnh ngữ cảnh / sản phẩm", 110, 150), sceneCount = at(numeric(1, 4, 2), 110, 508, 64, 28);
-  sceneCount.title = "Số ảnh ngữ cảnh khác nhau cho mỗi sản phẩm khi thêm vào hàng chờ, 1-4. Lấy trước từ kho đã chuẩn bị (dòng có ít nhất số ảnh này), phần thiếu Claude chọn.";
+  sceneCount.title = "Số ảnh ngữ cảnh khác nhau cho mỗi sản phẩm khi thêm vào hàng chờ, 1-4. Lấy trước từ kho đã chuẩn bị (dòng có ít nhất số ảnh này), phần thiếu AI chọn.";
   const queueBtn = at(button("Thêm vào hàng chờ"), 270, 506, 160, 32);
   const divider = at(el("div", "abs"), 448, 470, 1, 68); divider.style.background = "var(--line)";
   const pTitle = group("Chuẩn bị trước", 466);
   // retry the products skipped earlier because no scene fitted (their skipped row is replaced); off by default, remembered per session
   const retrySkipped = at(checkbox("Thử lại sản phẩm đã bỏ qua"), 640, 470, 240, 18);
   retrySkipped.style.fontSize = "12px";
-  retrySkipped.title = "Chuẩn bị lại cả các sản phẩm lần trước Claude bỏ qua vì không có ảnh bối cảnh hợp (dòng bỏ qua được thay bằng dòng mới).";
+  retrySkipped.title = "Chuẩn bị lại cả các sản phẩm lần trước AI bỏ qua vì không có ảnh bối cảnh hợp (dòng bỏ qua được thay bằng dòng mới).";
   const pCountHint = small("Số sản phẩm (0 = tất cả)", 466, 140), prepCount = at(numeric(0, 500, 50), 466, 508, 64, 28);
-  prepCount.title = "Số sản phẩm Claude chuẩn bị trước lần này, 0 = tất cả sản phẩm còn lại (theo danh mục và ô Chỉ chưa dùng)";
+  prepCount.title = "Số sản phẩm AI chuẩn bị trước lần này, 0 = tất cả sản phẩm còn lại (theo danh mục và ô Chỉ chưa dùng)";
   const pSceneHint = small("Ảnh ngữ cảnh / sản phẩm", 616, 150), prepScenes = at(numeric(1, 4, 4), 616, 508, 64, 28);
   prepScenes.title = "Số ảnh ngữ cảnh chuẩn bị cho mỗi sản phẩm, 1-4. Nên để 4: Thêm vào hàng chờ dùng được mọi số ảnh từ 1 đến 4 từ cùng một dòng.";
   const prepBtn = at(button("Chuẩn bị trước"), 770, 506, 110, 32);
-  prepBtn.title = "Claude chọn sẵn ảnh bối cảnh cho các sản phẩm chưa chuẩn bị của dự án (theo danh mục và ô Chỉ chưa dùng), lưu vào kho đã chuẩn bị; không đụng hàng chờ, chạy được khi Bắt đầu đang chạy. Lần sau Thêm vào hàng chờ lấy ngay từ kho này.";
+  prepBtn.title = "AI chọn sẵn ảnh bối cảnh cho các sản phẩm chưa chuẩn bị của dự án (theo danh mục và ô Chỉ chưa dùng), lưu vào kho đã chuẩn bị; không đụng hàng chờ, chạy được khi Bắt đầu đang chạy. Lần sau Thêm vào hàng chờ lấy ngay từ kho này.";
   const scanBtn = at(button("Quét cập nhật"), 16, 556, 120, 32);
   const reviewsBtn = at(button("Cập nhật số review"), 145, 556, 150, 32);
   const openDir = at(button("Mở thư mục"), 304, 556, 100, 32);
@@ -855,7 +870,7 @@ function showProjectsDialog(pick = "") {
   const indexLine = at(label("Kho ảnh: …", "muted"), 16, 646, 680, 20);
   Object.assign(indexLine.style, oneLine({ fontSize: "11px" }));
   const indexBtn = at(button("Gắn nhãn kho ảnh"), 720, 640, 160, 32);
-  indexBtn.title = "Claude xem mỗi ảnh trong kho MỘT lần (trên tấm ảnh ghép) và gắn nhãn: nơi chốn, có người, ánh sáng, chỗ tường trống, hợp loại sản phẩm nào. Chuẩn bị trước và Thêm vào hàng chờ dùng nhãn này để chỉ xem ít ảnh hợp nhất. Chỉ gắn ảnh chưa có nhãn; chạy được khi Bắt đầu đang chạy.";
+  indexBtn.title = "AI xem mỗi ảnh trong kho MỘT lần (trên tấm ảnh ghép) và gắn nhãn: nơi chốn, có người, ánh sáng, chỗ tường trống, hợp loại sản phẩm nào. Chuẩn bị trước và Thêm vào hàng chờ dùng nhãn này để chỉ xem ít ảnh hợp nhất. Chỉ gắn ảnh chưa có nhãn; chạy được khi Bắt đầu đang chạy.";
   view.body.append(listTitle, unpick, projectLine, listBox, addWeb, catLabel, catBox, unusedOnly, countLabel, tableBox, status, thrLabel, runThreads, qTitle, qCountHint, queueCount, qSceneHint, sceneCount, queueBtn, divider, pTitle, retrySkipped, pCountHint, prepCount, pSceneHint, prepScenes, prepBtn, scanBtn, reviewsBtn, openDir, stop, stopMain, close, runBox, indexLine, indexBtn);
   // each pair is remembered separately (this session's run-settings); the buttons read only their own boxes
   fetch("/api/run-settings").then((x) => x.json()).then((s) => {
@@ -877,7 +892,7 @@ function showProjectsDialog(pick = "") {
   const lockedProject = sessionState.locked ? sessionState.project : "";
   const say = (text, color = "") => { status.style.color = color; status.textContent = text; };
   const clock = () => { const s = Math.max(0, Math.floor((Date.now() - startedAt) / 1000)); return String(Math.floor(s / 60)).padStart(2, "0") + ":" + String(s % 60).padStart(2, "0"); };
-  const KIND = { scan: "Đang quét cập nhật", reviews: "Đang đọc số review trên các trang sản phẩm", queue: "Đang thêm sản phẩm vào hàng chờ (chọn ảnh bối cảnh cho từng sản phẩm)", prep: "Đang chuẩn bị trước ảnh bối cảnh cho các sản phẩm", index: "Đang gắn nhãn kho ảnh (Claude xem ảnh ghép, mỗi ảnh một lần)" };
+  const KIND = { scan: "Đang quét cập nhật", reviews: "Đang đọc số review trên các trang sản phẩm", queue: "Đang thêm sản phẩm vào hàng chờ (chọn ảnh bối cảnh cho từng sản phẩm)", prep: "Đang chuẩn bị trước ảnh bối cảnh cho các sản phẩm", index: "Đang gắn nhãn kho ảnh (AI xem ảnh ghép, mỗi ảnh một lần)" };
   const refreshButtons = () => {
     const has = !!data, mainBusy = !!runningMain, lightBusy = !!runningLight;
     scanBtn.disabled = mainBusy || otherActive || !has;
@@ -1050,7 +1065,7 @@ function showProjectsDialog(pick = "") {
     } else if (runningMain) {
       say(`${KIND[runningMain]}… ${clock()}\n${st.last_text || ""}`.trim(), "var(--accent)");
       if (++ticks % 4 === 0) choose(current, true);
-    } else if (st.active && !mainNow) say("Đang có một lượt Claude khác chạy (tạo ảnh Flow). Quét và cập nhật review chờ xong; Chuẩn bị trước và Thêm vào hàng chờ vẫn dùng được.", "var(--warn)");
+    } else if (st.active && !mainNow) say("Đang có một lượt AI khác chạy (tạo ảnh). Quét và cập nhật review chờ xong; Chuẩn bị trước và Thêm vào hàng chờ vẫn dùng được.", "var(--warn)");
     // Thêm vào hàng chờ order: its live line wins over the run text; when it ends, the main list is reloaded and the result shown once
     if (od && od.active) { say(od.line + (runningLight ? "\n" + (lt.last_text || "") : ""), "var(--accent)"); orderWasActive = true; }
     else if (orderWasActive && od) { orderWasActive = false; await loadState().catch(() => {}); refreshPrepared(); say((od.line || "") + (od.message ? "\n" + od.message : ""), od.state === "done" ? "var(--ok)" : "var(--warn)"); }
@@ -1092,9 +1107,9 @@ function showProjectsDialog(pick = "") {
     if (!r.ok) { refreshButtons(); say(a.error || "Chưa thêm vào hàng chờ được.", "var(--error)"); return; }
     await loadState().catch(() => {});
     const got = a.from_prepared || 0, need = a.needs_claude || 0, dropNote = (a.dropped || []).length ? ` (${a.dropped.length} dòng đã chuẩn bị không còn hợp lệ, đã trả về "chưa chuẩn bị")` : "";
-    fastNote = `Đã lấy ${got} từ kho đã chuẩn bị, ${need} cần Claude chọn thêm${dropNote}.`;
+    fastNote = `Đã lấy ${got} từ kho đã chuẩn bị, ${need} cần ${taskAi("queueAgent")} chọn thêm${dropNote}.`;
     refreshPrepared();
-    if (need <= 0 || a.finished) { refreshButtons(); say(a.message ? (got ? `Đã lấy ${got} sản phẩm từ kho đã chuẩn bị${dropNote}. ` : "") + a.message : `Đã lấy ${got} sản phẩm từ kho đã chuẩn bị, không cần Claude${dropNote}. Xem danh sách ở cửa sổ chính.`, got ? "var(--ok)" : "var(--warn)"); return; }
+    if (need <= 0 || a.finished) { refreshButtons(); say(a.message ? (got ? `Đã lấy ${got} sản phẩm từ kho đã chuẩn bị${dropNote}. ` : "") + a.message : `Đã lấy ${got} sản phẩm từ kho đã chuẩn bị, không cần ${taskAi("queueAgent")}${dropNote}. Xem danh sách ở cửa sổ chính.`, got ? "var(--ok)" : "var(--warn)"); return; }
     // the rest is an order of this window: it fills from the stock while Chuẩn bị trước runs, then Claude picks the remainder by itself
     orderActive = true; orderWasActive = true; ticks = 0; refreshButtons(); say((a.order && a.order.line) || fastNote, "var(--accent)"); watch();
   };
@@ -1642,6 +1657,9 @@ function claudeLabel(id) {
   return [id, id];
 }
 // The Agent (Cấu hình, mục Agent) that drives the browser for Tạo ảnh (Flow) and the other agent runs: Claude or Antigravity.
+// The AI of a task as chosen in Cấu hình (scanAgent / reviewsAgent / queueAgent) and of a run (status.agent): never a hard-coded Claude.
+const taskAi = (key) => (modelInfo.claude[key] === "antigravity" ? "Antigravity" : "Claude");
+const runAi = (st) => (st?.agent === "antigravity" ? "Antigravity" : st?.agent === "claude" ? "Claude" : agentName());
 const agentName = () => (modelInfo.claude.agentBackend === "antigravity" ? "Antigravity" : "Claude");
 function agyLabel(id) {
   if (!id) return "model mặc định";
@@ -1650,20 +1668,20 @@ function agyLabel(id) {
 }
 function updateModelLine() {
   if (!ui.lblModel) return;
-  const text = cfg.text, image = cfg.image, parts = [];
+  const text = cfg.text, image = cfg.image, parts = [], flowRun = isFlow(image);
   if (image === "agent-agy") {
     const effort = { low: "thấp", medium: "vừa", high: "cao", xhigh: "rất cao", max: "tối đa" }[modelInfo.claude.agyEffort] || "mặc định";
     parts.push(`Antigravity ${agyLabel(modelInfo.claude.agyModel)} · mức: ${effort}` + (run.active && run.modelInUse ? ` · đang chạy: ${run.modelInUse}` : ""));
   }
-  if (text === "claude" || image === "agent") {
+  if (image === "agent" || (!flowRun && text === "claude")) {
     const [name, id] = claudeLabel(modelInfo.claude.claudeModel);
     const effort = { low: "thấp", medium: "vừa", high: "cao", xhigh: "rất cao", max: "tối đa" }[modelInfo.claude.claudeEffort] || "mặc định";
     parts.push(`Claude ${name === id ? id : name + " (" + id + ")"} · mức: ${effort}` + (run.active && run.modelInUse ? ` · đang chạy: ${run.modelInUse}` : ""));
   }
-  if (text === "codex" || image === "codex") parts.push(`Codex ${modelInfo.codex || "model mặc định"}`);
-  if (text === "antigravity" && image !== "agent-agy") parts.push("Antigravity CLI");
+  if (image === "codex" || (!flowRun && text === "codex")) parts.push(`Codex ${modelInfo.codex || "model mặc định"}`);
+  if (!flowRun && text === "antigravity") parts.push("Antigravity CLI");
   const warn = image === "agent" && !flowExtensionMode() && flowLogin.state === "logged_out" ? "  ·  ⚠ chưa đăng nhập Flow (mở Cấu hình)" : "";
-  ui.lblModel.textContent = `Review: ${TEXT_NAMES[text]} · Ảnh: ${IMAGE_NAMES[image]} · Luồng ${cfg.threads} · ${parts.join("  |  ")}${warn}`;
+  ui.lblModel.textContent = `Review: ${flowRun ? IMAGE_NAMES[image] : TEXT_NAMES[text]} · Ảnh: ${IMAGE_NAMES[image]}${image === "agent" ? "" : " · Luồng " + cfg.threads} · ${parts.join("  |  ")}${warn}`;
   ui.lblModel.title = ui.lblModel.textContent + "\nBấm để đổi trong Cấu hình";
   ui.lblModel.style.color = warn ? "var(--warn)" : "var(--muted)";
 }
@@ -1814,7 +1832,7 @@ async function resumeRun() {
   attachAgent(Date.now());
 }
 function attachAgent(started) {
-  Object.assign(run, { agent: true, since: 0, total: countUrls(), done: 0, stopped: false, failure: false, started, resultFolder: "", ai: agentName() === "Antigravity" ? "Antigravity (tạo ảnh)" : "Claude (Google Flow)" });
+  Object.assign(run, { lastProgress: null, agent: true, since: 0, total: countUrls(), done: 0, stopped: false, failure: false, started, resultFolder: "", ai: agentName() === "Antigravity" ? "Antigravity (tạo ảnh)" : "Claude (Google Flow)" });
   setRunning(true);
   setStatus("Đang chạy", "var(--accent)");
   setBar(0, 1, true);
@@ -1833,7 +1851,10 @@ async function pollAgent() {
     if (st.model_in_use && st.model_in_use !== run.modelInUse) { run.modelInUse = st.model_in_use; updateModelLine(); }
     const elapsed = Math.floor((Date.now() - run.started) / 1000);
     const time = String(Math.floor(elapsed / 60)).padStart(2, "0") + ":" + String(elapsed % 60).padStart(2, "0");
-    ui.lblProgress.textContent = `${st.last_text || (st.agent === "antigravity" ? "Antigravity" : st.agent === "claude" ? "Claude" : agentName()) + " đang chuẩn bị…"}  •  ${time}  •  ${run.ai}`;
+    // Counts come from the server (facts on disk): the bar fills with them; until the first count exists it keeps moving and says it is preparing.
+    run.lastProgress = st.progress || run.lastProgress;
+    if (st.progress && st.progress.total > 0) { setBar(st.progress.done, st.progress.total); ui.lblProgress.textContent = st.progress.label; }
+    else { setBar(0, 1, true); ui.lblProgress.textContent = st.progress && st.progress.label ? st.progress.label : `${runAi(st)} đang chuẩn bị…  •  ${time}`; }
     ui.txtLog.value = (st.tail || []).join("\n"); ui.txtLog.scrollTop = ui.txtLog.scrollHeight;
     if (!st.active) return finishAgent(st);
   } catch {}
@@ -1847,15 +1868,17 @@ async function finishAgent(st) {
   await updateReviewButton();
   const pending = run.resultFolder ? await api("pending", { batch: run.resultFolder }).catch(() => 0) : 0;
   // The run is over: stop the moving bar (full when finished, empty otherwise) and show a clean line, not Claude's last chat text.
-  setBar(st.status === "done" ? 1 : 0, 1);
+  const lp = st.progress || run.lastProgress, counted = lp && lp.total > 0;
+  setBar(st.status === "done" ? 1 : counted ? lp.done : 0, st.status === "done" || !counted ? 1 : lp.total, false, st.status === "failed");
   const secs = Math.floor((Date.now() - run.started) / 1000);
   const took = `${Math.floor(secs / 60)} phút ${secs % 60} giây`;
+  const counts = lp && lp.label ? lp.label.replace(/ · \d\d:\d\d.*$/, "") : "";
   ui.lblProgress.textContent = st.status === "done" ? `Đã xong lượt chạy${pending > 0 ? ` • ${pending} ảnh chờ duyệt` : ""} • ${took} • ${run.ai}`
-    : st.status === "stopped" ? `Đã dừng • ${took} • ${run.ai}` : (st.last_text || "Lượt chạy chưa hoàn tất.");
+    : st.status === "stopped" ? `Đã dừng${counts ? " • " + counts : ""} • ${took}` : (counts ? `Chưa hoàn tất • ${counts}` : (st.last_text || "Lượt chạy chưa hoàn tất."));
   if (st.status === "stopped") { setStatus("Đã dừng", "var(--muted)"); appendLog("Đã dừng. Các link chưa hoàn tất được giữ lại."); }
-  else if (st.status === "done" && pending > 0) { setStatus("Chờ bạn duyệt", "var(--ok)"); appendLog(`Claude đã xong. ${pending} ảnh chờ bạn duyệt: bấm Duyệt & xuất file (Giữ/Bỏ từng ảnh). Claude không tự Giữ/Bỏ.`); }
-  else if (st.status === "done") { setStatus("! Cần kiểm tra", "var(--warn)"); appendLog("Claude đã dừng nhưng chưa có ảnh nào chờ duyệt. Xem tiến trình ở trên."); }
-  else { setStatus("! Cần thử lại", "var(--warn)"); appendLog("Lượt Claude chưa hoàn tất" + (st.error ? ": " + st.error : ".")); }
+  else if (st.status === "done" && pending > 0) { setStatus("Chờ bạn duyệt", "var(--ok)"); appendLog(`${runAi(st)} đã xong. ${pending} ảnh chờ bạn duyệt: bấm Duyệt & xuất file (Giữ/Bỏ từng ảnh). ${runAi(st)} không tự Giữ/Bỏ.`); }
+  else if (st.status === "done") { setStatus("! Cần kiểm tra", "var(--warn)"); appendLog(`${runAi(st)} đã dừng nhưng chưa có ảnh nào chờ duyệt. Xem tiến trình ở trên.`); }
+  else { setStatus("! Cần thử lại", "var(--warn)"); appendLog("Lượt " + runAi(st) + " chưa hoàn tất" + (st.error ? ": " + st.error : ".")); }
 }
 async function poll() {
   if (!run.active) return;

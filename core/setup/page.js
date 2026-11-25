@@ -283,6 +283,7 @@
   };
   const refreshFlowMode = () => {
     flowOnly.hidden = !flowShown();
+    rvText.disabled = rvImage.value !== "codex"; // the agent writes the reviews of its own image run; this choice is for the Codex run
     const ext = fb.mode !== "own", p = curProfile();
     fbDot.style.display = fbRecheck.style.display = ext ? "none" : "";
     fbInstall.hidden = !p || p.playwright_extension;
