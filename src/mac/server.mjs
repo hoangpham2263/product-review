@@ -229,6 +229,7 @@ async function productsLeft(id, scenes, filters) {
   return !!(b.ok && b.count > 0);
 }
 function orderAdded() { return queueOrder ? Math.max(0, queuedCountOf(queueOrder.project) - queueOrder.base) : 0; }
+const queueAiName = () => { try { return readAgentSettings(workspace, sharedWs, "queue").backend === "antigravity" ? "Antigravity" : "Claude"; } catch { return "Claude"; } };
 function orderStatus() {
   if (!queueOrder) return { active: false };
   const added = orderAdded(), o2 = queueOrder;
@@ -238,7 +239,7 @@ function orderStatus() {
 function orderLine() {
   if (!queueOrder) return "";
   const added = orderAdded(), o2 = queueOrder, rest = Math.max(0, o2.total - added);
-  return "Hàng chờ: đã thêm " + added + "/" + o2.total + " (" + o2.fromPrepared + " từ kho chuẩn bị" + (o2.state === "claude" ? ", " + rest + " Claude đang chọn thêm" : o2.state === "waiting" ? ", " + rest + " đợi lượt Chuẩn bị trước thêm vào kho" : "") + ")";
+  return "Hàng chờ: đã thêm " + added + "/" + o2.total + " (" + o2.fromPrepared + " từ kho chuẩn bị" + (o2.state === "claude" ? ", " + rest + " " + queueAiName() + " đang chọn thêm" : o2.state === "waiting" ? ", " + rest + " đợi lượt Chuẩn bị trước thêm vào kho" : "") + ")";
 }
 function finishOrder(state, message = "") {
   if (!queueOrder) return;
@@ -273,10 +274,10 @@ async function orderTick() {
         const rest = o2.total - orderAdded();
         if (!(await productsLeft(o2.project, o2.scenes, o2.filters))) return finishOrder("done", "Không còn sản phẩm nào để thêm: đã thêm " + orderAdded() + "/" + o2.total + ".");
         const r = startOrderClaude(rest);
-        if (!r.ok) return finishOrder("stopped", r.error || "Chưa chạy được Claude.");
+        if (!r.ok) return finishOrder("stopped", r.error || "Chưa chạy được " + queueAiName() + ".");
       }
     } else if (o2.state === "claude" && !light.isActive()) {
-      return finishOrder(orderAdded() >= o2.total ? "done" : "stopped", orderAdded() >= o2.total ? "" : "Lượt Claude kết thúc khi còn thiếu " + (o2.total - orderAdded()) + " sản phẩm.");
+      return finishOrder(orderAdded() >= o2.total ? "done" : "stopped", orderAdded() >= o2.total ? "" : "Lượt " + queueAiName() + " kết thúc khi còn thiếu " + (o2.total - orderAdded()) + " sản phẩm.");
     }
   } finally { o2.busy = false; }
 }
@@ -445,7 +446,7 @@ async function handle(req, res) {
   if (path === "/api/agent/run" && req.method === "POST") {
     if (run.proc) return send(res, 409, { error: "Đang chạy." });
     const given = JSON.parse((await body(req)).toString("utf8") || "{}");
-    if (agent.isActive()) return send(res, 409, { error: "Đã có một lượt Claude đang chạy." });
+    if (agent.isActive()) return send(res, 409, { error: "Đã có một lượt AI đang chạy." });
     // Antigravity makes the images itself: no Flow, no Chrome, so no Flow sign-in check.
     const login = readAgentSettings(workspace, sharedWs).backend === "antigravity" || readFlowBrowser(workspace, sharedWs).mode !== "own" ? { state: "logged_in" } : await flowLogin.status();
     if (login.state !== "logged_in") return send(res, 409, { error: login.state === "logged_out" ? "Chưa đăng nhập Google Flow trong Chrome riêng: bấm Mở Chrome để đăng nhập, đăng nhập xong đóng cửa sổ đó rồi Kiểm tra lại." : "Chưa chạy được Claude: " + login.detail });
@@ -481,7 +482,7 @@ async function handle(req, res) {
     if (!host) return send(res, 400, { error: "Dán link trang chủ của web cần quét, ví dụ https://shop.com." });
     const max = Math.min(200, Math.max(1, Math.round(Number(given.max)) || 20));
     if (run.proc) return send(res, 409, { error: "Đang chạy." });
-    if (agent.isActive()) return send(res, 409, { error: "Đã có một lượt Claude đang chạy (Flow hoặc quét). Chờ xong hoặc bấm Dừng." });
+    if (agent.isActive()) return send(res, 409, { error: "Đã có một lượt AI đang chạy (Flow hoặc quét). Chờ xong hoặc bấm Dừng." });
     const r = agent.start({ run: "scan-" + newRunId().slice(6), mode: "scan", site, max });
     return send(res, r.status, r.ok ? { ok: true, run: r.run_id, started: r.started } : { error: r.error });
   }
@@ -502,7 +503,7 @@ async function handle(req, res) {
     if (!/^[a-z0-9][a-z0-9-]{1,60}$/.test(id) || !existsSync(join(sharedWs, "projects", id, "project.json"))) return send(res, 400, { error: "Chọn một dự án có sẵn." });
     { const fp = focusMismatch(id); if (fp) return send(res, 409, { error: fp }); }
     if (run.proc) return send(res, 409, { error: "Đang chạy." });
-    if (agent.isActive()) return send(res, 409, { error: "Đã có một lượt Claude đang chạy (Flow, quét hoặc cập nhật review). Chờ xong hoặc bấm Dừng." });
+    if (agent.isActive()) return send(res, 409, { error: "Đã có một lượt AI đang chạy (Flow, quét hoặc cập nhật review). Chờ xong hoặc bấm Dừng." });
     const r = agent.start({ run: "reviews-" + newRunId().slice(6), mode: "reviews", project: id });
     return send(res, r.status, r.ok ? { ok: true, run: r.run_id, started: r.started } : { error: r.error });
   }
@@ -555,7 +556,7 @@ async function handle(req, res) {
     const scenes = Math.min(4, Math.max(1, Math.round(Number(given.scenes)) || 2));
     const category = String(given.category || "").replace(/[\r\n"]+/g, " ").trim().slice(0, 120);
     const limit = Math.min(500, Math.max(0, Math.round(Number(given.limit)) || 0));
-    if (light.isActive()) return send(res, 409, { error: "Đã có một lượt Claude chuẩn bị / thêm hàng chờ đang chạy. Chờ xong hoặc bấm Dừng." });
+    if (light.isActive()) return send(res, 409, { error: "Đã có một lượt chuẩn bị / thêm hàng chờ đang chạy. Chờ xong hoặc bấm Dừng." });
     const options = `category: ${category ? `"${category}"` : "(all categories)"}; only unused (used = F): ${given.unused_only ? "T" : "F"}; products to prepare: ${limit || "all"}; scenes per product: ${scenes}; retry skipped (no-fit) products: ${given.retry_skipped ? "T" : "F"}`;
     const r = light.start({ run: "prep-" + newRunId().slice(6), mode: "prep", project: id, options });
     return send(res, r.status, r.ok ? { ok: true, run: r.run_id, started: r.started } : { error: r.error });
@@ -570,7 +571,7 @@ async function handle(req, res) {
     const given = JSON.parse((await body(req)).toString("utf8") || "{}");
     const group = String(given.group || "").replace(/[\r\n"]+/g, " ").trim().slice(0, 80);
     const limit = Math.min(5000, Math.max(0, Math.round(Number(given.limit)) || 0));
-    if (light.isActive()) return send(res, 409, { error: "Đã có một lượt Claude chuẩn bị / thêm hàng chờ / gắn nhãn đang chạy trong cửa sổ này. Chờ xong hoặc bấm Dừng." });
+    if (light.isActive()) return send(res, 409, { error: "Đã có một lượt chuẩn bị / thêm hàng chờ / gắn nhãn đang chạy trong cửa sổ này. Chờ xong hoặc bấm Dừng." });
     const options = `library group: ${group ? `"${group}"` : "(every group)"}; photos to tag: ${limit || "all"}`;
     const r = light.start({ run: "index-" + newRunId().slice(6), mode: "index", project: "", options });
     return send(res, r.status, r.ok ? { ok: true, run: r.run_id, started: r.started } : { error: r.error });
