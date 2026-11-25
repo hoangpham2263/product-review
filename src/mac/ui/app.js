@@ -4,6 +4,7 @@
 
 // ---------- helpers ----------
 const modelInfo = { claude: {}, codex: "" };
+const isFlow = (v) => v === "agent" || v === "agent-agy"; // Tạo ảnh: Claude (Flow) or Antigravity (Flow), both are the Flow run
 const api = async (cmd, args = {}) => {
   const r = await fetch("/api/rpc", { method: "POST", body: JSON.stringify({ cmd, args }) });
   const body = await r.json();
@@ -489,11 +490,17 @@ function buildMain() {
     box.setItems(values, labels);
     try { box.value = localStorage.getItem(key) || values[0]; } catch {}
     if (!box.value) box.value = values[0];
-    box.onchange = () => { try { localStorage.setItem(key, box.value); } catch {} saveRunSettings({ [key]: box.value }); updateUsage(); updateAgentControls(); };
+    box.onchange = () => {
+      try { localStorage.setItem(key, box.value); } catch {}
+      // Tạo ảnh: Claude (Flow) and Antigravity (Flow) are the same Flow run driven by a different agent (agentBackend).
+      if (key === "imageBackend") { const part = isFlow(box.value) ? { imageBackend: "agent", agentBackend: box.value === "agent-agy" ? "antigravity" : "claude" } : { imageBackend: "codex" }; if (part.agentBackend) modelInfo.claude.agentBackend = part.agentBackend; saveRunSettings(part); }
+      else saveRunSettings({ [key]: box.value });
+      updateUsage(); updateAgentControls(); refreshModelInfo();
+    };
     return [name, box];
   };
   [ui.lblText, ui.cmbText] = picker("Viết review:", 20, "textBackend", ["codex", "antigravity", "claude"], ["Codex", "Antigravity CLI", "Claude"]);
-  [ui.lblBackend, ui.cmbBackend] = picker("Tạo ảnh:", 47, "imageBackend", ["codex", "agent"], ["Codex", "Claude (Flow)"]);
+  [ui.lblBackend, ui.cmbBackend] = picker("Tạo ảnh:", 47, "imageBackend", ["codex", "agent", "agent-agy"], ["Codex", "Claude (Flow)", "Antigravity (Flow)"]);
   // Luồng, Viết review and Tạo ảnh are kept in workspace/config/run-settings.json (the server), so they are the same next time.
   const saveRunSettings = (part) => fetch("/api/run-settings", { method: "POST", body: JSON.stringify(part) }).catch(() => {});
   ui.numThr.onchange = () => saveRunSettings({ threads: ui.numThr.value });
@@ -502,7 +509,8 @@ function buildMain() {
     modelInfo.claude = saved;
     loadFlowAccounts();
     if (["codex", "antigravity", "claude"].includes(saved.textBackend)) ui.cmbText.value = saved.textBackend;
-    if (["codex", "agent"].includes(saved.imageBackend)) ui.cmbBackend.value = saved.imageBackend;
+    if (saved.imageBackend === "agent") ui.cmbBackend.value = saved.agentBackend === "antigravity" ? "agent-agy" : "agent";
+    else if (saved.imageBackend === "codex") ui.cmbBackend.value = "codex";
     updateUsage();
     refreshModelInfo();
     updateAgentControls();
@@ -1727,10 +1735,10 @@ function updateActionAvailability() {
   for (const b of [ui.btnFlowOpen, ui.btnFlowCheck]) if (b) b.disabled = busy || flowLogin.checking;
   for (const b of [ui.btnRun, ui.btnSetup, ui.btnLogs, ui.btnReview, ui.btnOut, ui.btnUpdate, ui.btnClearLog, ui.btnAdd, ui.btnBulk, ui.btnClear, ui.btnProjects]) b.disabled = busy;
   // Claude (Flow) cannot start until its own Chrome is signed in to Google Flow.
-  if (ui.cmbBackend?.value === "agent" && !flowExtensionMode() && flowLogin.state !== "logged_in") ui.btnRun.disabled = true;
+  if (isFlow(ui.cmbBackend?.value) && !flowExtensionMode() && flowLogin.state !== "logged_in") ui.btnRun.disabled = true;
   ui.btnStop.disabled = !run.active;
   // Chạy tiếp continues a Claude (Flow) run, so it is only offered when Tạo ảnh = Claude (Flow); with Codex, Bắt đầu already continues (finished links leave the queue).
-  if (ui.btnResume) ui.btnResume.disabled = busy || !ui.resumeRun || ui.btnRun.disabled || ui.cmbBackend?.value !== "agent";
+  if (ui.btnResume) ui.btnResume.disabled = busy || !ui.resumeRun || ui.btnRun.disabled || !isFlow(ui.cmbBackend?.value);
   ui.numThr.enabled = !busy;
   ui.cmbText.disabled = busy;
   // Both modes keep image generation enabled.
@@ -1791,18 +1799,17 @@ function updateModelLine() {
   if (!ui.lblModel || !ui.cmbText) return;
   const text = ui.cmbText.value, image = ui.cmbBackend.value;
   const parts = [];
-  const opt = [...(ui.cmbBackend.options || [])].find((o) => o.value === "agent"); if (opt) opt.textContent = agentName() + " (Flow)";
-  if (image === "agent" && agentName() === "Antigravity") {
+  if (isFlow(image) && agentName() === "Antigravity") {
     const effort = { low: "thấp", medium: "vừa", high: "cao", xhigh: "rất cao", max: "tối đa" }[modelInfo.claude.agyEffort] || "mặc định";
     parts.push(`Antigravity ${agyLabel(modelInfo.claude.agyModel)} · mức: ${effort}` + (run.active && run.modelInUse ? ` · đang chạy: ${run.modelInUse}` : ""));
   }
-  if (text === "claude" || (image === "agent" && agentName() === "Claude")) {
+  if (text === "claude" || (isFlow(image) && agentName() === "Claude")) {
     const [name, id] = claudeLabel(modelInfo.claude.claudeModel);
     const effort = { low: "thấp", medium: "vừa", high: "cao", xhigh: "rất cao", max: "tối đa" }[modelInfo.claude.claudeEffort] || "mặc định";
     parts.push(`Claude ${name === id ? id : name + " (" + id + ")"} · mức: ${effort}` + (run.active && run.modelInUse ? ` · đang chạy: ${run.modelInUse}` : ""));
   }
   if (text === "codex" || image === "codex") parts.push(`Codex ${modelInfo.codex || "model mặc định"}`);
-  if (text === "antigravity" && !(image === "agent" && agentName() === "Antigravity")) parts.push("Antigravity CLI");
+  if (text === "antigravity" && !(isFlow(image) && agentName() === "Antigravity")) parts.push("Antigravity CLI");
   ui.lblModel.textContent = parts.join("  |  ");
   ui.lblModel.title = ui.lblModel.textContent;
 }
@@ -1861,7 +1868,7 @@ function receive(event) {
 async function startBatch() {
   if (run.active) return;
   // Use the selected image provider for either run mode.
-  if (ui.cmbBackend.value === "agent") return startAgent();
+  if (isFlow(ui.cmbBackend.value)) return startAgent();
   try { await saveQueue(true); } catch (e) { return appendLog(e.message); }
   if (!countUrls()) return messageBox("Vui lòng thêm ít nhất một link sản phẩm.");
   if (!state.codex) return messageBox('Chưa có công cụ xử lý. Bấm "Cấu hình" để xem hướng dẫn.');
@@ -1942,7 +1949,7 @@ function applyFlowBrowserMode() {
     updateActionAvailability();
   } else {
     ui.btnFlowOpen.title = "Mở Chrome riêng của tool để đăng nhập Google Flow (đăng nhập xong đóng cửa sổ đó rồi Kiểm tra lại).";
-    flowLogin.state = ""; if (ui.cmbBackend?.value === "agent") checkFlowLogin();
+    flowLogin.state = ""; if (isFlow(ui.cmbBackend?.value)) checkFlowLogin();
   }
 }
 const FLOW_TEXT = {
@@ -1975,7 +1982,7 @@ async function openFlowLogin() {
   showFlowLogin("busy");
 }
 function updateAgentControls() {
-  const on = ui.cmbBackend?.value === "agent";
+  const on = isFlow(ui.cmbBackend?.value);
   if (!ui.flowLoginBox) return;
   ui.flowLoginBox.style.display = on ? "" : "none";
   if (on && !flowLogin.state && !flowLogin.checking && !flowExtensionMode()) checkFlowLogin();
@@ -2000,7 +2007,7 @@ async function refreshResumable() {
 }
 async function resumeRun() {
   if (!ui.resumeRun) return;
-  if (ui.cmbBackend?.value !== "agent") return appendLog("Chạy tiếp chỉ dùng cho Tạo ảnh = " + agentName() + " (Flow). Với Codex, bấm Bắt đầu: các link đã xong tự rời hàng chờ.");
+  if (!isFlow(ui.cmbBackend?.value)) return appendLog("Chạy tiếp chỉ dùng cho Tạo ảnh = " + agentName() + " (Flow). Với Codex, bấm Bắt đầu: các link đã xong tự rời hàng chờ.");
   if (!(await flowPreflight())) return;
   ui.txtLog.value = "";
   const r = await fetch("/api/agent/run", { method: "POST", body: JSON.stringify({ run: ui.resumeRun }) });
