@@ -255,8 +255,8 @@ export function readAgentSettings(workspaceDir, seedDir = "", mode = "flow") {
     const f = (d) => join(d, "config", "run-settings.json");
     const s = readSeededJson(f(workspaceDir), seedDir ? f(seedDir) : "", {});
     const legacy = AGENT_BACKENDS.includes(s.agentBackend) ? s.agentBackend : "claude", own = s[AGENT_TASK_KEY[mode] || "agentBackend"];
-    return { backend: AGENT_BACKENDS.includes(own) ? own : legacy, agyModel: isAgyModel(s.agyModel) ? s.agyModel : AGY_DEFAULT_MODEL, agyEffort: AGY_EFFORTS.includes(s.agyEffort) ? s.agyEffort : "" };
-  } catch { return { backend: "claude", agyModel: AGY_DEFAULT_MODEL, agyEffort: "" }; }
+    return { backend: AGENT_BACKENDS.includes(own) ? own : legacy, agyModel: isAgyModel(s.agyModel) ? s.agyModel : AGY_DEFAULT_MODEL, agyEffort: AGY_EFFORTS.includes(s.agyEffort) ? s.agyEffort : "", agyImages: s.agyImages === "flow" ? "flow" : "self" };
+  } catch { return { backend: "claude", agyModel: AGY_DEFAULT_MODEL, agyEffort: "", agyImages: "self" }; }
 }
 // The Antigravity CLI: env PR_AGY_CLI, else the first `agy` on PATH, else its default install folders.
 export function findAgy(plat = osPlatform()) {
@@ -317,8 +317,8 @@ export const newRunId = (d = new Date()) => "agent-" + d.toISOString().replace(/
 
 // The text block of docs/agent-prompt.md (mode "flow") or docs/scan-prompt.md (mode "scan"), placeholders filled.
 export const PROMPT_FILES = { flow: "agent-prompt.md", scan: "scan-prompt.md", reviews: "reviews-count-prompt.md", queue: "queue-prompt.md", prep: "prep-prompt.md", index: "index-prompt.md" };
-export function buildPrompt({ toolRoot, run, options = "defaults", mode = "flow", site = "", max = 20, project = "", workspace = "", agentName = "Claude Code", threads = 1, tabs = 1 }) {
-  const agyImg = mode === "flow" && agentName === "Antigravity"; // Antigravity makes the images itself: its own prompt file, no Flow, no Google account
+export function buildPrompt({ toolRoot, run, options = "defaults", mode = "flow", site = "", max = 20, project = "", workspace = "", agentName = "Claude Code", threads = 1, tabs = 1, selfImages = true }) {
+  const agyImg = mode === "flow" && agentName === "Antigravity" && selfImages; // Antigravity makes the images itself: its own prompt file, no Flow, no Google account
   const file = agyImg ? "agent-prompt-agy-image.md" : PROMPT_FILES[mode];
   if (!file) throw new Error("Unknown run mode: " + mode);
   const md = readFileSync(join(toolRoot, "docs", file), "utf8");
@@ -390,7 +390,19 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
     run.modelLine = true; run.prev = "";
     try { mkdirSync(runsDir, { recursive: true }); writeFileSync(logFile, run.lines.join("\n") + "\n"); } catch {}
   };
+  // Antigravity's own image generation ran out of quota (HTTP 429 RESOURCE_EXHAUSTED, "reset after 3h28m59s"): stop the whole run at once (the remaining items
+  // would only fail the same way), write when it resets, and tell the person what to switch to.
+  const quotaStop = (run, text) => {
+    if (run.abort || run.ended) return;
+    const m = String(text).match(/reset after\s*(?:(\d+)h)?\s*(?:(\d+)m)?\s*(?:(\d+)s)?/i);
+    const ms = m ? (((+m[1] || 0) * 3600) + ((+m[2] || 0) * 60) + (+m[3] || 0)) * 1000 : 0, at = ms ? new Date(now() + ms) : null;
+    run.abort = "[CAUSE:QUOTA] Hết hạn mức tạo ảnh của Antigravity" + (at ? " (hồi lúc " + at.toTimeString().slice(0, 5) + ")" : "") + ". Chọn Antigravity (Flow) hoặc Codex trong Cấu hình rồi bấm Chạy tiếp.";
+    if (at) run.state.quota_reset = at.toISOString();
+    addLine(run, "⚠ " + run.abort); touch(run);
+    killTree(run.child); setTimeout(() => finish(run, null), graceMs).unref?.();
+  };
   const handleLine = (run, raw) => {
+    if (run.agyImage && /RESOURCE_EXHAUSTED/.test(raw)) quotaStop(run, raw);
     // Not an event (a cut-off fragment, tool output): nothing a person can read, so it stays out of the log.
     let ev; try { ev = JSON.parse(raw); } catch { return; }
     if (run.backend === "antigravity") return handleAgy(run, ev);
@@ -404,7 +416,7 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
       run.state.turns = (run.state.turns || 0) + 1;
       for (const c of ev.message.content) {
         if (c.type === "text" && c.text) { addLine(run, "Claude: " + c.text); const t = sanitize(c.text); if (t) run.state.last_text = t; }
-        else if (c.type === "tool_use" && typeof c.name === "string") addLine(run, friendlyTool(c.name, c.input, run.state.mode, run.state.agent));
+        else if (c.type === "tool_use" && typeof c.name === "string") addLine(run, friendlyTool(c.name, c.input, run.state.mode, run.state.label_ai));
       }
       touch(run);
     } else if (ev.type === "result") {
@@ -450,7 +462,7 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
           killTree(run.child); setTimeout(() => finish(run, null), graceMs).unref?.();
           return;
         }
-        if (subs.length && !run.agyShown.has(idx)) { run.agyShown.add(idx); const c = agyToolToClaude("invoke_subagent", { count: subs.length }); addLine(run, friendlyTool(c.name, c.input, run.state.mode, run.state.agent)); touch(run); }
+        if (subs.length && !run.agyShown.has(idx)) { run.agyShown.add(idx); const c = agyToolToClaude("invoke_subagent", { count: subs.length }); addLine(run, friendlyTool(c.name, c.input, run.state.mode, run.state.label_ai)); touch(run); }
         else if (!subs.length && s.state === "DONE" && !run.agyShown.has(idx)) { run.agyShown.add(idx); addLine(run, "⚠ Antigravity gọi một subagent nhưng không báo loại: bỏ qua kiểm tra bước này"); touch(run); }
       } else if ((s.step_type === "tool" || s.step_type === "subagent") && s.tool_name && !run.agySteps.has(idx)) {
         run.agySteps.add(idx);
@@ -467,7 +479,7 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
           return;
         }
         const c = agyToolToClaude(s.tool_name, p);
-        addLine(run, friendlyTool(c.name, c.input, run.state.mode, run.state.agent)); touch(run);
+        addLine(run, friendlyTool(c.name, c.input, run.state.mode, run.state.label_ai)); touch(run);
       }
       return;
     }
@@ -530,12 +542,13 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
     if (cur) return { ok: false, status: 409, error: `An agent run is already active (started ${cur.state.started}). Wait for it or press Stop.` };
     const agentSet = readAgentSettings(workspace || join(toolRoot, "workspace"), join(toolRoot, "workspace"), mode), backend = agentSet.backend, agy = backend === "antigravity", who = AGENT_NAME[backend];
     // Antigravity makes the images itself (image-generator subagent): the image run needs no Chrome, no Playwright MCP, no Flow account.
-    const agyImage = agy && mode === "flow", noBrowser = lightMode || agyImage;
+    // agyImages: "self" = Antigravity makes the pictures itself (image-generator subagent, no browser); "flow" = it drives Google Flow through the per-run Playwright MCP, exactly like Claude (Flow).
+    const agyFlow = agy && mode === "flow" && agentSet.agyImages === "flow", agyImage = agy && mode === "flow" && !agyFlow, noBrowser = lightMode || agyImage;
     const found = agy ? findAgyCli() : findCli();
     if (!found?.found) return { ok: false, status: 400, error: agy ? "Antigravity CLI (agy) not found: install Antigravity and sign in with Google, or set PR_AGY_CLI to its path." : "Claude CLI not found: install Claude Code, or set PR_CLAUDE_CLI to its path." };
     if (!noBrowser && !npxOk()) return { ok: false, status: 400, error: "npx is not available (it comes with Node.js): the Playwright MCP cannot start." };
     let prompt;
-    try { prompt = buildPrompt({ toolRoot, run: runId, options, mode, site, max, project, workspace, agentName: agy ? "Antigravity" : "Claude Code", tabs: Math.min(4, Math.max(1, Math.round(Number(tabs)) || 1)), threads: agyImage ? readThreads(workspace || join(toolRoot, "workspace"), join(toolRoot, "workspace")) : 1 }); } catch (e) { return { ok: false, status: 500, error: sanitize(e.message) }; }
+    try { prompt = buildPrompt({ toolRoot, run: runId, options, mode, site, max, project, workspace, agentName: agy ? "Antigravity" : "Claude Code", selfImages: !agyFlow, tabs: Math.min(4, Math.max(1, Math.round(Number(tabs)) || 1)), threads: agyImage ? readThreads(workspace || join(toolRoot, "workspace"), join(toolRoot, "workspace")) : 1 }); } catch (e) { return { ok: false, status: 500, error: sanitize(e.message) }; }
     mkdirSync(tmpDir, { recursive: true }); mkdirSync(runsDir, { recursive: true });
     const cfg = join(tmpDir, `mcp-${runId}-${randomBytes(3).toString("hex")}.json`);
     const bc = noBrowser ? {} : (getBrowser() || {}), ext = !noBrowser && bc.mode !== "own";
@@ -598,14 +611,14 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
     } else {
       args = ["-p", "--output-format", "stream-json", "--verbose", "--permission-mode", "default", "--model", claudeSet.model, ...(claudeSet.effort ? ["--effort", claudeSet.effort] : []), ...(maxTurns > 0 ? ["--max-turns", String(maxTurns)] : []), "--allowedTools", (lightMode ? LIGHT_TOOLS : ALLOWED_TOOLS).join(","), "--add-dir", toolRoot, ...(lightMode ? ["--strict-mcp-config"] : ["--mcp-config", cfg])];
     }
-    const env = { ...process.env, PR_AGENT_ENGINE: backend, ...(extToken && !agy ? { PLAYWRIGHT_MCP_EXTENSION_TOKEN: extToken } : {}) };
+    const env = { ...process.env, PR_AGENT_ENGINE: agyFlow ? "antigravity-flow" : backend, ...(extToken && !agy ? { PLAYWRIGHT_MCP_EXTENSION_TOKEN: extToken } : {}) };
     const cmd = plat === "win32" && /\.(cmd|bat)$/i.test(found.path) ? ["cmd", ["/c", found.path, ...args]] : [found.path, args];
     let child;
     try { child = spawnFn(cmd[0], cmd[1], { cwd: agy ? agyDir : toolRoot, env, windowsHide: true, detached: false, stdio: ["pipe", "pipe", "pipe"] }); }
     catch (e) { try { rmSync(cfg, { force: true }); } catch {} if (agyDir) { try { rmSync(agyDir, { recursive: true, force: true }); } catch {} } releaseOwn(false); return { ok: false, status: 500, error: sanitize(e.message) }; }
     const started = new Date(now()).toISOString();
     const run = { child, cfg, lines: [], buf: "", written: 0, stderr: [], ended: false, forced: "", result: null, timer: null,
-      state: { run_id: runId, mode, project, pid: child.pid ?? null, started, updated: started, status: "running", exit_code: null, last_text: "", turns: 0, error: "", model_in_use: asked.model, agent: backend } };
+      state: { run_id: runId, mode, project, pid: child.pid ?? null, started, updated: started, status: "running", exit_code: null, last_text: "", turns: 0, error: "", model_in_use: asked.model, agent: backend, label_ai: agyImage ? "antigravity" : agyFlow ? "antigravity-flow" : backend } };
     run.asked = asked; run.backend = backend; run.who = who; run.agyDir = agyDir; run.agyImage = agyImage;
     run.prefix = "[" + (FEATURE[mode] || mode) + (project ? " · " + project : "") + (shard ? " · luồng " + shard : "") + "] ";
     cur = run; if (kind === "light") lightRuns.set(lightKey, (lightRuns.get(lightKey) || 0) + 1);
@@ -619,7 +632,7 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
       : (agyImage ? "Bắt đầu: Antigravity (tạo ảnh) tạo ảnh và viết review (mã lượt " + runId + ")" : "Bắt đầu: " + who + " điều khiển Google Flow (mã lượt " + runId + ")"));
     saveState(run.state);
     child.stdout?.on("data", (c) => feed(run, c));
-    child.stderr?.on("data", (c) => { for (const l of c.toString("utf8").split(/\r?\n/)) { const t = sanitize(l); if (t) { run.stderr.push(t); if (run.stderr.length > 20) run.stderr.shift(); addLine(run, "Cảnh báo: " + t); } } });
+    child.stderr?.on("data", (c) => { for (const l of c.toString("utf8").split(/\r?\n/)) { if (run.agyImage && /RESOURCE_EXHAUSTED/.test(l)) quotaStop(run, l); const t = sanitize(l); if (t) { run.stderr.push(t); if (run.stderr.length > 20) run.stderr.shift(); addLine(run, "Cảnh báo: " + t); } } });
     child.on("error", (e) => finish(run, null, e.message));
     child.on("close", (code) => finish(run, code));
     child.stdin?.on("error", () => {});
@@ -649,7 +662,7 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
     return {
       active: !!run, status: shown?.status || "idle", run_id: shown?.run_id || "", mode: shown?.mode || "flow", project: shown?.project || "", started: shown?.started || "",
       elapsed_s: shown?.started ? Math.max(0, Math.round(((run ? now() : Date.parse(shown.updated) || now()) - Date.parse(shown.started)) / 1000)) : 0,
-      model_in_use: shown?.model_in_use || "", agent: shown?.agent || "", last_text: shown?.last_text || "", turns: shown?.turns || 0, error: shown?.error || "", updated: shown?.updated || "", tail: lines.slice(-TAIL_LINES),
+      model_in_use: shown?.model_in_use || "", agent: shown?.agent || "", quota_reset: shown?.quota_reset || "", last_text: shown?.last_text || "", turns: shown?.turns || 0, error: shown?.error || "", updated: shown?.updated || "", tail: lines.slice(-TAIL_LINES),
     };
   }
   return { start, stop, status, shutdown, isActive: () => !!cur };

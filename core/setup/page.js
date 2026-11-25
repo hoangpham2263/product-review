@@ -264,9 +264,9 @@
   const tokInput = $(".fb-token"), tokSave = $(".fb-token-save"), tokClear = $(".fb-token-clear"), fbOpen = $(".fb-open"), fbRecheck = $(".fb-recheck"), fbDot = $(".fb-open .dot");
   let rs = {}, fb = { mode: "own", profile: "", profiles: [] };
   const saveRs = (part) => post("/api/run-settings", part);
-  const imageValue = (r) => (r.imageBackend === "agent" ? (r.agentBackend === "antigravity" ? "agent-agy" : "agent") : "codex");
+  const imageValue = (r) => (r.imageBackend === "agent" ? (r.agentBackend === "antigravity" ? (r.agyImages === "flow" ? "agent-agy-flow" : "agent-agy") : "agent") : "codex");
   const curProfile = () => (fb.mode === "own" ? null : fb.profiles.find((x) => x.folder === fb.profile) || null);
-  const flowShown = () => rvImage.value === "agent";
+  const flowShown = () => rvImage.value === "agent" || rvImage.value === "agent-agy-flow"; // the ones that drive Google Flow in Chrome
   const refreshCheck = () => {
     const c = window.FlowCheck.flowAccountCheck(curProfile(), fbAccount.value);
     fbCheck.textContent = c.short; fbCheck.title = [c.block, c.warn].filter(Boolean).join("\n\n");
@@ -311,7 +311,7 @@
     if (!r) return;
     rs = r; runSec.hidden = false;
     fill(rvText, ["codex", "antigravity", "claude"], ["Codex", "Antigravity CLI", "Claude"], ["codex", "antigravity", "claude"].includes(r.textBackend) ? r.textBackend : "codex");
-    fill(rvImage, ["codex", "agent", "agent-agy"], ["Codex", "Claude (Flow)", "Antigravity"], imageValue(r));
+    fill(rvImage, ["codex", "agent", "agent-agy", "agent-agy-flow"], ["Codex", "Claude (Flow)", "Antigravity", "Antigravity (Flow)"], imageValue(r));
     rvThreads.value = r.threadsSaved ? r.threads : rvImage.value === "codex" ? 2 : 1; // Codex keeps its old default 2 until a value is saved
     // Quét web / Cập nhật review / Hàng chờ & chuẩn bị: Claude or Antigravity (Codex has no browser mode). Older windows: the server answers with their old single agent.
     for (const [box, key] of [[rvScan, "scanAgent"], [rvReviews, "reviewsAgent"], [rvQueue, "queueAgent"]]) fill(box, ["claude", "antigravity"], ["Claude", "Antigravity"], r[key] === "antigravity" ? "antigravity" : "claude");
@@ -322,7 +322,7 @@
   rvText.onchange = () => saveRs({ textBackend: rvText.value });
   rvImage.onchange = async () => {
     // Claude (Flow) and Antigravity are the same agent run driven by a different agent (agentBackend); Codex leaves the agent as it is.
-    const v = rvImage.value, part = v === "codex" ? { imageBackend: "codex" } : { imageBackend: "agent", agentBackend: v === "agent-agy" ? "antigravity" : "claude" };
+    const v = rvImage.value, part = v === "codex" ? { imageBackend: "codex" } : { imageBackend: "agent", agentBackend: v === "agent" ? "claude" : "antigravity", agyImages: v === "agent-agy-flow" ? "flow" : "self" };
     await saveRs(part);
     if (!rs.threadsSaved) rvThreads.value = v === "codex" ? 2 : 1;
     refreshFlowMode();

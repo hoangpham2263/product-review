@@ -435,7 +435,7 @@ function Invoke-AgentRegisterImage {
     }
     $bytes = [IO.File]::ReadAllBytes($output)
     $hash = Get-BytesHash $bytes
-    $status = [ordered]@{ status = 'awaiting_user_review'; ai_image_qa_performed = $false; generation_attempt = $attempt; output = $output; engine = $(if ($env:PR_AGENT_ENGINE -eq 'antigravity' -or $From -match '[\\/]\.gemini[\\/]') { 'antigravity' } else { 'claude-flow' }) }
+    $status = [ordered]@{ status = 'awaiting_user_review'; ai_image_qa_performed = $false; generation_attempt = $attempt; output = $output; engine = $(if ($env:PR_AGENT_ENGINE -eq 'antigravity-flow') { 'antigravity-flow' } elseif ($env:PR_AGENT_ENGINE -eq 'antigravity' -or $From -match '[\\/]\.gemini[\\/]') { 'antigravity' } else { 'claude-flow' }) }
     if ($signCheck) { $status.sign_check = $signCheck }
     [IO.File]::WriteAllText($statusPath, ($status | ConvertTo-Json), $script:Utf8)
     $duplicates = @(Get-ChildItem -LiteralPath $script:Batch.Images -Filter '*.png' | Where-Object { $_.FullName -ne $output -and (Get-BytesHash ([IO.File]::ReadAllBytes($_.FullName))) -eq $hash } | ForEach-Object { $_.BaseName })

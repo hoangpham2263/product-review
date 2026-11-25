@@ -4,7 +4,9 @@
 
 // ---------- helpers ----------
 const modelInfo = { claude: {}, codex: "" };
-const isFlow = (v) => v === "agent" || v === "agent-agy"; // Tạo ảnh: Claude (Flow) or Antigravity, both are the agent image run
+// Tạo ảnh values: codex | agent (Claude (Flow)) | agent-agy (Antigravity, pictures made by itself) | agent-agy-flow (Antigravity (Flow): Antigravity drives Google Flow)
+const isFlow = (v) => v === "agent" || v === "agent-agy" || v === "agent-agy-flow"; // all three are the agent image run (Chạy tiếp, usage lines)
+const usesFlow = (v) => v === "agent" || v === "agent-agy-flow"; // the ones that need Chrome, a Google account and Flow signed in
 const api = async (cmd, args = {}) => {
   const r = await fetch("/api/rpc", { method: "POST", body: JSON.stringify({ cmd, args }) });
   const body = await r.json();
@@ -220,14 +222,14 @@ const run = { active: false, since: 0, total: 0, done: 0, index: 0, stages: new 
 
 // What the next run uses, read from the server (run-settings.json + flow-browser); edited in Cấu hình.
 const TEXT_NAMES = { codex: "Codex", antigravity: "Antigravity CLI", claude: "Claude" };
-const IMAGE_NAMES = { codex: "Codex", agent: "Claude (Flow)", "agent-agy": "Antigravity" };
+const IMAGE_NAMES = { codex: "Codex", agent: "Claude (Flow)", "agent-agy": "Antigravity", "agent-agy-flow": "Antigravity (Flow)" };
 const cfg = { text: "codex", image: "codex", threads: 1, account: "" };
 async function loadCfg() {
   try {
     const saved = await (await fetch("/api/run-settings")).json();
     modelInfo.claude = saved;
     cfg.text = ["codex", "antigravity", "claude"].includes(saved.textBackend) ? saved.textBackend : "codex";
-    cfg.image = saved.imageBackend === "agent" ? (saved.agentBackend === "antigravity" ? "agent-agy" : "agent") : "codex";
+    cfg.image = saved.imageBackend === "agent" ? (saved.agentBackend === "antigravity" ? (saved.agyImages === "flow" ? "agent-agy-flow" : "agent-agy") : "agent") : "codex";
     // the server answers the effective Luồng (saved, else 1); the Codex run keeps its old default 2 until a value is saved (codexThreads)
     cfg.threads = Number.isInteger(Number(saved.threads)) && saved.threads >= 1 && saved.threads <= 4 ? Number(saved.threads) : 1;
     if (cfg.image === "codex" && Number.isInteger(Number(saved.codexThreads))) cfg.threads = Number(saved.codexThreads);
@@ -1626,7 +1628,7 @@ function updateActionAvailability() {
   const busy = run.active || actionLocks.size > 0 || stack.length > 0;
   for (const b of [ui.btnRun, ui.btnSetup, ui.btnLogs, ui.btnReview, ui.btnOut, ui.btnUpdate, ui.btnClearLog, ui.btnAdd, ui.btnBulk, ui.btnClear, ui.btnProjects]) b.disabled = busy;
   // Claude (Flow) cannot start until its own Chrome is signed in to Google Flow.
-  if (cfg.image === "agent" && !flowExtensionMode() && flowLogin.state !== "logged_in") ui.btnRun.disabled = true;
+  if (usesFlow(cfg.image) && !flowExtensionMode() && flowLogin.state !== "logged_in") ui.btnRun.disabled = true;
   ui.btnStop.disabled = !run.active;
   // Chạy tiếp continues a Claude (Flow) run, so it is only offered when Tạo ảnh = Claude (Flow); with Codex, Bắt đầu already continues (finished links leave the queue).
   if (ui.btnResume) ui.btnResume.disabled = busy || !ui.resumeRun || ui.btnRun.disabled || !isFlow(cfg.image);
@@ -1688,7 +1690,7 @@ function agyLabel(id) {
 function updateModelLine() {
   if (!ui.lblModel) return;
   const text = cfg.text, image = cfg.image, parts = [], flowRun = isFlow(image);
-  if (image === "agent-agy") {
+  if (image === "agent-agy" || image === "agent-agy-flow") {
     const effort = { low: "thấp", medium: "vừa", high: "cao", xhigh: "rất cao", max: "tối đa" }[modelInfo.claude.agyEffort] || "mặc định";
     parts.push(`Antigravity ${agyLabel(modelInfo.claude.agyModel)} · mức: ${effort}` + (run.active && run.modelInUse ? ` · đang chạy: ${run.modelInUse}` : ""));
   }
@@ -1699,8 +1701,8 @@ function updateModelLine() {
   }
   if (image === "codex" || (!flowRun && text === "codex")) parts.push(`Codex ${modelInfo.codex || "model mặc định"}`);
   if (!flowRun && text === "antigravity") parts.push("Antigravity CLI");
-  const warn = image === "agent" && !flowExtensionMode() && flowLogin.state === "logged_out" ? "  ·  ⚠ chưa đăng nhập Flow (mở Cấu hình)" : "";
-  ui.lblModel.textContent = `Review: ${flowRun ? IMAGE_NAMES[image] : TEXT_NAMES[text]} · Ảnh: ${IMAGE_NAMES[image]}${image === "agent" ? "" : " · Luồng " + cfg.threads} · ${parts.join("  |  ")}${warn}`;
+  const warn = usesFlow(image) && !flowExtensionMode() && flowLogin.state === "logged_out" ? "  ·  ⚠ chưa đăng nhập Flow (mở Cấu hình)" : "";
+  ui.lblModel.textContent = `Review: ${flowRun ? IMAGE_NAMES[image] : TEXT_NAMES[text]} · Ảnh: ${IMAGE_NAMES[image]}${usesFlow(image) ? "" : " · Luồng " + cfg.threads} · ${parts.join("  |  ")}${warn}`;
   ui.lblModel.title = ui.lblModel.textContent + "\nBấm để đổi trong Cấu hình";
   ui.lblModel.style.color = warn ? "var(--warn)" : "var(--muted)";
 }
@@ -1794,7 +1796,7 @@ const flowAccountCheck = () => window.FlowCheck.flowAccountCheck(flowProfile(), 
 // Before Bắt đầu / Chạy tiếp with Claude (Flow): re-read the saved settings and profiles (accounts, extension, token), stop on a wrong account
 // (the server refuses it too), ask on a warning. Antigravity makes the images itself, so it has no browser to check.
 async function flowPreflight() {
-  if (cfg.image !== "agent") return true;
+  if (!usesFlow(cfg.image)) return true;
   await loadCfg();
   const c = flowAccountCheck();
   if (c.block) { await messageBox(c.block, "Tài khoản Flow"); return false; }
@@ -1803,7 +1805,7 @@ async function flowPreflight() {
 }
 function applyFlowBrowserMode() {
   if (flowExtensionMode()) { flowLogin.state = "extension"; updateActionAvailability(); }
-  else { flowLogin.state = ""; if (cfg.image === "agent") checkFlowLogin(); }
+  else { flowLogin.state = ""; if (usesFlow(cfg.image)) checkFlowLogin(); }
 }
 function showFlowLogin(state) {
   flowLogin.state = state;
@@ -1820,7 +1822,7 @@ async function checkFlowLogin(fresh = false) {
 // Only the sign-in state and the choice of image engine are used here; the Chrome profile, account, token and "Mở Chrome" live in Cấu hình.
 function updateAgentControls() {
   const on = isFlow(cfg.image);
-  if (cfg.image === "agent" && !flowLogin.state && !flowLogin.checking && !flowExtensionMode()) checkFlowLogin();
+  if (usesFlow(cfg.image) && !flowLogin.state && !flowLogin.checking && !flowExtensionMode()) checkFlowLogin();
   updateActionAvailability();
   ui.lblTokens.style.display = ui.lblQuota.style.display = on ? "none" : "";
 }
@@ -1851,7 +1853,7 @@ async function resumeRun() {
   attachAgent(Date.now());
 }
 function attachAgent(started) {
-  Object.assign(run, { lastProgress: null, agent: true, since: 0, total: countUrls(), done: 0, stopped: false, failure: false, started, resultFolder: "", ai: agentName() === "Antigravity" ? "Antigravity (tạo ảnh)" : "Claude (Google Flow)" });
+  Object.assign(run, { lastProgress: null, agent: true, since: 0, total: countUrls(), done: 0, stopped: false, failure: false, started, resultFolder: "", ai: cfg.image === "agent-agy" ? "Antigravity (tạo ảnh)" : cfg.image === "agent-agy-flow" ? "Antigravity (Google Flow)" : "Claude (Google Flow)" });
   setRunning(true);
   setStatus("Đang chạy", "var(--accent)");
   setBar(0, 1, true);
@@ -1892,8 +1894,9 @@ async function finishAgent(st) {
   const secs = Math.floor((Date.now() - run.started) / 1000);
   const took = `${Math.floor(secs / 60)} phút ${secs % 60} giây`;
   const counts = lp && lp.label ? lp.label.replace(/ · \d\d:\d\d.*$/, "") : "";
+  const quota = /CAUSE:QUOTA/.test(st.error || "");
   ui.lblProgress.textContent = st.status === "done" ? `Đã xong lượt chạy${pending > 0 ? ` • ${pending} ảnh chờ duyệt` : ""} • ${took} • ${run.ai}`
-    : st.status === "stopped" ? `Đã dừng${counts ? " • " + counts : ""} • ${took}` : (counts ? `Chưa hoàn tất • ${counts}` : (st.last_text || "Lượt chạy chưa hoàn tất."));
+    : st.status === "stopped" ? `Đã dừng${counts ? " • " + counts : ""} • ${took}` : quota ? `Hết hạn mức Antigravity${st.quota_reset ? " (hồi lúc " + new Date(st.quota_reset).toTimeString().slice(0, 5) + ")" : ""}${counts ? " • " + counts : ""} • chọn Antigravity (Flow) hoặc Codex rồi Chạy tiếp` : (counts ? `Chưa hoàn tất • ${counts}` : (st.last_text || "Lượt chạy chưa hoàn tất."));
   if (st.status === "stopped") { setStatus("Đã dừng", "var(--muted)"); appendLog("Đã dừng. Các link chưa hoàn tất được giữ lại."); }
   else if (st.status === "done" && pending > 0) { setStatus("Chờ bạn duyệt", "var(--ok)"); appendLog(`${runAi(st)} đã xong. ${pending} ảnh chờ bạn duyệt: bấm Duyệt & xuất file (Giữ/Bỏ từng ảnh). ${runAi(st)} không tự Giữ/Bỏ.`); }
   else if (st.status === "done") { setStatus("! Cần kiểm tra", "var(--warn)"); appendLog(`${runAi(st)} đã dừng nhưng chưa có ảnh nào chờ duyệt. Xem tiến trình ở trên.`); }

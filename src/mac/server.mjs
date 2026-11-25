@@ -523,6 +523,7 @@ async function handle(req, res) {
       if (!AGENT_BACKENDS.includes(s2.agentBackend)) s2.agentBackend = "claude";
       for (const k of ["scanAgent", "reviewsAgent", "queueAgent"]) if (!AGENT_BACKENDS.includes(s2[k])) s2[k] = s2.agentBackend; // older windows: the old single agent
       if (s2.agyModel && !isAgyModel(s2.agyModel)) delete s2.agyModel;
+      if (s2.agyImages !== "flow") s2.agyImages = "self";
       s2.threadsSaved = Number.isInteger(s2.threads) && s2.threads >= 1 && s2.threads <= 4;
       if (!s2.threadsSaved) s2.threads = 1;
       s2.codexThreads = s2.threadsSaved ? s2.threads : 2; // the Codex run always started 2 links at once until the person chose otherwise
@@ -543,6 +544,7 @@ async function handle(req, res) {
         if (AGENT_BACKENDS.includes(given.agentBackend)) cur.agentBackend = given.agentBackend;
         for (const k of ["scanAgent", "reviewsAgent", "queueAgent"]) if (AGENT_BACKENDS.includes(given[k])) cur[k] = given[k];
         if (typeof given.agyModel === "string") { if (!given.agyModel) delete cur.agyModel; else if (isAgyModel(given.agyModel)) cur.agyModel = given.agyModel; }
+        if (given.agyImages === "self" || given.agyImages === "flow") cur.agyImages = given.agyImages;
         if (typeof given.agyEffort === "string") { if (!given.agyEffort) delete cur.agyEffort; else if (AGY_EFFORTS.includes(given.agyEffort)) cur.agyEffort = given.agyEffort; }
         if (typeof given.flowAccount === "string") { const v = given.flowAccount.trim(); if (!v) delete cur.flowAccount; else if (v.length <= 120 && /^[^\s@"<>]+@[^\s@"<>]+\.[^\s@"<>]+$/.test(v)) cur.flowAccount = v; }
         // the two separate pairs of the Dự án popup: Thêm vào hàng chờ (count 1-200, scenes 1-4) and Chuẩn bị trước (count 0-500, 0 = all; scenes 1-4)
@@ -567,7 +569,7 @@ async function handle(req, res) {
     const given = JSON.parse((await body(req)).toString("utf8") || "{}");
     if (agent.isActive()) return send(res, 409, { error: "Đã có một lượt AI đang chạy." });
     // Antigravity makes the images itself: no Flow, no Chrome, so no Flow sign-in check.
-    const login = readAgentSettings(workspace, sharedWs).backend === "antigravity" || readFlowBrowser(workspace, sharedWs).mode !== "own" ? { state: "logged_in" } : await flowLogin.status();
+    const agentNow = readAgentSettings(workspace, sharedWs), login = (agentNow.backend === "antigravity" && agentNow.agyImages !== "flow") || readFlowBrowser(workspace, sharedWs).mode !== "own" ? { state: "logged_in" } : await flowLogin.status();
     if (login.state !== "logged_in") return send(res, 409, { error: login.state === "logged_out" ? "Chưa đăng nhập Google Flow trong Chrome riêng: bấm Mở Chrome để đăng nhập, đăng nhập xong đóng cửa sổ đó rồi Kiểm tra lại." : "Chưa chạy được Claude: " + login.detail });
     // given.run (Chạy tiếp): only an existing Claude run of this window (its folder is used as is).
     if (given.run && (!/^agent-[0-9a-z-]{6,60}$/i.test(String(given.run)) || !existsSync(join(workspace, "output", String(given.run), "agent-items.json")))) return send(res, 400, { error: "Không tìm thấy lượt để chạy tiếp." });
