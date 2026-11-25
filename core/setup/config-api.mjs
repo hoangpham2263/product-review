@@ -95,7 +95,7 @@ export function createConfigApi({ hubRoot, pwsh, env = process.env }) {
   };
 
   // The page and its two files, the same from the menu and from every tool's server.
-  const PAGE = { "/setup": [join(here, "page.html"), "text/html"], "/setup/page.js": [join(here, "page.js"), "text/javascript"], "/setup/tool.css": [join(here, "..", "assets", "tool.css"), "text/css"] };
+  const PAGE = { "/setup": [join(here, "page.html"), "text/html"], "/setup/page.js": [join(here, "page.js"), "text/javascript"], "/setup/flow-check.js": [join(here, "flow-check.js"), "text/javascript"], "/setup/tool.css": [join(here, "..", "assets", "tool.css"), "text/css"] };
   return async function handle(req, res, path) {
     if (PAGE[path] && req.method === "GET") {
       res.writeHead(200, { "content-type": `${PAGE[path][1]}; charset=utf-8`, "cache-control": "no-store" });

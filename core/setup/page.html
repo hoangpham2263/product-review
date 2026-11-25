@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Cấu hình</title>
 <link rel="stylesheet" href="/setup/tool.css">
+<script src="/setup/flow-check.js" defer></script>
 <script src="/setup/page.js" defer></script>
 <style>
 /* Cấu hình as a page of its own (core/setup/config-api.mjs serves it to the menu and every tool's server), in the order
@@ -23,9 +24,8 @@
 .item .side { display: flex; flex-direction: column; gap: 6px; align-items: stretch; }
 .item .side .btn { min-width: 110px; }
 .item .err { color: #b06000; font-size: 12px; }
-.ai-model { display: grid; grid-template-columns: minmax(0, 1fr) 240px 190px; gap: 6px 10px; align-items: center; }
-.ai-model .ccustom { grid-column: 2 / span 2; }
-.ai-model .ccustom.bad { border-color: #b06000; }
+.fld .ccustom.bad { border-color: #b06000; }
+.fld.cc:has(.ccustom[style*="hidden"]) { display: none; }
 header .all { margin-left: auto; }
 /* Cài đặt and Tài khoản AI: three short cards side by side (name, state, buttons). */
 #ai, #base { grid-template-columns: repeat(3, minmax(0, 1fr)); }
@@ -34,7 +34,15 @@ header .all { margin-left: auto; }
 #ai .item .side .btn, #base .item .side .btn { min-width: 0; height: 28px; padding: 0 10px; }
 /* What Cài / cập nhật tất cả AI did, one line per AI, under the installed items. */
 #all-result { display: grid; gap: 2px; margin: 10px 0 0; }
-@media (max-width: 860px) { #ai, #base { grid-template-columns: minmax(0, 1fr); } .ai-model { grid-template-columns: minmax(0, 1fr); } .ai-model .ccustom { grid-column: auto; } }
+@media (max-width: 860px) { #ai, #base { grid-template-columns: minmax(0, 1fr); } }
+.fgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 12px 14px; }
+.fld > label { margin: 0 0 4px; }
+.fld .row { display: flex; gap: 6px; align-items: center; }
+.fld .row select, .fld .row input { flex: 1 1 auto; min-width: 0; width: auto; }
+.fld .row .btn { height: 28px; padding: 0 10px; flex: none; }
+.sub-title { margin: 16px 0 8px; padding-top: 12px; border-top: 1px solid var(--line); }
+.fb-check { margin-left: 6px; font-size: 11px; }
+.fb-open .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 6px; background: var(--muted); }
 .note-line { color: var(--muted); font-size: 12px; margin-bottom: 8px; }
 /* Lượt dùng AI: one row per AI and account. */
 .usage { width: 100%; border-collapse: collapse; background: var(--surface); border: 1px solid var(--line); }
@@ -53,18 +61,34 @@ header .all { margin-left: auto; }
 <main>
   <header><button class="btn back" type="button">← Quay lại</button><h1>Cấu hình</h1><button class="btn primary all" type="button">Cài / cập nhật tất cả AI</button><button class="btn again" type="button">Kiểm tra lại</button></header>
   <div class="layout setup-page">
-    <section class="group wide"><h2>1. Cài đặt</h2><div class="note-line">Cần Node.js và Codex để chạy; Antigravity CLI và Claude CLI không bắt buộc. Nút Cài / cập nhật tất cả AI (góc trên) cài những gì còn thiếu và cập nhật Codex, Antigravity CLI.</div><div class="items" id="base"></div><div class="note-line" id="all-result" hidden></div></section>
-    <section class="group wide"><h2>2. Tài khoản AI</h2><div class="note-line">Mỗi AI đăng nhập riêng, có thể là tài khoản khác nhau. Đổi tài khoản ngay ở đây hoặc mở trang web của AI để đăng nhập.</div><div class="items" id="ai"></div></section>
-    <section class="group wide"><h2>3. Model AI của Codex</h2>
-      <div class="ai-model"><span class="muted">Model nhẹ, mức thấp tốn ít token hơn.</span><select class="model"></select><select class="effort"></select></div>
+    <section class="group wide"><h2>1. Cài đặt</h2><div class="items" id="base"></div><div class="note-line" id="all-result" hidden></div></section>
+    <section class="group wide"><h2>2. Tài khoản AI</h2><div class="items" id="ai"></div></section>
+    <section class="group wide" id="run-sec" hidden><h2>3. Cách chạy</h2>
+      <div class="fgrid">
+        <div class="fld"><label>Viết review</label><select class="rv-text"></select></div>
+        <div class="fld"><label>Tạo ảnh</label><select class="rv-image"></select></div>
+        <div class="fld"><label>Luồng</label><input class="rv-threads" type="number" min="1" max="4" step="1"></div>
+      </div>
+      <div id="flow-only" hidden>
+        <div class="sub-title">Trình duyệt cho Claude (Flow)</div>
+        <div class="fgrid">
+          <div class="fld"><label>Chrome profile</label><div class="row"><select class="fb-profile"></select><button class="btn fb-install" type="button" hidden>Cài extension</button></div></div>
+          <div class="fld"><label>Tài khoản Flow <span class="fb-check"></span></label><select class="fb-account"></select></div>
+          <div class="fld fb-token-box" hidden><label class="fb-token-label">Token Playwright (tùy chọn)</label><div class="row"><input class="fb-token" type="password" autocomplete="off" placeholder="Dán token của profile này"><button class="btn fb-token-save" type="button">Lưu</button><button class="btn fb-token-clear" type="button">Xoá</button></div></div>
+          <div class="fld"><label>Đăng nhập Google Flow</label><div class="row"><button class="btn fb-open" type="button"><span class="dot"></span>Mở Chrome để đăng nhập</button><button class="btn fb-recheck" type="button">Kiểm tra lại</button></div></div>
+        </div>
+      </div>
     </section>
-    <section class="group wide"><h2>4. Model AI của Claude</h2>
-      <div class="ai-model"><span class="muted">Áp dụng cho mọi lần Claude chạy trong cửa sổ này (Tạo ảnh Claude (Flow), Viết review, Quét web). Mặc định Sonnet 4.6: làm ổn định việc nhiều bước như điều khiển Flow. Haiku nhẹ nhất nhưng dễ dừng giữa chừng.</span><select class="cmodel"></select><select class="ceffort"></select><input class="ccustom" type="text" maxlength="60" placeholder="Mã model, ví dụ claude-opus-5-5" spellcheck="false" style="visibility:hidden"></div>
+    <section class="group wide"><h2>4. Model Codex</h2>
+      <div class="fgrid"><div class="fld"><label>Model</label><select class="model"></select></div><div class="fld"><label>Mức suy nghĩ</label><select class="effort"></select></div></div>
     </section>
-    <section class="group wide"><h2>5. Agent chạy Flow và model Antigravity</h2>
-      <div class="ai-model"><span class="muted">Agent là AI điều khiển trình duyệt cho Tạo ảnh (Flow), Quét web, Cập nhật review, Thêm vào hàng chờ, Chuẩn bị trước, Gắn nhãn kho ảnh trong cửa sổ này. Chọn Claude (model ở mục 4) hoặc Antigravity (model và mức suy nghĩ ở dưới; để trống thì Antigravity tự chọn model mặc định). Antigravity cần đăng nhập Google ở mục 1.</span><select class="abackend"></select><select class="amodel"></select><select class="aeffort"></select></div>
+    <section class="group wide"><h2>5. Model Claude</h2>
+      <div class="fgrid"><div class="fld"><label>Model</label><select class="cmodel"></select></div><div class="fld"><label>Mức suy nghĩ</label><select class="ceffort"></select></div><div class="fld cc"><label>Mã model</label><input class="ccustom" type="text" maxlength="60" placeholder="claude-opus-5-5" spellcheck="false" style="visibility: hidden"></div></div>
     </section>
-    <section class="group wide"><h2>6. Lượt dùng AI</h2><div class="note-line">Mọi lần gọi AI của các tool trên máy này, theo từng tài khoản. Antigravity, Claude, ChatGPT không cho biết hạn mức: lỗi Hết lượt mà sau đó chưa chạy được lần nào thì tài khoản đó đang hết lượt.</div><div class="usage-wrap"><table class="usage"><thead><tr><th>AI · tài khoản</th><th>Hôm nay</th><th>7 ngày</th><th>30 ngày</th><th>Lỗi gần nhất</th></tr></thead><tbody id="usage"><tr><td colspan="5" class="sub">Đang đọc…</td></tr></tbody></table></div></section>
+    <section class="group wide"><h2>6. Antigravity</h2>
+      <div class="fgrid"><div class="fld"><label>Agent cho Quét web, hàng chờ, chuẩn bị</label><select class="abackend"></select></div><div class="fld"><label>Model</label><select class="amodel"></select></div><div class="fld"><label>Mức suy nghĩ</label><select class="aeffort"></select></div></div>
+    </section>
+    <section class="group wide"><h2>7. Lượt dùng AI</h2><div class="usage-wrap"><table class="usage"><thead><tr><th>AI · tài khoản</th><th>Hôm nay</th><th>7 ngày</th><th>30 ngày</th><th>Lỗi gần nhất</th></tr></thead><tbody id="usage"><tr><td colspan="5" class="sub">Đang đọc…</td></tr></tbody></table></div></section>
   </div>
 </main>
 </body>

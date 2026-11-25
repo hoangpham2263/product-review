@@ -12,8 +12,8 @@ body { background: var(--control); color: var(--ink); font: 12px/1.25 var(--font
 .abs { position: absolute; }
 [hidden] { display: none !important; }
 
-/* Main window: client area 1104 x 801 at the default size, minimum 1024 x 721. */
-#client { position: absolute; inset: 0; min-width: 1024px; min-height: 721px; }
+/* Main window: client area 1104 x 801 at the default size, minimum 1024 x 640. */
+#client { position: absolute; inset: 0; min-width: 1024px; min-height: 640px; }
 .panel { position: absolute; background: var(--control); }
 .card { position: absolute; background: var(--control); border: 1px solid var(--line); }
 .label { position: absolute; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; line-height: 1.35; }

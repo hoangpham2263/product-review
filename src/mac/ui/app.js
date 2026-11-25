@@ -4,7 +4,7 @@
 
 // ---------- helpers ----------
 const modelInfo = { claude: {}, codex: "" };
-const isFlow = (v) => v === "agent" || v === "agent-agy"; // Tạo ảnh: Claude (Flow) or Antigravity (Flow), both are the Flow run
+const isFlow = (v) => v === "agent" || v === "agent-agy"; // Tạo ảnh: Claude (Flow) or Antigravity, both are the agent image run
 const api = async (cmd, args = {}) => {
   const r = await fetch("/api/rpc", { method: "POST", body: JSON.stringify({ cmd, args }) });
   const body = await r.json();
@@ -113,14 +113,14 @@ function shortUrl(link) {
 }
 
 // ---------- fit to the window ----------
-// Laid out for 1024 x 721 at least (#client). A smaller window scales the whole page down to fit instead of cutting
+// Laid out for 1024 x 640 at least (#client). A smaller window scales the whole page down to fit instead of cutting
 // it off; below 60% it stops shrinking and scrolls. Child windows are centred in the page's own (scaled) size.
 let zoom = 1;
 const viewWidth = () => innerWidth / zoom, viewHeight = () => innerHeight / zoom;
 function fitWindow() {
-  zoom = Math.max(0.6, Math.min(1, innerWidth / 1024, innerHeight / 721));
+  zoom = Math.max(0.6, Math.min(1, innerWidth / 1024, innerHeight / 640));
   document.documentElement.style.zoom = zoom === 1 ? "" : String(zoom);
-  document.body.style.overflow = viewWidth() < 1023 || viewHeight() < 720 ? "auto" : "";
+  document.body.style.overflow = viewWidth() < 1023 || viewHeight() < 639 ? "auto" : "";
 }
 fitWindow();
 addEventListener("resize", fitWindow);
@@ -208,6 +208,26 @@ const ui = { client: document.getElementById("client") };
 const state = { rows: [], fallback: false, library: "remote", group: "Áo", version: "", output: "", codex: false };
 const run = { active: false, since: 0, total: 0, done: 0, index: 0, stages: new Map(), jobRows: [], stage: "", stopped: false, failure: false, started: 0, resultFolder: "", anim: 0 };
 
+// What the next run uses, read from the server (run-settings.json + flow-browser); edited in Cấu hình.
+const TEXT_NAMES = { codex: "Codex", antigravity: "Antigravity CLI", claude: "Claude" };
+const IMAGE_NAMES = { codex: "Codex", agent: "Claude (Flow)", "agent-agy": "Antigravity" };
+const cfg = { text: "codex", image: "codex", threads: 2, account: "" };
+async function loadCfg() {
+  try {
+    const saved = await (await fetch("/api/run-settings")).json();
+    modelInfo.claude = saved;
+    cfg.text = ["codex", "antigravity", "claude"].includes(saved.textBackend) ? saved.textBackend : "codex";
+    cfg.image = saved.imageBackend === "agent" ? (saved.agentBackend === "antigravity" ? "agent-agy" : "agent") : "codex";
+    cfg.threads = Number.isInteger(Number(saved.threads)) && saved.threads >= 1 && saved.threads <= 4 ? Number(saved.threads) : 2;
+    cfg.account = String(saved.flowAccount || "").toLowerCase();
+  } catch {}
+  try {
+    const j = await (await fetch("/api/flow-browser")).json();
+    ui.flowBrowserProfiles = j.profiles || [];
+    ui.flowBrowserSaved = j.mode === "own" ? "own" : j.profile || "";
+  } catch {}
+  applyFlowBrowserMode(); updateUsage(); updateAgentControls(); updateModelLine(); refreshModelInfo();
+}
 function buildMain() {
   const c = ui.client;
   // Header (Dock Top, 64).
@@ -304,10 +324,10 @@ function buildMain() {
   header.append(ui.btnReload, ui.btnSetup, ui.btnUpdate, ui.syncLabel, ui.syncBar, ui.btnSessions, ui.sessionsPanel);
 
 
-  // Link sản phẩm & ảnh (20,78 820x376, Top/Left/Right).
-  const cardList = at(el("div", "card"), 20, 78, null, 376, { right: 264 });
+  // Link sản phẩm & ảnh (full width). Every setting lives in Cấu hình; this window only holds what is needed to RUN.
+  const cardList = at(el("div", "card"), 20, 72, null, 290, { right: 24 });
   cardList.append(at(label("Link sản phẩm & ảnh"), 14, 10, null, 20));
-  const editor = at(el("div", "panel"), 14, 36, null, 328, { right: 14 });
+  const editor = at(el("div", "panel"), 14, 36, null, 242, { right: 14 });
   ui.btnAdd = at(button("+ Thêm sản phẩm", true), 0, 0, 160, 34);
   ui.btnBulk = at(button("Nhập hàng loạt"), 172, 0, 150, 34);
   ui.btnClear = at(button("Xóa tất cả"), 334, 0, 120, 34);
@@ -317,214 +337,40 @@ function buildMain() {
   editor.append(ui.btnAdd, ui.btnBulk, ui.btnClear, ui.btnProjects, ui.flow);
   cardList.append(editor);
 
-  // Thao tác (856,78 224x376, Top/Right).
-  const cardActions = at(el("div", "card"), null, 78, 224, 376, { right: 24, left: false });
-  cardActions.append(at(label("Thao tác"), 14, 10, null, 20));
-  // In the order they are used: review the results, open them, then support. Cấu hình is in the header.
-  const names = [["btnReview", "Duyệt & xuất file"], ["btnOut", "Mở kết quả"], ["btnLogs", "Báo lỗi"], ["btnClearLog", "Xóa thông báo"]];
-  names.forEach(([key, text], i) => { ui[key] = at(button(text), 14, 36 + i * 37, 196, 32); cardActions.append(ui[key]); });
-  // Claude (Flow) only: its own Chrome profile must be signed in to Google Flow (workspace/chrome-profile, signed in by hand).
-  // No text lines: the sign-in state is a dot inside the "Mở Chrome để đăng nhập" button (green = signed in, red = signed out, grey = checking / busy / unknown);
-  // the message is its tooltip. Both buttons always stay.
-  // Same 37 px step as the buttons above (36 + 4 * 37): the gap between all buttons is equal.
-  // Second group of the card, a thin divider away from the result buttons: Chrome profile, Tài khoản Flow, then the sign-in button (and Kiểm tra lại in own-Chrome mode).
-  ui.flowLoginBox = at(el("div", "abs"), 0, 36 + names.length * 37, 224, 182);
-  { const divider = at(el("div", "abs"), 14, 0, 196, 1); divider.style.background = "var(--line)"; ui.flowDivider = divider; }
-  ui.btnFlowOpen = at(button("Mở Chrome để đăng nhập"), 14, 110, 196, 32);
-  ui.btnFlowCheck = at(button("Kiểm tra lại"), 14, 147, 196, 32);
-  ui.flowDot = el("span", "", { style: { display: "inline-block", width: "7px", height: "7px", borderRadius: "50%", marginRight: "6px", verticalAlign: "middle", background: "var(--muted)" } });
-  ui.btnFlowOpen.prepend(ui.flowDot);
-  // Which signed-in Google account Flow uses (the profile may hold several; Flow opens the first, which can be the one out of credits).
-  ui.lblFlowAccount = at(label("Tài khoản Flow", "muted"), 14, 58, 84, 14);
-  ui.lblFlowAccount.style.fontSize = "11px"; ui.lblFlowAccount.style.lineHeight = "14px";
-  // The live profile/account check (refreshFlowCheck): a short note on the label row, the full text in its tooltip; never moves anything.
-  ui.flowCheck = at(label("", "muted"), 98, 58, 112, 14);
-  Object.assign(ui.flowCheck.style, { fontSize: "11px", lineHeight: "14px", textAlign: "right", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" });
-  ui.flowAccount = at(combo(), 14, 72, 196, 32);
-  ui.flowAccount.title = "Để trống = Flow tự chọn. Danh sách là các tài khoản Google đã đăng nhập trong profile Chrome đang chọn (hoặc Chrome riêng); Claude sẽ chọn đúng tài khoản đó, không đăng xuất, không đổi tài khoản khác. Đổi profile thì tài khoản tự theo profile (profile chỉ 1 tài khoản); vẫn chọn tay được tài khoản khác.";
-  ui.flowAccount.setItems([""], ["Tự chọn tài khoản Flow"]);
-  // The account list is read from the server: the accounts of the chosen Chrome profile (or of the own Chrome).
-  // prev (profile change) = the account chosen before: the account then follows the new profile (followFlowAccount). On load (prev undefined)
-  // it only follows when the saved account is not signed in to the saved profile. Either way the person can pick another one by hand after.
-  const postFlowAccount = (v) => fetch("/api/run-settings", { method: "POST", body: JSON.stringify({ flowAccount: v }) }).catch(() => {});
-  const loadFlowAccounts = (prev) => fetch("/api/run-settings").then((r) => r.json()).then(async (saved) => {
-    let cur = String(saved.flowAccount || "").toLowerCase();
-    await ui.flowBrowserReady;
-    const p = flowProfile();
-    if (p) {
-      const accounts = (p.accounts || []).map((a) => String(a).toLowerCase());
-      const was = prev === undefined ? cur : prev, want = followFlowAccount(accounts, was);
-      if (prev !== undefined || (cur && !accounts.includes(cur))) {
-        if (want !== cur) await postFlowAccount(want); // the server may have aligned it already (alignFlowAccount)
-        cur = want;
-        if (want !== was) appendLog(want ? `Tài khoản Flow tự theo profile ${p.folder}: ${want}${was ? " (trước: " + was + ")" : ""}. Muốn tài khoản khác thì chọn ở ô Tài khoản Flow.`
-          : `Profile ${p.folder} có ${accounts.length} tài khoản Google: chưa chọn tài khoản Flow${was ? " (bỏ " + was + ": không đăng nhập trong profile này)" : ""}. Chọn ở ô Tài khoản Flow.`);
-      }
-    }
-    const list = [...new Set([...(saved.flowAccounts || []), ...(cur ? [cur] : [])])];
-    ui.flowAccount.setItems(["", ...list], ["Tự chọn tài khoản Flow", ...list]);
-    ui.flowAccount.value = cur;
-    ui.flowAccount.title = ui.flowAccount.value || "Tự chọn tài khoản Flow";
-    ui.flowAccountSaved = ui.flowAccount.value;
-    refreshFlowCheck();
-  }).catch(() => {});
-  ui.flowAccountSaved = "";
-  ui.flowAccount.onchange = () => { const v = ui.flowAccount.value.trim(); ui.flowAccount.title = v || "Tự chọn tài khoản Flow"; refreshFlowCheck(); if (v === ui.flowAccountSaved) return; ui.flowAccountSaved = v; postFlowAccount(v); };
-  // Which browser Claude (Flow) drives: "own" = the tool's own Chrome, or a Chrome profile installed on this machine (everyday Chrome through the Playwright extension).
-  ui.lblFlowBrowser = at(label("Chrome profile", "muted"), 14, 8, 100, 14);
-  ui.lblFlowBrowser.style.fontSize = "11px"; ui.lblFlowBrowser.style.lineHeight = "14px";
-  ui.flowBrowser = at(combo(), 14, 22, 196, 32);
-  ui.flowBrowser.title = "Trình duyệt cho Claude (Flow): Chrome thật của bạn (chọn profile có sẵn trên máy, cần extension Playwright, bấm Connect mỗi lượt) hoặc Chrome riêng của tool.";
-  ui.flowBrowser.setItems([""], ["Đang đọc profile…"]);
-  // Only an explicit change that really differs from the SAVED value is saved (a mouse wheel on a focused list must never change it);
-  // after every load the list shows the saved choice. Profiles without the extension can be given it from the button below.
-  ui.flowBrowserSaved = ""; ui.flowBrowserProfiles = [];
-  ui.flowBrowser.addEventListener("wheel", (e) => { if (document.activeElement === ui.flowBrowser) e.preventDefault(); }, { passive: false });
-  ui.btnInstallExt = at(button("Cài extension"), 112, 6, 98, 18);
-  Object.assign(ui.btnInstallExt.style, { fontSize: "10px", padding: "0 4px", lineHeight: "16px", minHeight: "0" });
-  ui.btnInstallExt.title = "Cài extension vào profile này: mở trang Playwright MCP Bridge trên Chrome Web Store trong đúng profile đã chọn. Bạn tự bấm Thêm vào Chrome; tool không cài thay.";
-  ui.btnInstallExt.hidden = true;
-  // Optional Playwright extension token of the chosen profile (extension mode, profile with the extension): saved = runs connect without the Connect click.
-  // It sits in the slot of "Kiểm tra lại" (that button exists only in own-Chrome mode). The token is never read back: the server only says token_saved.
-  // The input, Lưu and Xoá are ALWAYS there and usable (the person may reset the token in the extension and paste a new one over the saved one);
-  // "đã lưu token" is only a status on the label row.
-  ui.lblToken = at(label("Token Playwright (tùy chọn)", "muted"), 14, 145, 196, 14);
-  Object.assign(ui.lblToken.style, { fontSize: "11px", lineHeight: "14px", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" });
-  ui.tokenInput = at(el("input", "text", { type: "password", autocomplete: "off", placeholder: "Dán token của profile này" }), 14, 160, 100, 24);
-  ui.tokenInput.style.fontSize = "12px";
-  ui.btnTokenSave = at(button("Lưu"), 118, 160, 44, 24);
-  ui.btnTokenClear = at(button("Xoá"), 166, 160, 44, 24);
-  for (const b of [ui.btnTokenSave, ui.btnTokenClear]) Object.assign(b.style, { fontSize: "11px", padding: "0 4px", minHeight: "0", lineHeight: "22px" });
-  const refreshTokenRow = () => {
-    const p = ui.flowBrowserProfiles.find((x) => x.folder === ui.flowBrowser.value);
-    const show = !!p && p.playwright_extension && ui.flowBrowser.value !== "own";
-    for (const n of [ui.lblToken, ui.tokenInput, ui.btnTokenSave, ui.btnTokenClear]) n.style.display = show ? "" : "none";
-    if (!show) return;
-    const saved = !!p.token_saved;
-    ui.tokenInput.disabled = ui.btnTokenSave.disabled = ui.btnTokenClear.disabled = false;
-    ui.tokenInput.placeholder = saved ? "Dán token mới để thay" : "Dán token của profile này";
-    const text = saved ? "Đã lưu token cho " + p.folder + ": chạy không cần bấm Connect. Dán token mới rồi Lưu để thay (khi đã đặt lại token trong extension), Xoá để bỏ" : "Chưa lưu token: mỗi lượt bấm Connect";
-    ui.lblToken.title = ui.tokenInput.title = text + ". Token lấy trên trang của extension Playwright MCP Bridge trong đúng profile này (mỗi profile một token riêng).";
-    ui.btnTokenSave.title = saved ? "Lưu token mới đè lên token đã lưu" : "Lưu token cho " + p.folder;
-    ui.btnTokenClear.title = "Xoá token đã lưu của " + p.folder;
-    ui.lblToken.textContent = saved ? "Token Playwright · đã lưu token" : "Token Playwright (tùy chọn)";
-  };
-  const saveToken = async (token) => {
-    const profile = ui.flowBrowser.value;
-    const r = await fetch("/api/flow-browser/token", { method: "POST", body: JSON.stringify({ profile, token }) }).then((x) => x.json()).catch((e) => ({ error: e.message }));
-    ui.tokenInput.value = "";
-    if (r.error) return messageBox(r.error);
-    const p = ui.flowBrowserProfiles.find((x) => x.folder === profile); if (p) p.token_saved = !!r.token_saved;
-    refreshTokenRow();
-    messageBox(r.token_saved ? "Đã lưu token cho " + profile + ": chạy không cần bấm Connect." : "Đã xoá token. Chưa lưu token: mỗi lượt bấm Connect.");
-  };
-  ui.btnTokenSave.onclick = () => { const t = ui.tokenInput.value.trim(); if (t) saveToken(t); else { messageBox("Dán token (trang Playwright MCP Bridge của profile " + ui.flowBrowser.value + ") vào ô rồi bấm Lưu."); ui.tokenInput.focus(); } };
-  ui.tokenInput.addEventListener("keydown", (e) => { if (e.key === "Enter") ui.btnTokenSave.click(); });
-  ui.btnTokenClear.onclick = () => {
-    const p = ui.flowBrowserProfiles.find((x) => x.folder === ui.flowBrowser.value);
-    if (p && !p.token_saved) { ui.tokenInput.value = ""; return messageBox("Profile " + p.folder + " chưa lưu token."); }
-    if (confirm("Xoá token của " + ui.flowBrowser.value + "? Các lượt sau sẽ cần bấm Connect.")) saveToken("");
-  };
-  const refreshInstallButton = () => { const p = ui.flowBrowserProfiles.find((x) => x.folder === ui.flowBrowser.value); ui.btnInstallExt.hidden = !p || p.playwright_extension; refreshTokenRow(); };
-  const loadFlowBrowser = () => fetch("/api/flow-browser").then((r) => r.json()).then((j) => {
-    ui.flowBrowserProfiles = j.profiles || [];
-    const items = ["own", ...ui.flowBrowserProfiles.map((p) => p.folder)], labels = ["Chrome riêng của tool", ...ui.flowBrowserProfiles.map((p) => ((p.email || p.name || p.folder).split("@")[0]) + " · " + p.folder + (p.playwright_extension ? "" : " · chưa có extension"))];
-    ui.flowBrowser.setItems(items, labels);
-    [...ui.flowBrowser.options].forEach((o, i) => { const p = ui.flowBrowserProfiles[i - 1]; o.title = i === 0 ? "Chrome riêng của tool (profile tách biệt)" : (p.email || p.name || p.folder) + " (" + p.folder + ")" + (p.playwright_extension ? "" : " · chưa có extension Playwright MCP Bridge"); });
-    ui.flowBrowserSaved = j.mode === "own" ? "own" : j.profile;
-    ui.flowBrowser.value = ui.flowBrowserSaved;
-    ui.flowBrowser.title = ui.flowBrowser.selectedOptions[0]?.title || "";
-    refreshInstallButton(); applyFlowBrowserMode(); refreshFlowCheck();
-  }).catch(() => {});
-  // Re-read the profiles (accounts, extension, token) without touching the pickers: before a Flow run and when the window gets focus,
-  // so signing an account in or out of Chrome shows in the check without reopening the app.
-  ui.refreshFlowProfiles = () => fetch("/api/flow-browser").then((r) => r.json()).then((j) => {
-    if (Array.isArray(j.profiles)) ui.flowBrowserProfiles = j.profiles;
-    refreshInstallButton(); refreshFlowCheck();
-  }).catch(() => {});
-  addEventListener("focus", () => { if (ui.flowLoginBox.style.display !== "none" && flowExtensionMode()) ui.refreshFlowProfiles(); });
-  ui.flowBrowser.onchange = async () => {
-    const v = ui.flowBrowser.value;
-    ui.flowBrowser.title = ui.flowBrowser.selectedOptions[0]?.title || "";
-    refreshInstallButton();
-    if (v === ui.flowBrowserSaved) return;
-    const r = await fetch("/api/flow-browser", { method: "POST", body: JSON.stringify(v === "own" ? { mode: "own" } : { mode: "extension", profile: v }) }).then((x) => x.ok).catch(() => false);
-    // The Flow account follows the new profile (prev = the account chosen before the change).
-    if (r) { const prev = ui.flowAccountSaved; ui.flowBrowserSaved = v; refreshSessionBadge(); applyFlowBrowserMode(); refreshFlowCheck(); loadFlowAccounts(prev); } else ui.flowBrowser.value = ui.flowBrowserSaved;
-  };
-  ui.btnInstallExt.onclick = async () => {
-    const r = await fetch("/api/flow-browser/install-extension", { method: "POST", body: JSON.stringify({ profile: ui.flowBrowser.value }) }).then((x) => x.json()).catch((e) => ({ error: e.message }));
-    if (r.error) messageBox(r.error);
-  };
-  ui.flowBrowserReady = loadFlowBrowser();
-  ui.btnFlowOpen.onclick = openFlowLogin;
-  ui.btnFlowCheck.onclick = () => checkFlowLogin(true);
-  ui.flowLoginBox.style.display = "none";
-  ui.flowLoginBox.append(ui.flowDivider, ui.lblFlowBrowser, ui.flowBrowser, ui.btnInstallExt, ui.lblFlowAccount, ui.flowCheck, ui.flowAccount, ui.btnFlowOpen, ui.btnFlowCheck, ui.lblToken, ui.tokenInput, ui.btnTokenSave, ui.btnTokenClear);
-  cardActions.append(ui.flowLoginBox);
-
-  // Run row (20,466 1060x90).
-  const cardRun = at(el("div", "card"), 20, 466, null, 90, { right: 24 });
-  // Bắt đầu, Chạy tiếp, Dừng, status: all before x=460 where the token / quota labels start.
-  ui.btnRun = at(button("Bắt đầu", true), 14, 25, 130, 40);
-  // Chạy tiếp: continues the last stopped / unfinished Claude (Flow) run with its own items, context and sign wording.
-  ui.btnResume = at(button("Chạy tiếp"), 154, 25, 100, 40);
+  // Run card (20,372, full width, 102 high): row 1 = Bắt đầu / Chạy tiếp / Dừng + status on the left, the four result and support buttons on
+  // the right; row 2 = ONE read-only summary of what the next run uses (click = Cấu hình); row 3 = Codex token / quota lines (Codex only).
+  // Left group ends at x=526, right group starts at 980 - 442 = 538 at the minimum width: nothing overlaps.
+  const cardRun = at(el("div", "card"), 20, 372, null, 102, { right: 24 });
+  ui.btnRun = at(button("Bắt đầu", true), 14, 12, 120, 36);
+  // Chạy tiếp: continues the last stopped / unfinished Flow run (Claude or Antigravity) with its own items, context and sign wording.
+  ui.btnResume = at(button("Chạy tiếp"), 142, 12, 96, 36);
   ui.btnResume.disabled = true;
-  ui.btnStop = at(button("Dừng"), 264, 25, 90, 40);
+  ui.btnStop = at(button("Dừng"), 246, 12, 80, 36);
   ui.btnStop.disabled = true;
-  ui.lblStatus = at(label("", "muted"), 366, 32, 90, 26);
+  ui.lblStatus = at(label("", "muted"), 336, 17, 190, 26);
   ui.lblStatus.style.lineHeight = "26px";
-  // The two pickers and Luồng form one block (2 rows of 22 + 5 gap = 49 px), centered in the 90 px card like the buttons: rows at 20 and 47.
-  ui.lblThr = at(label("Luồng:", "muted"), null, 47, 56, 24, { right: 88, left: false });
-  ui.numThr = at(numeric(1, 4, 2), null, 44, 64, 24, { right: 22, left: false });
-  ui.lblThr.style.lineHeight = "24px";
-  // What the next run uses (read-only; model and effort are chosen in Cấu hình): one compact line under the two pickers.
-  ui.lblModel = at(label("", "muted"), null, 70, 376, 16, { right: 22, left: false });
-  Object.assign(ui.lblModel.style, { fontSize: "11px", lineHeight: "16px", textAlign: "right" });
-  // Which AI does the work: Codex, or the sites in the tools' own Chrome (signed in from Cấu hình). Viết review covers
-  // every text step; Tạo ảnh the photo. Remembered on this machine.
-  const picker = (text, y, key, values, labels) => {
-    const name = at(label(text, "muted"), null, y, 76, 22, { right: 316, left: false });
-    name.style.lineHeight = "22px";
-    const box = at(combo(), null, y, 150, 22, { right: 158, left: false });
-    box.setItems(values, labels);
-    try { box.value = localStorage.getItem(key) || values[0]; } catch {}
-    if (!box.value) box.value = values[0];
-    box.onchange = () => {
-      try { localStorage.setItem(key, box.value); } catch {}
-      // Tạo ảnh: Claude (Flow) and Antigravity (Flow) are the same Flow run driven by a different agent (agentBackend).
-      if (key === "imageBackend") { const part = isFlow(box.value) ? { imageBackend: "agent", agentBackend: box.value === "agent-agy" ? "antigravity" : "claude" } : { imageBackend: "codex" }; if (part.agentBackend) modelInfo.claude.agentBackend = part.agentBackend; saveRunSettings(part); }
-      else saveRunSettings({ [key]: box.value });
-      updateUsage(); updateAgentControls(); refreshModelInfo();
-    };
-    return [name, box];
-  };
-  [ui.lblText, ui.cmbText] = picker("Viết review:", 20, "textBackend", ["codex", "antigravity", "claude"], ["Codex", "Antigravity CLI", "Claude"]);
-  [ui.lblBackend, ui.cmbBackend] = picker("Tạo ảnh:", 47, "imageBackend", ["codex", "agent", "agent-agy"], ["Codex", "Claude (Flow)", "Antigravity (Flow)"]);
-  // Luồng, Viết review and Tạo ảnh are kept in workspace/config/run-settings.json (the server), so they are the same next time.
-  const saveRunSettings = (part) => fetch("/api/run-settings", { method: "POST", body: JSON.stringify(part) }).catch(() => {});
-  ui.numThr.onchange = () => saveRunSettings({ threads: ui.numThr.value });
-  fetch("/api/run-settings").then((r) => r.json()).then((saved) => {
-    if (saved.threads) ui.numThr.value = saved.threads;
-    modelInfo.claude = saved;
-    loadFlowAccounts();
-    if (["codex", "antigravity", "claude"].includes(saved.textBackend)) ui.cmbText.value = saved.textBackend;
-    if (saved.imageBackend === "agent") ui.cmbBackend.value = saved.agentBackend === "antigravity" ? "agent-agy" : "agent";
-    else if (saved.imageBackend === "codex") ui.cmbBackend.value = "codex";
-    updateUsage();
-    refreshModelInfo();
-    updateAgentControls();
-    resumeAgent();
-  }).catch(() => {});
-  // Tokens this run has used (added up from each Codex call) and the quota left, refreshed in the background.
-  // They shrink with the window (cut with …) so they never run under the pickers on the right.
-  ui.lblTokens = at(label("", "muted"), 460, 25, null, 20, { right: 400 });
-  ui.lblQuota = at(label("", "muted"), 460, 45, null, 20, { right: 400 });
-  for (const l of [ui.lblTokens, ui.lblQuota]) Object.assign(l.style, { fontSize: "11px", lineHeight: "20px" });
-  cardRun.append(ui.btnRun, ui.btnResume, ui.btnStop, ui.lblStatus, ui.lblTokens, ui.lblQuota, ui.lblText, ui.cmbText, ui.lblBackend, ui.cmbBackend, ui.lblThr, ui.numThr, ui.lblModel);
+  // In the order they are used: review the results, open them, then support. Cấu hình is in the header. Right-anchored: the last one is at the edge.
+  { let rx = 14;
+    for (const [key, text, w] of [["btnClearLog", "Xóa thông báo", 108], ["btnLogs", "Báo lỗi", 80], ["btnOut", "Mở kết quả", 96], ["btnReview", "Duyệt & xuất file", 126]]) {
+      ui[key] = at(button(text), null, 12, w, 36, { right: rx, left: false }); rx += w + 6; cardRun.append(ui[key]);
+    } }
+  // What the next run uses (read-only; everything is chosen in Cấu hình): one compact line, a click opens Cấu hình.
+  ui.lblModel = at(label("", ""), 14, 56, null, 18, { right: 14 });
+  Object.assign(ui.lblModel.style, { fontSize: "11px", lineHeight: "18px", cursor: "pointer" });
+  ui.lblModel.onclick = () => { if (!ui.btnSetup.disabled) showSetupDialog(); };
+  // Luồng, Viết review, Tạo ảnh, Chrome profile, Tài khoản Flow, token: workspace/config/run-settings.json + flow-browser (the server), edited in Cấu hình.
+  // Re-read here whenever this window is shown again, so a change made in Cấu hình is used by the next run without a reload.
+  loadCfg().then(resumeAgent);
+  addEventListener("focus", () => loadCfg());
+  addEventListener("pageshow", (e) => { if (e.persisted) loadCfg(); });
+  // Tokens this run has used (added up from each Codex call) and the quota left, refreshed in the background (Codex only).
+  ui.lblTokens = at(label("", "muted"), 14, 78, 440, 16);
+  ui.lblQuota = at(label("", "muted"), 460, 78, null, 16, { right: 14 });
+  for (const l of [ui.lblTokens, ui.lblQuota]) Object.assign(l.style, { fontSize: "11px", lineHeight: "16px" });
+  cardRun.append(ui.btnRun, ui.btnResume, ui.btnStop, ui.lblStatus, ui.lblTokens, ui.lblQuota, ui.lblModel);
 
   // Tiến trình & thông báo (20,508 1060x282, all anchors).
-  const cardLog = at(el("div", "card"), 20, 568, null, null, { right: 24, bottom: 10 });
+  const cardLog = at(el("div", "card"), 20, 484, null, null, { right: 24, bottom: 10 });
   cardLog.append(at(label("Tiến trình & thông báo"), 14, 10, 150, 20));
   // always-visible run line: which feature runs (or ran last), for which project, since when, last step
   ui.runLine = at(label("", "muted"), 170, 10, null, 20, { right: 14 });
@@ -538,7 +384,7 @@ function buildMain() {
   ui.txtLog = at(el("textarea", "text", { readOnly: true }), 14, 80, null, null, { right: 14, bottom: 12 });
   cardLog.append(ui.bar, ui.lblProgress, ui.txtLog);
 
-  c.append(header, cardList, cardActions, cardRun, cardLog);
+  c.append(header, cardList, cardRun, cardLog);
 }
 
 function appendLog(text) { if (text) { ui.txtLog.value += text + "\n"; ui.txtLog.scrollTop = ui.txtLog.scrollHeight; } }
@@ -1732,17 +1578,12 @@ function showUpdateDialog() {
 const actionLocks = new Set();
 function updateActionAvailability() {
   const busy = run.active || actionLocks.size > 0 || stack.length > 0;
-  for (const b of [ui.btnFlowOpen, ui.btnFlowCheck]) if (b) b.disabled = busy || flowLogin.checking;
   for (const b of [ui.btnRun, ui.btnSetup, ui.btnLogs, ui.btnReview, ui.btnOut, ui.btnUpdate, ui.btnClearLog, ui.btnAdd, ui.btnBulk, ui.btnClear, ui.btnProjects]) b.disabled = busy;
   // Claude (Flow) cannot start until its own Chrome is signed in to Google Flow.
-  if (ui.cmbBackend?.value === "agent" && !flowExtensionMode() && flowLogin.state !== "logged_in") ui.btnRun.disabled = true;
+  if (cfg.image === "agent" && !flowExtensionMode() && flowLogin.state !== "logged_in") ui.btnRun.disabled = true;
   ui.btnStop.disabled = !run.active;
   // Chạy tiếp continues a Claude (Flow) run, so it is only offered when Tạo ảnh = Claude (Flow); with Codex, Bắt đầu already continues (finished links leave the queue).
-  if (ui.btnResume) ui.btnResume.disabled = busy || !ui.resumeRun || ui.btnRun.disabled || !isFlow(ui.cmbBackend?.value);
-  ui.numThr.enabled = !busy;
-  ui.cmbText.disabled = busy;
-  // Both modes keep image generation enabled.
-  ui.cmbBackend.disabled = busy;
+  if (ui.btnResume) ui.btnResume.disabled = busy || !ui.resumeRun || ui.btnRun.disabled || !isFlow(cfg.image);
   ui.flow.style.pointerEvents = busy ? "none" : "";
 }
 function setActionBusy(reason, on) {
@@ -1788,7 +1629,7 @@ function claudeLabel(id) {
   for (const g of (modelInfo.claude.claudeModelGroups || [])) { const m = g.models.find((x) => x.id === id); if (m) return [m.label.split(" · ")[0], id]; }
   return [id, id];
 }
-// The Agent (Cấu hình, mục 5) that drives the browser for Tạo ảnh (Flow) and the other agent runs: Claude or Antigravity.
+// The Agent (Cấu hình, mục Agent) that drives the browser for Tạo ảnh (Flow) and the other agent runs: Claude or Antigravity.
 const agentName = () => (modelInfo.claude.agentBackend === "antigravity" ? "Antigravity" : "Claude");
 function agyLabel(id) {
   if (!id) return "model mặc định";
@@ -1796,22 +1637,23 @@ function agyLabel(id) {
   return id;
 }
 function updateModelLine() {
-  if (!ui.lblModel || !ui.cmbText) return;
-  const text = ui.cmbText.value, image = ui.cmbBackend.value;
-  const parts = [];
-  if (isFlow(image) && agentName() === "Antigravity") {
+  if (!ui.lblModel) return;
+  const text = cfg.text, image = cfg.image, parts = [];
+  if (image === "agent-agy") {
     const effort = { low: "thấp", medium: "vừa", high: "cao", xhigh: "rất cao", max: "tối đa" }[modelInfo.claude.agyEffort] || "mặc định";
     parts.push(`Antigravity ${agyLabel(modelInfo.claude.agyModel)} · mức: ${effort}` + (run.active && run.modelInUse ? ` · đang chạy: ${run.modelInUse}` : ""));
   }
-  if (text === "claude" || (isFlow(image) && agentName() === "Claude")) {
+  if (text === "claude" || image === "agent") {
     const [name, id] = claudeLabel(modelInfo.claude.claudeModel);
     const effort = { low: "thấp", medium: "vừa", high: "cao", xhigh: "rất cao", max: "tối đa" }[modelInfo.claude.claudeEffort] || "mặc định";
     parts.push(`Claude ${name === id ? id : name + " (" + id + ")"} · mức: ${effort}` + (run.active && run.modelInUse ? ` · đang chạy: ${run.modelInUse}` : ""));
   }
   if (text === "codex" || image === "codex") parts.push(`Codex ${modelInfo.codex || "model mặc định"}`);
-  if (text === "antigravity" && !(isFlow(image) && agentName() === "Antigravity")) parts.push("Antigravity CLI");
-  ui.lblModel.textContent = parts.join("  |  ");
-  ui.lblModel.title = ui.lblModel.textContent;
+  if (text === "antigravity" && image !== "agent-agy") parts.push("Antigravity CLI");
+  const warn = image === "agent" && !flowExtensionMode() && flowLogin.state === "logged_out" ? "  ·  ⚠ chưa đăng nhập Flow (mở Cấu hình)" : "";
+  ui.lblModel.textContent = `Review: ${TEXT_NAMES[text]} · Ảnh: ${IMAGE_NAMES[image]} · Luồng ${cfg.threads} · ${parts.join("  |  ")}${warn}`;
+  ui.lblModel.title = ui.lblModel.textContent + "\nBấm để đổi trong Cấu hình";
+  ui.lblModel.style.color = warn ? "var(--warn)" : "var(--muted)";
 }
 async function refreshModelInfo() {
   try { const r = await (await fetch("/api/run-settings")).json(); modelInfo.claude = r; } catch {}
@@ -1821,9 +1663,9 @@ async function refreshModelInfo() {
 window.addEventListener("focus", refreshModelInfo);
 function updateUsage() {
   updateModelLine();
-  if (!ui.lblTokens || !ui.cmbText) return;
+  if (!ui.lblTokens) return;
   const t = run.tokens || { in: 0, cached: 0, out: 0 };
-  const [text, image] = run.active ? [run.text, run.image] : [ui.cmbText.value, ui.cmbBackend.value];
+  const [text, image] = run.active ? [run.text, run.image] : [cfg.text, cfg.image];
   const usesCodex = text === "codex" || image === "codex";
   const parts = Object.entries(run.calls || {}).map(([k, n]) => `${(CALL_NAMES[k] || [k])[0]}: ${formatCount(n)} ${(CALL_NAMES[k] || [, "lượt"])[1]}`);
   if (t.in || t.out) parts.unshift(`Token: ${formatCount(t.in + t.out)} · vào ${formatCount(t.in)} · ra ${formatCount(t.out)}`);
@@ -1868,7 +1710,7 @@ function receive(event) {
 async function startBatch() {
   if (run.active) return;
   // Use the selected image provider for either run mode.
-  if (isFlow(ui.cmbBackend.value)) return startAgent();
+  if (isFlow(cfg.image)) return startAgent();
   try { await saveQueue(true); } catch (e) { return appendLog(e.message); }
   if (!countUrls()) return messageBox("Vui lòng thêm ít nhất một link sản phẩm.");
   if (!state.codex) return messageBox('Chưa có công cụ xử lý. Bấm "Cấu hình" để xem hướng dẫn.');
@@ -1878,10 +1720,10 @@ async function startBatch() {
   for (const r of state.rows) r.stage = null;
   await updateReviewButton();
   // The AIs chosen are the only ones used: nothing falls back to Codex without asking (finish()).
-  Object.assign(run, { text: ui.cmbText.value, image: ui.cmbBackend.value });
+  Object.assign(run, { text: cfg.text, image: cfg.image });
   // Shown on the progress line for the whole run: which AI writes, which one draws.
-  run.ai = `Viết review: ${ui.cmbText.selectedOptions[0]?.text} · ` + `Tạo ảnh: ${ui.cmbBackend.selectedOptions[0]?.text}`;
-  const r = await fetch("/api/run", { method: "POST", body: JSON.stringify({ threads: ui.numThr.value, backend: run.image, text: run.text }) });
+  run.ai = `Viết review: ${TEXT_NAMES[cfg.text]} · ` + `Tạo ảnh: ${IMAGE_NAMES[cfg.image]}`;
+  const r = await fetch("/api/run", { method: "POST", body: JSON.stringify({ threads: cfg.threads, backend: run.image, text: run.text }) });
   if (!r.ok) {
     const body = await r.json().catch(() => ({}));
     return appendLog("Chưa khởi động được lượt xử lý: " + (body.error || r.status));
@@ -1898,73 +1740,25 @@ const flowLogin = { state: "", checking: false };
 const flowExtensionMode = () => !!ui.flowBrowserSaved && ui.flowBrowserSaved !== "own";
 // The chosen everyday-Chrome profile ({ folder, email, accounts, ... } from /api/flow-browser), or null in own-Chrome mode.
 const flowProfile = () => (flowExtensionMode() && ui.flowBrowserProfiles?.find((x) => x.folder === ui.flowBrowserSaved)) || null;
-// Same rule as core/setup/flow-browser.mjs followFlowAccount: the profile's only account; with several the current one if signed in there, else none.
-function followFlowAccount(accounts, current = "") {
-  const list = [...new Set((accounts || []).map((a) => String(a || "").toLowerCase()).filter(Boolean))], cur = String(current || "").toLowerCase();
-  if (list.length === 1) return list[0];
-  return cur && list.includes(cur) ? cur : "";
-}
-// Google's anti-bot flag hits a whole Chrome PROFILE: a Flow profile should hold one Google account and Flow should use it.
-// block = the chosen account is not signed in to the chosen profile (Flow would open another account); warn = the profile holds several
-// accounts (or none). Accounts come from Chrome's Local State / Preferences account_info (localChromeProfiles on the server).
-function flowAccountCheck() {
-  const p = flowProfile();
-  if (!p) return { block: "", warn: "", short: "" };
-  const accounts = (p.accounts || []).map((a) => String(a).toLowerCase()), acct = String(ui.flowAccount?.value || "").toLowerCase();
-  const name = p.folder + (p.email ? " (" + p.email + ")" : "");
-  let block = "", warn = "", short = "";
-  if (acct && !accounts.includes(acct)) {
-    block = `Tài khoản Flow ${acct} không đăng nhập trong profile ${name}${accounts.length ? " (có: " + accounts.join(", ") + ")" : ""}: Flow sẽ mở nhầm tài khoản. Cách sửa: chọn tài khoản của profile này ở ô Tài khoản Flow, hoặc chọn profile Chrome có ${acct}, hoặc đăng nhập ${acct} vào profile này.`;
-    short = "● Sai profile";
-  }
-  if (accounts.length > 1) { warn = `Profile này có ${accounts.length} tài khoản (${accounts.join(", ")}): Google có thể khoá cả profile; nên dùng profile chỉ 1 tài khoản cho Flow.`; short = short || "● " + accounts.length + " tài khoản"; }
-  else if (!accounts.length) { warn = "Profile " + name + " chưa đăng nhập tài khoản Google nào: đăng nhập đúng 1 tài khoản cho Flow vào profile này (nút Mở Chrome để đăng nhập)."; short = short || "● Chưa đăng nhập"; }
-  return { block, warn, short };
-}
-// Live under the pickers: a short note on the Tài khoản Flow label row (full text in its tooltip) and the account box border.
-function refreshFlowCheck() {
-  if (!ui.flowCheck) return;
-  const c = flowAccountCheck();
-  ui.flowCheck.textContent = c.short;
-  ui.flowCheck.title = [c.block, c.warn].filter(Boolean).join("\n\n");
-  ui.flowCheck.style.color = c.block ? "var(--error)" : "var(--warn)";
-  ui.flowAccount.title = (ui.flowAccount.value || "Tự chọn tài khoản Flow") + (ui.flowCheck.title ? "\n\n" + ui.flowCheck.title : "");
-  ui.flowAccount.style.borderColor = c.block ? "var(--error)" : c.warn ? "var(--warn)" : "";
-}
-// Before Bắt đầu / Chạy tiếp with Claude (Flow): re-read the profiles, stop on a wrong account (the server refuses it too), ask on a warning.
+// The Flow profile / account rule is shared with Cấu hình (core/setup/flow-check.js, window.FlowCheck): one source.
+const flowAccountCheck = () => window.FlowCheck.flowAccountCheck(flowProfile(), cfg.account);
+// Before Bắt đầu / Chạy tiếp with Claude (Flow): re-read the saved settings and profiles (accounts, extension, token), stop on a wrong account
+// (the server refuses it too), ask on a warning. Antigravity makes the images itself, so it has no browser to check.
 async function flowPreflight() {
-  if (ui.cmbBackend?.value === "agent-agy") return true; // Antigravity makes the images itself: no Chrome profile, no Flow account
-  await ui.refreshFlowProfiles?.();
+  if (cfg.image !== "agent") return true;
+  await loadCfg();
   const c = flowAccountCheck();
   if (c.block) { await messageBox(c.block, "Tài khoản Flow"); return false; }
   if (c.warn) return (await messageBox(c.warn + "\n\nVẫn chạy với profile này?", "Kiểm tra profile Chrome", ["Yes", "No"], { Yes: "Vẫn chạy", No: "Huỷ" })) === "Yes";
   return true;
 }
 function applyFlowBrowserMode() {
-  const ext = flowExtensionMode();
-  ui.flowDot.style.display = ext ? "none" : "inline-block";
-  ui.btnFlowCheck.style.display = ext ? "none" : "";
-  if (ext) {
-    flowLogin.state = "extension";
-    ui.btnFlowOpen.title = "Mở Flow trong profile Chrome đã chọn (" + (ui.flowBrowser.selectedOptions[0]?.text || "") + "), đúng tài khoản Flow đã chọn: thêm một tab vào Chrome đang mở, bạn đăng nhập hoặc kiểm tra ở đó. Tool không kiểm tra đăng nhập ở chế độ này.";
-    updateActionAvailability();
-  } else {
-    ui.btnFlowOpen.title = "Mở Chrome riêng của tool để đăng nhập Google Flow (đăng nhập xong đóng cửa sổ đó rồi Kiểm tra lại).";
-    flowLogin.state = ""; if (ui.cmbBackend?.value === "agent") checkFlowLogin();
-  }
+  if (flowExtensionMode()) { flowLogin.state = "extension"; updateActionAvailability(); }
+  else { flowLogin.state = ""; if (cfg.image === "agent") checkFlowLogin(); }
 }
-const FLOW_TEXT = {
-  logged_in: ["Đã đăng nhập Google Flow", "var(--ok)"],
-  logged_out: ["Chưa đăng nhập: nút Bắt đầu đang bị khoá.", "var(--warn)"],
-  busy: ["Đang bận (Chrome riêng đang mở hoặc Claude đang chạy).", "var(--warn)"],
-  error: ["Chưa kiểm tra được: bấm Kiểm tra lại.", "var(--warn)"],
-};
-function showFlowLogin(state, detail) {
+function showFlowLogin(state) {
   flowLogin.state = state;
-  const [text, color] = state === "checking" ? ["Đang kiểm tra…", "var(--muted)"] : FLOW_TEXT[state] || ["", "var(--muted)"];
-  // The dot in the button says it all; the message and any detail from the check are its tooltip.
-  ui.flowDot.style.background = state === "logged_in" ? "var(--ok)" : state === "logged_out" ? "var(--error)" : "var(--muted)";
-  ui.btnFlowOpen.title = (text || "Google Flow") + (detail ? ` (${detail})` : "");
+  updateModelLine();
   updateActionAvailability();
 }
 async function checkFlowLogin(fresh = false) {
@@ -1972,21 +1766,12 @@ async function checkFlowLogin(fresh = false) {
   flowLogin.checking = true; showFlowLogin("checking");
   const r = await fetch("/api/flow-login/status" + (fresh ? "?fresh=1" : "")).then((x) => x.json()).catch(() => null);
   flowLogin.checking = false;
-  showFlowLogin(r?.state || "error", r?.detail || "");
+  showFlowLogin(r?.state || "error");
 }
-async function openFlowLogin() {
-  const r = await fetch("/api/flow-login/open", { method: "POST", body: "{}" });
-  const body = await r.json().catch(() => ({}));
-  if (!r.ok) return appendLog("Chưa mở được Chrome đăng nhập: " + (body.error || r.status));
-  if (flowExtensionMode()) return appendLog("Đã mở Flow trong profile Chrome đã chọn (thêm một tab vào Chrome đang mở).");
-  appendLog("Đã mở Chrome riêng của Claude. Đăng nhập Google, đóng cửa sổ đó rồi bấm Kiểm tra lại.");
-  showFlowLogin("busy");
-}
+// Only the sign-in state and the choice of image engine are used here; the Chrome profile, account, token and "Mở Chrome" live in Cấu hình.
 function updateAgentControls() {
-  const on = isFlow(ui.cmbBackend?.value);
-  if (!ui.flowLoginBox) return;
-  ui.flowLoginBox.style.display = ui.cmbBackend.value === "agent" ? "" : "none"; // Chrome profile / Flow account / sign-in only for Claude (Flow)
-  if (ui.cmbBackend.value === "agent" && !flowLogin.state && !flowLogin.checking && !flowExtensionMode()) checkFlowLogin();
+  const on = isFlow(cfg.image);
+  if (cfg.image === "agent" && !flowLogin.state && !flowLogin.checking && !flowExtensionMode()) checkFlowLogin();
   updateActionAvailability();
   ui.lblTokens.style.display = ui.lblQuota.style.display = on ? "none" : "";
 }
@@ -1995,7 +1780,7 @@ async function startAgent() {
   if (!countUrls()) return messageBox("Vui lòng thêm ít nhất một link sản phẩm.");
   if (!(await flowPreflight())) return;
   ui.txtLog.value = "";
-  const r = await fetch("/api/agent/run", { method: "POST", body: JSON.stringify({ text: ui.cmbText.value }) });
+  const r = await fetch("/api/agent/run", { method: "POST", body: JSON.stringify({ text: cfg.text }) });
   if (!r.ok) { const body = await r.json().catch(() => ({})); return appendLog("Chưa khởi động được " + agentName() + ": " + (body.error || r.status)); }
   attachAgent(Date.now());
 }
@@ -2008,7 +1793,7 @@ async function refreshResumable() {
 }
 async function resumeRun() {
   if (!ui.resumeRun) return;
-  if (!isFlow(ui.cmbBackend?.value)) return appendLog("Chạy tiếp chỉ dùng cho Tạo ảnh = " + agentName() + " (Flow). Với Codex, bấm Bắt đầu: các link đã xong tự rời hàng chờ.");
+  if (!isFlow(cfg.image)) return appendLog("Chạy tiếp chỉ dùng khi Tạo ảnh = Claude (Flow) hoặc Antigravity (chọn trong Cấu hình). Với Codex, bấm Bắt đầu: các link đã xong tự rời hàng chờ.");
   if (!(await flowPreflight())) return;
   ui.txtLog.value = "";
   const r = await fetch("/api/agent/run", { method: "POST", body: JSON.stringify({ run: ui.resumeRun }) });
@@ -2094,12 +1879,13 @@ async function finish(r) {
   await updateReviewButton();
   // Another AI was chosen and some links failed: Codex is the steady one, but only on the user's yes, and only for
   // this retry (the choices shown go back to theirs next time).
-  const others = [run.text !== "codex" && ui.cmbText.selectedOptions[0]?.text, run.image !== "codex" && run.image !== "none" && ui.cmbBackend.selectedOptions[0]?.text].filter(Boolean);
+  const others = [run.text !== "codex" && TEXT_NAMES[run.text], run.image !== "codex" && run.image !== "none" && IMAGE_NAMES[run.image]].filter(Boolean);
   if (!r.stopped && (r.exitCode !== 0 || run.failure) && others.length && countUrls()) {
     const answer = await messageBox(`Một số sản phẩm chưa xong với ${others.join(" và ")}. Chạy lại các link còn lại bằng Codex?`, "Chạy lại bằng Codex", ["Yes", "No"], { Yes: "Chạy bằng Codex", No: "Không" });
     if (answer === "Yes") {
-      if (run.text !== "codex") ui.cmbText.value = "codex";
-      if (run.image !== "codex" && run.image !== "none") ui.cmbBackend.value = "codex";
+      // this retry only: the saved choices in Cấu hình are kept
+      if (run.text !== "codex") cfg.text = "codex";
+      if (run.image !== "codex" && run.image !== "none") cfg.image = "codex";
       startBatch();
     }
   }

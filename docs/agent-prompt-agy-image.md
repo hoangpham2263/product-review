@@ -1,6 +1,6 @@
 # Agent prompt, image run with Antigravity (Tạo ảnh = Antigravity: no Google Flow, no Chrome)
 
-Used only when the agent is Antigravity (Cấu hình mục 5 / picker Tạo ảnh = Antigravity) and the run is the image run (mode "flow"): `buildPrompt` in `core/setup/agent-run.mjs` reads this file instead of `agent-prompt.md` (which stays the Claude + Google Flow prompt). Same placeholders (`{{TOOL}}`, `{{RUN}}`, `{{OPTIONS}}`) and the same CLI; only step 3 differs: Antigravity makes the picture itself through its built-in `image-generator` subagent. Every image rule (sign wording, custom logo, worn variation, aspect) comes from `flow-brief` and the context steps, unchanged. No Playwright MCP, no Chrome profile, no Flow account, no pacing gate, no download lock in this run.
+Used only when the agent is Antigravity (Cấu hình mục 3 Tạo ảnh = Antigravity) and the run is the image run (mode "flow"): `buildPrompt` in `core/setup/agent-run.mjs` reads this file instead of `agent-prompt.md` (which stays the Claude + Google Flow prompt). Same placeholders (`{{TOOL}}`, `{{RUN}}`, `{{OPTIONS}}`) and the same CLI; only step 3 differs: Antigravity makes the picture itself through its built-in `image-generator` subagent. Every image rule (sign wording, custom logo, worn variation, aspect) comes from `flow-brief` and the context steps, unchanged. No Playwright MCP, no Chrome profile, no Flow account, no pacing gate, no download lock in this run.
 
 ```text
 TASK: Product Review — create images with Antigravity's image generator and write the reviews — agent: Antigravity

@@ -36,16 +36,16 @@
   const SITES = { login: [["Mở ChatGPT", "chatgpt"]] };
   const WAIT = {
     install: "Đang cài…",
-    login: "Đang mở trang đăng nhập ChatGPT trong Chrome…",
-    antigravity: "Đã mở Terminal chạy Antigravity: gõ /logout nếu muốn đổi tài khoản, rồi /login và đăng nhập Google trên trang mở ra. Xong bấm Kiểm tra lại.",
-    site: "Đã mở trang trong Chrome. Đăng nhập hoặc đổi tài khoản ở đó, xong bấm Kiểm tra lại.",
+    login: "Đang mở trang đăng nhập…",
+    antigravity: "Đã mở Terminal: gõ /login, xong bấm Kiểm tra lại.",
+    site: "Đã mở trang. Xong bấm Kiểm tra lại.",
   };
 
   // Cài / cập nhật tất cả AI: Codex and Antigravity CLI (server: step update-all), then the check again.
   $(".all").onclick = async () => {
     const button = $(".all"), note = $("#all-result");
     button.disabled = true; note.hidden = false;
-    note.textContent = "Đang cài và cập nhật Codex, Antigravity CLI… có thể mất vài phút, đừng đóng cửa sổ.";
+    note.textContent = "Đang cài và cập nhật…";
     const r = await post("/api/setup-step", { step: "update-all" });
     const results = r.results || [{ name: "Lỗi", ok: false, message: r.error || "Không chạy được." }];
     note.replaceChildren(...results.map((x) => el("div", "", `${x.ok ? "✔" : "✖"} ${x.name}${x.message ? ": " + x.message : ""}`)));
@@ -73,7 +73,9 @@
       if (!NAMES[step.Id]) row.name.textContent = step.Title;
       const [mark, color] = marks[step.State] || ["○", ""];
       row.mark.textContent = mark; row.mark.style.color = color;
-      row.detail.textContent = step.Detail || "";
+      // Status only: the first clause of the check's detail ("Chưa cài", "Đã đăng nhập"), never its explanation.
+      const brief = (d) => String(d || "").split(/\.\s|\s\(|\s[—–-]\s|:\s/)[0].trim();
+      row.detail.textContent = brief(step.Detail);
       // The AIs: whose account, and what it is used for; Codex also shows what is left of its quota.
       const isAi = AI.includes(step.Id);
       row.account.hidden = !isAi;
@@ -81,9 +83,8 @@
       const lapsed = { expired: " · hết hạn", signedout: " · đã đăng xuất" }[step.SignIn] || "";
       row.account.textContent = step.Account ? `Tài khoản: ${step.Account}${lapsed}` : step.State === "ok" ? "Tài khoản: chưa đọc được email" : "Tài khoản: chưa đăng nhập";
       row.account.classList.toggle("none", !step.Account || !!lapsed);
-      row.uses.textContent = step.Uses ? `Dùng cho: ${step.Uses}` : "";
-      if (step.Id === "login" && quota && quota.State !== "wait" && quota.Detail) row.detail.textContent = `${step.Detail} Hạn mức: ${quota.Detail}`;
-      if (step.Id === "antigravity" && step.State !== "ok") row.uses.textContent = `Dùng cho: ${step.Uses || "Viết review: Antigravity CLI"}. Đăng nhập trong Antigravity, đổi tài khoản cũng ở đó.`;
+      row.uses.textContent = "";
+      if (step.Id === "login" && quota && quota.State !== "wait" && quota.Detail) row.detail.textContent = `${brief(step.Detail)} · Hạn mức: ${quota.Detail}`;
       if (step.Action) {
         const signedIn = step.State === "ok";
         row.fix.textContent = signedIn && ["login", "antigravity"].includes(step.Action) ? "Đổi tài khoản" : ["expired", "signedout"].includes(step.SignIn) ? "Đăng nhập lại" : LABELS[step.Action] || "Mở";
@@ -127,7 +128,7 @@
         copy.textContent = done ? "Đã chép" : "Chưa chép được";
         setTimeout(() => { copy.textContent = "Chép mã"; }, 2000);
       };
-      detail.replaceChildren(`Mã đăng nhập: ${code} `, copy, ". Dán vào trang đăng nhập vừa mở trong Chrome (đăng nhập tài khoản ChatGPT muốn dùng). Lỗi thì bấm lại để lấy mã mới.");
+      detail.replaceChildren(`Mã đăng nhập: ${code} `, copy);
       for (const b of buttons()) b.disabled = false;
     }, 1000);
   };
@@ -256,5 +257,108 @@
     fillAgy(r.agyModelGroups || [], r.agyModel || "");
     fill(aeffort, CE, CE.map(effLabel), r.agyEffort || "");
   }).catch(() => {});
+  // ----- Cách chạy: everything the main window used to hold (Viết review, Tạo ảnh, Luồng, Chrome profile, Tài khoản Flow, token, Mở Chrome),
+  // saved in the same run-settings.json / flow-browser files through the same endpoints. The main window re-reads them when it is shown again
+  // (Quay lại, focus), so nothing needs a reload. Shown only on Product Review's server (the others have no /api/run-settings).
+  const runSec = $("#run-sec"), rvText = $(".rv-text"), rvImage = $(".rv-image"), rvThreads = $(".rv-threads"), flowOnly = $("#flow-only");
+  const fbProfile = $(".fb-profile"), fbInstall = $(".fb-install"), fbAccount = $(".fb-account"), fbCheck = $(".fb-check"), tokBox = $(".fb-token-box"), tokLabel = $(".fb-token-label");
+  const tokInput = $(".fb-token"), tokSave = $(".fb-token-save"), tokClear = $(".fb-token-clear"), fbOpen = $(".fb-open"), fbRecheck = $(".fb-recheck"), fbDot = $(".fb-open .dot");
+  let rs = {}, fb = { mode: "own", profile: "", profiles: [] };
+  const saveRs = (part) => post("/api/run-settings", part);
+  const imageValue = (r) => (r.imageBackend === "agent" ? (r.agentBackend === "antigravity" ? "agent-agy" : "agent") : "codex");
+  const curProfile = () => (fb.mode === "own" ? null : fb.profiles.find((x) => x.folder === fb.profile) || null);
+  const flowShown = () => rvImage.value === "agent";
+  const refreshCheck = () => {
+    const c = window.FlowCheck.flowAccountCheck(curProfile(), fbAccount.value);
+    fbCheck.textContent = c.short; fbCheck.title = [c.block, c.warn].filter(Boolean).join("\n\n");
+    fbCheck.style.color = c.block ? "#b22222" : "#b06000";
+    fbAccount.style.borderColor = c.block ? "#b22222" : c.warn ? "#b06000" : "";
+  };
+  const refreshToken = () => {
+    const p = curProfile(), show = !!p && p.playwright_extension;
+    tokBox.hidden = !show;
+    if (!show) return;
+    const saved = !!p.token_saved;
+    tokInput.placeholder = saved ? "Dán token mới để thay" : "Dán token của profile này";
+    tokLabel.textContent = saved ? "Token Playwright · đã lưu token" : "Token Playwright (tùy chọn)";
+  };
+  const refreshFlowMode = () => {
+    flowOnly.hidden = !flowShown();
+    const ext = fb.mode !== "own", p = curProfile();
+    fbDot.style.display = fbRecheck.style.display = ext ? "none" : "";
+    fbInstall.hidden = !p || p.playwright_extension;
+    refreshToken(); refreshCheck();
+    if (!ext && flowShown()) loginDot(false);
+  };
+  const loginDot = async (fresh) => {
+    fbDot.style.background = "var(--muted)";
+    const r = await fetch("/api/flow-login/status" + (fresh ? "?fresh=1" : "")).then((x) => x.json()).catch(() => null);
+    fbDot.style.background = r?.state === "logged_in" ? "darkgreen" : r?.state === "logged_out" ? "firebrick" : "var(--muted)";
+    fbOpen.title = ({ logged_in: "Đã đăng nhập Google Flow", logged_out: "Chưa đăng nhập", busy: "Đang bận" }[r?.state] || "Chưa kiểm tra được") + (r?.detail ? " (" + r.detail + ")" : "");
+  };
+  const loadFb = () => fetch("/api/flow-browser").then((r) => r.json()).then((j) => {
+    fb = { mode: j.mode === "own" ? "own" : "extension", profile: j.profile || "", profiles: j.profiles || [] };
+    const items = ["own", ...fb.profiles.map((p) => p.folder)], labels = ["Chrome riêng của tool", ...fb.profiles.map((p) => ((p.email || p.name || p.folder).split("@")[0]) + " · " + p.folder + (p.playwright_extension ? "" : " · chưa có extension"))];
+    fill(fbProfile, items, labels, fb.mode === "own" ? "own" : fb.profile);
+    fbProfile.title = fbProfile.selectedOptions[0]?.textContent || "";
+  }).catch(() => {});
+  const loadAccounts = (saved) => {
+    const cur = String(saved.flowAccount || "").toLowerCase(), list = [...new Set([...(saved.flowAccounts || []), ...(cur ? [cur] : [])])];
+    fill(fbAccount, ["", ...list], ["Tự chọn tài khoản Flow", ...list], cur);
+  };
+  const loadRun = async () => {
+    const r = await fetch("/api/run-settings").then((x) => (x.ok ? x.json() : Promise.reject())).catch(() => null);
+    if (!r) return;
+    rs = r; runSec.hidden = false;
+    fill(rvText, ["codex", "antigravity", "claude"], ["Codex", "Antigravity CLI", "Claude"], ["codex", "antigravity", "claude"].includes(r.textBackend) ? r.textBackend : "codex");
+    fill(rvImage, ["codex", "agent", "agent-agy"], ["Codex", "Claude (Flow)", "Antigravity"], imageValue(r));
+    rvThreads.value = r.threads || 2;
+    loadAccounts(r);
+    await loadFb();
+    refreshFlowMode();
+  };
+  rvText.onchange = () => saveRs({ textBackend: rvText.value });
+  rvImage.onchange = async () => {
+    // Claude (Flow) and Antigravity are the same agent run driven by a different agent (agentBackend); Codex leaves the agent as it is.
+    const v = rvImage.value, part = v === "codex" ? { imageBackend: "codex" } : { imageBackend: "agent", agentBackend: v === "agent-agy" ? "antigravity" : "claude" };
+    await saveRs(part);
+    if (part.agentBackend) abackend.value = part.agentBackend;
+    refreshFlowMode();
+  };
+  abackend.addEventListener("change", () => { if (rvImage.value !== "codex") { rvImage.value = abackend.value === "antigravity" ? "agent-agy" : "agent"; refreshFlowMode(); } });
+  rvThreads.onchange = () => { const n = Math.max(1, Math.min(4, Math.round(Number(rvThreads.value) || 2))); rvThreads.value = n; saveRs({ threads: n }); };
+  fbProfile.onchange = async () => {
+    const v = fbProfile.value;
+    const r = await post("/api/flow-browser", v === "own" ? { mode: "own" } : { mode: "extension", profile: v });
+    if (r.error) { alert(r.error); return loadRun(); }
+    // the server moves the Flow account to the new profile (alignFlowAccount): re-read everything
+    await loadRun();
+  };
+  fbAccount.onchange = async () => { const r = await saveRs({ flowAccount: fbAccount.value }); if (r.error) alert(r.error); refreshCheck(); };
+  fbInstall.onclick = async () => { const r = await post("/api/flow-browser/install-extension", { profile: fbProfile.value }); if (r.error) alert(r.error); };
+  const saveToken = async (token) => {
+    const profile = fbProfile.value;
+    const r = await post("/api/flow-browser/token", { profile, token });
+    tokInput.value = "";
+    if (r.error) return alert(r.error);
+    const p = fb.profiles.find((x) => x.folder === profile); if (p) p.token_saved = !!r.token_saved;
+    refreshToken();
+    alert(r.token_saved ? "Đã lưu token cho " + profile + ": chạy không cần bấm Connect." : "Đã xoá token. Chưa lưu token: mỗi lượt bấm Connect.");
+  };
+  tokSave.onclick = () => { const t = tokInput.value.trim(); if (t) saveToken(t); else { alert("Dán token (trang Playwright MCP Bridge của profile " + fbProfile.value + ") vào ô rồi bấm Lưu."); tokInput.focus(); } };
+  tokInput.addEventListener("keydown", (e) => { if (e.key === "Enter") tokSave.click(); });
+  tokClear.onclick = () => {
+    const p = curProfile();
+    if (p && !p.token_saved) { tokInput.value = ""; return alert("Profile " + p.folder + " chưa lưu token."); }
+    if (confirm("Xoá token của " + fbProfile.value + "? Các lượt sau sẽ cần bấm Connect.")) saveToken("");
+  };
+  fbOpen.onclick = async () => {
+    const r = await post("/api/flow-login/open", {});
+    if (r.error) return alert("Chưa mở được Chrome đăng nhập: " + r.error);
+    if (fb.mode === "own") fbDot.style.background = "var(--muted)";
+  };
+  fbRecheck.onclick = () => loginDot(true);
+  addEventListener("focus", () => { if (!runSec.hidden && flowShown()) loadFb().then(refreshFlowMode); });
+  loadRun();
   check();
 })();
