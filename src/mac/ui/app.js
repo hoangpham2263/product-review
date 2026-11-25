@@ -221,14 +221,16 @@ const state = { rows: [], fallback: false, library: "remote", group: "Áo", vers
 const run = { active: false, since: 0, total: 0, done: 0, index: 0, stages: new Map(), jobRows: [], stage: "", stopped: false, failure: false, started: 0, resultFolder: "", anim: 0 };
 
 // What the next run uses, read from the server (run-settings.json + flow-browser); edited in Cấu hình.
-const TEXT_NAMES = { codex: "Codex", antigravity: "Antigravity CLI", claude: "Claude" };
+const TEXT_NAMES = { auto: "Tự động", codex: "Codex", antigravity: "Antigravity CLI", claude: "Claude" };
 const IMAGE_NAMES = { codex: "Codex", agent: "Claude (Flow)", "agent-agy": "Antigravity", "agent-agy-flow": "Antigravity (Flow)" };
-const cfg = { text: "codex", image: "codex", threads: 1, account: "" };
+const cfg = { reviewAi: "auto", text: "codex", image: "codex", threads: 1, account: "" };
 async function loadCfg() {
   try {
     const saved = await (await fetch("/api/run-settings")).json();
     modelInfo.claude = saved;
-    cfg.text = ["codex", "antigravity", "claude"].includes(saved.textBackend) ? saved.textBackend : "codex";
+    // Viết review: auto = the image agent writes them (agent runs) / Codex (Codex run); an explicit AI writes them after the images (by the app)
+    cfg.reviewAi = ["auto", "codex", "antigravity", "claude"].includes(saved.reviewAi) ? saved.reviewAi : "auto";
+    cfg.text = cfg.reviewAi === "auto" ? "codex" : cfg.reviewAi;
     cfg.image = saved.imageBackend === "agent" ? (saved.agentBackend === "antigravity" ? (saved.agyImages === "flow" ? "agent-agy-flow" : "agent-agy") : "agent") : "codex";
     // the server answers the effective Luồng (saved, else 1); the Codex run keeps its old default 2 until a value is saved (codexThreads)
     cfg.threads = Number.isInteger(Number(saved.threads)) && saved.threads >= 1 && saved.threads <= 4 ? Number(saved.threads) : 1;
@@ -1690,15 +1692,15 @@ function updateModelLine() {
     const effort = { low: "thấp", medium: "vừa", high: "cao", xhigh: "rất cao", max: "tối đa" }[modelInfo.claude.agyEffort] || "mặc định";
     parts.push(`Antigravity ${agyLabel(modelInfo.claude.agyModel)} · mức: ${effort}` + (run.active && run.modelInUse ? ` · đang chạy: ${run.modelInUse}` : ""));
   }
-  if (image === "agent" || (!flowRun && text === "claude")) {
+  if (image === "agent" || cfg.reviewAi === "claude") {
     const [name, id] = claudeLabel(modelInfo.claude.claudeModel);
     const effort = { low: "thấp", medium: "vừa", high: "cao", xhigh: "rất cao", max: "tối đa" }[modelInfo.claude.claudeEffort] || "mặc định";
     parts.push(`Claude ${name === id ? id : name + " (" + id + ")"} · mức: ${effort}` + (run.active && run.modelInUse ? ` · đang chạy: ${run.modelInUse}` : ""));
   }
-  if (image === "codex" || (!flowRun && text === "codex")) parts.push(`Codex ${modelInfo.codex || "model mặc định"}`);
-  if (!flowRun && text === "antigravity") parts.push("Antigravity CLI");
+  if (image === "codex" || cfg.reviewAi === "codex") parts.push(`Codex ${modelInfo.codex || "model mặc định"}`);
+  if (cfg.reviewAi === "antigravity" && image !== "agent-agy" && image !== "agent-agy-flow") parts.push("Antigravity CLI");
   const warn = usesFlow(image) && !flowExtensionMode() && flowLogin.state === "logged_out" ? "  ·  ⚠ chưa đăng nhập Flow (mở Cấu hình)" : "";
-  ui.lblModel.textContent = `Review: ${flowRun ? IMAGE_NAMES[image] : TEXT_NAMES[text]} · Ảnh: ${IMAGE_NAMES[image]} · Luồng ${cfg.threads} · ${parts.join("  |  ")}${warn}`;
+  ui.lblModel.textContent = `Review: ${cfg.reviewAi !== "auto" ? TEXT_NAMES[cfg.reviewAi] : flowRun ? IMAGE_NAMES[image] : "Codex"} · Ảnh: ${IMAGE_NAMES[image]} · Luồng ${cfg.threads} · ${parts.join("  |  ")}${warn}`;
   ui.lblModel.title = ui.lblModel.textContent + "\nBấm để đổi trong Cấu hình";
   ui.lblModel.style.color = warn ? "var(--warn)" : "var(--muted)";
 }
@@ -1877,6 +1879,8 @@ async function pollAgent() {
   } catch {}
   setTimeout(pollAgent, 1500);
 }
+// Antigravity's 429 is Google's per-model CAPACITY throttle (not the account usage limit); the run already retried by itself 3 times.
+const quotaMsg = (st) => "Antigravity báo model quá tải / hết dung lượng tạm thời (không phải hạn mức tài khoản)" + (st.quota_reset ? ", thử lại sau " + new Date(st.quota_reset).toTimeString().slice(0, 5) : "") + ". Đổi model Antigravity (Gemini 3.8 Flash hoặc Claude Sonnet 4.6) hoặc chọn Codex / Claude (Flow) rồi Chạy tiếp.";
 async function finishAgent(st) {
   setRunning(false);
   run.agent = false; run.modelInUse = "";
@@ -1892,11 +1896,11 @@ async function finishAgent(st) {
   const counts = lp && lp.label ? lp.label.replace(/ · \d\d:\d\d.*$/, "") : "";
   const quota = /CAUSE:QUOTA/.test(st.error || "");
   ui.lblProgress.textContent = st.status === "done" ? `Đã xong lượt chạy${pending > 0 ? ` • ${pending} ảnh chờ duyệt` : ""} • ${took} • ${run.ai}`
-    : st.status === "stopped" ? `Đã dừng${counts ? " • " + counts : ""} • ${took}` : quota ? `Hết hạn mức Antigravity${st.quota_reset ? " (hồi lúc " + new Date(st.quota_reset).toTimeString().slice(0, 5) + ")" : ""}${counts ? " • " + counts : ""} • chọn Antigravity (Flow) hoặc Codex rồi Chạy tiếp` : (counts ? `Chưa hoàn tất • ${counts}` : (st.last_text || "Lượt chạy chưa hoàn tất."));
+    : st.status === "stopped" ? `Đã dừng${counts ? " • " + counts : ""} • ${took}` : quota ? `${quotaMsg(st)}${counts ? " • " + counts : ""}` : (counts ? `Chưa hoàn tất • ${counts}` : (st.last_text || "Lượt chạy chưa hoàn tất."));
   if (st.status === "stopped") { setStatus("Đã dừng", "var(--muted)"); appendLog("Đã dừng. Các link chưa hoàn tất được giữ lại."); }
   else if (st.status === "done" && pending > 0) { setStatus("Chờ bạn duyệt", "var(--ok)"); appendLog(`${runAi(st)} đã xong. ${pending} ảnh chờ bạn duyệt: bấm Duyệt & xuất file (Giữ/Bỏ từng ảnh). ${runAi(st)} không tự Giữ/Bỏ.`); }
   else if (st.status === "done") { setStatus("! Cần kiểm tra", "var(--warn)"); appendLog(`${runAi(st)} đã dừng nhưng chưa có ảnh nào chờ duyệt. Xem tiến trình ở trên.`); }
-  else { setStatus("! Cần thử lại", "var(--warn)"); appendLog(quota ? "Hết hạn mức " + runAi(st) + (st.quota_reset ? " (hồi lúc " + new Date(st.quota_reset).toTimeString().slice(0, 5) + ")" : "") + ". Chọn Antigravity (Flow) hoặc Codex trong Cấu hình rồi bấm Chạy tiếp." : "Lượt " + runAi(st) + " chưa hoàn tất" + (st.error ? ": " + String(st.error).replace(/\[CAUSE:[A-Z_]+\]\s*/g, "") : ".")); }
+  else { setStatus("! Cần thử lại", "var(--warn)"); appendLog(quota ? quotaMsg(st) + (cfg.reviewAi !== "auto" ? " Review của các ảnh đã xong do " + TEXT_NAMES[cfg.reviewAi] + " viết." : "") : "Lượt " + runAi(st) + " chưa hoàn tất" + (st.error ? ": " + String(st.error).replace(/\[CAUSE:[A-Z_]+\]\s*/g, "") : ".")); }
 }
 async function poll() {
   if (!run.active) return;

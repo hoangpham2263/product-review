@@ -6,7 +6,7 @@ param(
     [Parameter(Position = 0)][string]$Command = '',
     [string]$Run = '', [string]$Item = '', [string]$File = '', [string]$From = '',
     [int]$Limit = 0, [string]$List = '',
-    [string]$Text = '', [string]$Reason = '', [string]$SignRead = '', [switch]$Safe,
+    [string]$Text = '', [string]$Reason = '', [string]$SignRead = '', [string]$Backend = '', [switch]$Safe,
     [Parameter(ValueFromRemainingArguments = $true)]$Rest
 )
 
@@ -505,6 +505,26 @@ function Test-AgentSignRead($Entry) {
     return [ordered]@{ expected = $expected; read = $SignRead; ok = $false; misses = $misses; kept_anyway = $true; note = "sign_mismatch: reads '$SignRead' instead of '$expected' after $misses tries; kept for review" }
 }
 
+# --- ai-draft: the review text written by a TEXT AI (Codex / Claude / Antigravity CLI), not by the image agent ---------------------------------
+# Used by the app when Viết review is an explicit AI: review-brief wrote the prompt, this sends it (+ the item's image) through the one Invoke-AI path (same providers,
+# models, usage log as the Codex pipeline) and saves the reply as the draft file; the app then runs write-review on it (quality gate, up to 3 repairs, never drops an item).
+function Invoke-AgentAiDraft {
+    Open-AgentRun $Run
+    $p = Get-AgentItemPaths $Item
+    if (-not (Test-Path -LiteralPath $p.Prompt)) { throw '[CAUSE:NO_BRIEF] Run review-brief for this item first.' }
+    if (-not (Test-Path -LiteralPath $p.Image)) { throw "[CAUSE:IMAGE_MISSING] Image not found for item $($Item)." }
+    if ($Backend -notin @('codex', 'claude', 'antigravity')) { throw '[CAUSE:BAD_BACKEND] -Backend must be codex, claude or antigravity.' }
+    if (-not $File) { throw '-File is required (where the draft is saved).' }
+    $script:Config.TextBackend = $Backend
+    $prompt = [IO.File]::ReadAllText($p.Prompt, [Text.Encoding]::UTF8) + [Environment]::NewLine + [Environment]::NewLine + 'Reply with ONLY the review text: one paragraph, no title, no quotes, no notes.'
+    if ($Text) { $prompt += [Environment]::NewLine + [Environment]::NewLine + $Text }
+    $reply = [string](Invoke-AI $prompt @($p.Image) $File 'text')
+    if (-not $reply -or -not $reply.Trim()) { if (Test-Path -LiteralPath $File) { $reply = Get-Content -LiteralPath $File -Raw -Encoding UTF8 } }
+    if (-not $reply -or -not $reply.Trim()) { throw '[CAUSE:AI_EMPTY] The AI returned no text.' }
+    [IO.File]::WriteAllText($File, $reply.Trim(), [Text.UTF8Encoding]::new($false))
+    Write-AgentJson ([ordered]@{ item = $Item; file = $File; backend = $Backend })
+}
+
 # --- dispatcher ------------------------------------------------------------------------------------------------
 # Extra "-Name value" arguments pass through to the review commands (src/agent-review.ps1).
 function ConvertTo-ArgumentHash($Tokens) {
@@ -526,6 +546,7 @@ try {
         'context-brief' { Invoke-AgentContextBrief }
         'context' { Invoke-AgentContext }
         'sign-brief' { Invoke-AgentSignBrief }
+        'ai-draft' { Invoke-AgentAiDraft }
         'set-sign-text' { $runLock = Enter-RunCliLock $Run; try { Invoke-AgentSetSignText } finally { $runLock.Dispose() } }
         'flow-brief' { Invoke-AgentFlowBrief }
         'register-image' { Invoke-AgentRegisterImage }
@@ -535,7 +556,7 @@ try {
             $splat = ConvertTo-ArgumentHash $Rest
             foreach ($pair in @{ Run = $Run; Item = $Item; File = $File; From = $From }.GetEnumerator()) { if ($pair.Value) { $splat[$pair.Key] = $pair.Value } }
             if ($Limit) { $splat['Limit'] = $Limit }
-            if ($Command -in @('write-review', 'finish') -and $Run) { $runLock = Enter-RunCliLock $Run; try { & $fn @splat } finally { $runLock.Dispose() } } else { & $fn @splat }
+            if ($Command -in @('review-brief', 'write-review', 'finish') -and $Run) { $runLock = Enter-RunCliLock $Run; try { & $fn @splat } finally { $runLock.Dispose() } } else { & $fn @splat }
         }
         default { throw "Unknown command '$Command'. Use: prepare | context-brief | context | sign-brief | set-sign-text | flow-brief | register-image | review-brief | write-review | finish | run-summary" }
     }

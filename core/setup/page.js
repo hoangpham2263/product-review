@@ -283,7 +283,6 @@
   };
   const refreshFlowMode = () => {
     flowOnly.hidden = !flowShown();
-    rvText.disabled = rvImage.value !== "codex"; // the agent writes the reviews of its own image run; this choice is for the Codex run
     const ext = fb.mode !== "own", p = curProfile();
     fbDot.style.display = fbRecheck.style.display = ext ? "none" : "";
     fbInstall.hidden = !p || p.playwright_extension;
@@ -310,7 +309,7 @@
     const r = await fetch("/api/run-settings").then((x) => (x.ok ? x.json() : Promise.reject())).catch(() => null);
     if (!r) return;
     rs = r; runSec.hidden = false;
-    fill(rvText, ["codex", "antigravity", "claude"], ["Codex", "Antigravity CLI", "Claude"], ["codex", "antigravity", "claude"].includes(r.textBackend) ? r.textBackend : "codex");
+    fill(rvText, ["auto", "codex", "antigravity", "claude"], ["Tự động (agent)", "Codex", "Antigravity CLI", "Claude"], r.reviewAi || "auto");
     fill(rvImage, ["codex", "agent", "agent-agy", "agent-agy-flow"], ["Codex", "Claude (Flow)", "Antigravity", "Antigravity (Flow)"], imageValue(r));
     rvThreads.value = r.threadsSaved ? r.threads : rvImage.value === "codex" ? 2 : 1; // Codex keeps its old default 2 until a value is saved
     // Quét web / Cập nhật review / Hàng chờ & chuẩn bị: Claude or Antigravity (Codex has no browser mode). Older windows: the server answers with their old single agent.
@@ -319,7 +318,7 @@
     await loadFb();
     refreshFlowMode();
   };
-  rvText.onchange = () => saveRs({ textBackend: rvText.value });
+  rvText.onchange = () => saveRs({ reviewAi: rvText.value });
   rvImage.onchange = async () => {
     // Claude (Flow) and Antigravity are the same agent run driven by a different agent (agentBackend); Codex leaves the agent as it is.
     const v = rvImage.value, part = v === "codex" ? { imageBackend: "codex" } : { imageBackend: "agent", agentBackend: v === "agent" ? "claude" : "antigravity", agyImages: v === "agent-agy-flow" ? "flow" : "self" };

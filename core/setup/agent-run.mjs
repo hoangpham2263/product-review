@@ -378,7 +378,7 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
     try { releaseLocks(toolRoot, session, process.pid, lockTag); } catch {}
   };
   const stateFile = join(runsDir, stateName + ".json"), logFile = join(runsDir, stateName + ".log");
-  let cur = null, last = null;
+  let cur = null, last = null, retry = null, capTry = { runId: "", n: 0 }; // retry = an automatic restart waiting after a capacity error
 
   const readState = () => { try { return JSON.parse(readFileSync(stateFile, "utf8")); } catch { return null; } };
   const saveState = (st) => { try { mkdirSync(runsDir, { recursive: true }); writeFileSync(stateFile, JSON.stringify(st, null, 2)); } catch {} };
@@ -404,20 +404,32 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
   // Real exhaustion = RESOURCE_EXHAUSTED (or "exhausted your capacity") WITH a reset time / capacity text; a short "please retry in 12s" is agy retrying by itself.
   const realQuota = (t) => (/RESOURCE_EXHAUSTED/.test(t) || /exhausted your capacity/i.test(t)) && (/reset after\s*\d/i.test(t) || /exhausted your capacity/i.test(t));
   const agyErrorText = (ev) => { const s = ev.step_update || {}, r = ev.result || {}; return [s.tool_info?.error?.message, typeof s.tool_info?.output === "string" ? s.tool_info.output : "", s.error?.message, String(r.status || "").toUpperCase() !== "SUCCESS" ? r.error : ""].filter((x) => typeof x === "string").join(" "); };
+  // Google's per-model CAPACITY throttle (HTTP 429 RESOURCE_EXHAUSTED, "reset after 3h26m"), NOT the account usage limit. The exact text is kept in the log and in the run state
+  // (quota_raw). First the run is retried by itself with a growing wait (30 s, 2 min, 5 min); only when the third retry fails too does it stop with a message that names the ways out.
+  const CAP_WAITS = String(process.env.PR_CAP_WAITS || "").split(",").map(Number).filter((n) => n > 0).length ? String(process.env.PR_CAP_WAITS).split(",").map(Number) : [30000, 120000, 300000]; // PR_CAP_WAITS only for tests
   const quotaStop = (run, text) => {
-    if (run.abort || run.ended) return;
+    if (run.abort || run.ended || run.retryDelay) return;
+    const raw = sanitize(text, 600);
+    run.state.quota_raw = raw; addLine(run, "Chi tiết lỗi: " + raw);
     const m = String(text).match(/reset after\s*(?:(\d+)h)?\s*(?:(\d+)m)?\s*(?:(\d+)s)?/i);
     const ms = m ? (((+m[1] || 0) * 3600) + ((+m[2] || 0) * 60) + (+m[3] || 0)) * 1000 : 0, at = ms ? new Date(now() + ms) : null;
-    const friendly = (run.agyImage ? "Hết hạn mức tạo ảnh của Antigravity" : "Hết hạn mức model của Antigravity") + (at ? " (hồi lúc " + at.toTimeString().slice(0, 5) + ")" : "") + ". Chọn Antigravity (Flow) hoặc Codex trong Cấu hình rồi bấm Chạy tiếp.";
-    run.abort = "[CAUSE:QUOTA] " + friendly;
     if (at) run.state.quota_reset = at.toISOString();
+    if (run.startOpts && capTry.n < CAP_WAITS.length) {
+      const delay = CAP_WAITS[capTry.n++];
+      run.retryDelay = delay;
+      addLine(run, "⚠ Antigravity báo model quá tải (429, không phải hạn mức tài khoản): tự thử lại lần " + capTry.n + "/" + CAP_WAITS.length + " sau " + (delay >= 60000 ? Math.round(delay / 60000) + " phút" : Math.round(delay / 1000) + " giây")); touch(run);
+      killTree(run.child); setTimeout(() => finish(run, null), graceMs).unref?.();
+      return;
+    }
+    const friendly = "Antigravity báo model quá tải / hết dung lượng tạm thời (không phải hạn mức tài khoản)" + (at ? ", thử lại sau " + at.toTimeString().slice(0, 5) : "") + ". Đổi model Antigravity (Gemini 3.8 Flash hoặc Claude Sonnet 4.6) hoặc chọn Codex / Claude (Flow) rồi bấm Chạy tiếp.";
+    run.abort = "[CAUSE:QUOTA] " + friendly;
     addLine(run, "⚠ " + friendly); touch(run);
     killTree(run.child); setTimeout(() => finish(run, null), graceMs).unref?.();
   };
   const handleLine = (run, raw) => {
     // Not an event (a cut-off fragment, tool output): nothing a person can read, so it stays out of the log.
     let ev; try { ev = JSON.parse(raw); } catch { return; }
-    if (run.backend === "antigravity") { const qt = agyErrorText(ev); if (qt && realQuota(qt)) quotaStop(run, qt); return handleAgy(run, ev); }
+    if (run.backend === "antigravity") { run.evCount = (run.evCount || 0) + 1; const qt = agyErrorText(ev); if (qt && realQuota(qt)) quotaStop(run, qt); return handleAgy(run, ev); }
     if (ev.type === "system" && ev.subtype === "init" && typeof ev.model === "string" && ev.model) {
       run.state.model_in_use = ev.model;
       setModelLine(run, modelLineText(ev.model, run.asked?.effort));
@@ -543,23 +555,30 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
         if (n > 0 && made === 0 && results === 0) nothing = "0/" + n + " mục hoàn tất: không có ảnh nào được tạo và không có kết quả nào. Xem lý do của từng mục trong báo cáo cuối của " + (run.who || "Claude") + ".";
       } catch {}
     }
-    const status = nothing || run.abort ? "failed" : run.forced || (code === 0 && !run.result?.is_error ? "done" : "failed");
+    const status = run.retryDelay && !run.forced ? "retrying" : nothing || run.abort ? "failed" : run.forced || (code === 0 && !run.result?.is_error ? "done" : "failed");
     const error = status === "failed" ? sanitize(nothing || run.abort || err || run.agyError || run.stderr.at(-1) || (run.result?.is_error ? `${run.who || "Claude"} reported ${run.result.subtype || "an error"}.` : `${run.who || "Claude"} exited with code ${code}.`))
       : status === "timeout" ? `Stopped after the ${minutes}-minute limit.` : "";
-    addLine(run, { done: "Lượt chạy kết thúc", failed: `Lượt chạy dừng vì lỗi${code === null || code === undefined ? "" : " (mã " + code + ")"}`, timeout: "Lượt chạy dừng vì quá thời gian" }[status] || `Lượt chạy: ${status}`);
+    addLine(run, { retrying: "Chờ để tự thử lại", done: "Lượt chạy kết thúc", failed: `Lượt chạy dừng vì lỗi${code === null || code === undefined ? "" : " (mã " + code + ")"}`, timeout: "Lượt chạy dừng vì quá thời gian" }[status] || `Lượt chạy: ${status}`);
     try { writeFileSync(logFile, run.lines.join("\n") + "\n"); } catch {}
     touch(run, { status, exit_code: code ?? null, error });
     last = run.state; cur = null;
+    if (status === "retrying") {
+      const delay = run.retryDelay, opts = { ...run.startOpts, _retry: true };
+      retry = { wakeAt: now() + delay, n: capTry.n, timer: setTimeout(() => { retry = null; const r = start(opts); if (!r.ok) last = { ...last, status: "failed", error: r.error || "Chưa thử lại được.", updated: new Date(now()).toISOString() }; }, delay) };
+      retry.timer.unref?.();
+    }
   };
 
   // mode "flow": Google Flow images + reviews (docs/agent-prompt.md); mode "scan": Quét web (docs/scan-prompt.md, needs site and max);
   // mode "queue": put products of a project into the run queue with N scenes each (docs/queue-prompt.md, needs project and options).
   // mode "reviews": read the review number shown on each product page of a project (docs/reviews-count-prompt.md, needs project).
   // One run at a time for all: they share the one Chrome profile.
-  function start({ run: runId = newRunId(), options = "defaults", mode = "flow", site = "", max = 20, project = "", shard = "", tabs = 1, targetRun = "", phased = false } = {}) {
+  function start({ run: runId = newRunId(), options = "defaults", mode = "flow", site = "", max = 20, project = "", shard = "", tabs = 1, targetRun = "", phased = false, _retry = false } = {}) {
     if (!/^[\w.-]{3,64}$/.test(runId)) return { ok: false, status: 400, error: "Invalid run id." };
     const lightMode = LIGHT_MODES.includes(mode);
     if ((kind === "light") !== lightMode) return { ok: false, status: 400, error: `Mode ${mode} does not run on this runner.` };
+    if (retry && !_retry) return { ok: false, status: 409, error: "Antigravity đang chờ để tự thử lại: đợi xong hoặc bấm Dừng." };
+    if (!_retry) capTry = { runId, n: 0 };
     if (cur) return { ok: false, status: 409, error: `An agent run is already active (started ${cur.state.started}). Wait for it or press Stop.` };
     const agentSet = readAgentSettings(workspace || join(toolRoot, "workspace"), join(toolRoot, "workspace"), mode), backend = agentSet.backend, agy = backend === "antigravity", who = AGENT_NAME[backend];
     // Antigravity makes the images itself (image-generator subagent): the image run needs no Chrome, no Playwright MCP, no Flow account.
@@ -611,7 +630,7 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
       : mode === "scan"
       ? "RUN-NOW NOTE: this run uses the tool's OWN Chrome (a dedicated profile, no sign-in needed to scan a shop)" + (headless ? ", running in the background (headless)" : "") + ". There is no Connect step and no extension: ignore any instruction to click Connect or wait for the person; start with browser_tabs or browser_navigate. If the site asks for a login or shows a captcha, stop and report it (never sign in for the person)." + "\n\n"
       : "RUN-NOW NOTE: this run uses the tool's OWN Chrome (a dedicated profile the person already signed in to Google Flow with)" + (headless ? ", running in the background (headless)" : "") + ". There is no Connect step and no extension: ignore any instruction to click Connect or wait for the person; start with browser_tabs or browser_navigate. If Flow shows a Google sign-in page, stop and report CAUSE:LOGIN (never sign in for the person)." + "\n\n";
-    const phaseNote = phased ? "PHASE NOTE: this run is split in phases because Luồng is above 1. Step 2 (context, sign wording, custom-logo flags) was ALREADY done for the items by other workers: do NOT redo it for an item that has a context; an item without one, or flow-brief answering NEEDS_SIGN_TEXT, is the exception: do its step 2 yourself. Step 4 (reviews and finish) is done AFTER this run by other workers: when step 3 is over (every image registered or skipped) go to step 5 (CLI run-summary) and STOP; never write reviews and never run finish.\n\n" : "";
+    const phaseNote = phased === "review" ? "PHASE NOTE: the reviews are written by ANOTHER AI after the images exist, and the app runs finish afterwards: skip step 4 entirely. Do step 2 and step 3 as usual; when step 3 is over (every image registered or skipped) go to step 5 (CLI run-summary) and STOP; never write reviews and never run finish.\n\n" : phased ? "PHASE NOTE: this run is split in phases because Luồng is above 1. Step 2 (context, sign wording, custom-logo flags) was ALREADY done for the items by other workers: do NOT redo it for an item that has a context; an item without one, or flow-brief answering NEEDS_SIGN_TEXT, is the exception: do its step 2 yourself. Step 4 (reviews and finish) is done AFTER this run by other workers: when step 3 is over (every image registered or skipped) go to step 5 (CLI run-summary) and STOP; never write reviews and never run finish.\n\n" : "";
     const intro = phaseNote + (agyImage ? "" : ext && mode !== "queue" ? extensionNote({ groupName: group.name, session: sessionLabel(session), downloadsDir: join(workspace, "tmp", "flow-downloads"), tokenSet: !!extToken, flow: mode === "flow" }) : note) + prompt;
     let args, agyDir = "";
     if (agy) {
@@ -646,8 +665,9 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
       state: { run_id: runId, mode, project, pid: child.pid ?? null, started, updated: started, status: "running", exit_code: null, last_text: "", turns: 0, error: "", model_in_use: asked.model, agent: backend, label_ai: agyImage ? "antigravity" : agyFlow ? "antigravity-flow" : backend } };
     run.asked = asked; run.backend = backend; run.who = who; run.agyDir = agyDir; run.agyImage = agyImage;
     run.prefix = "[" + (FEATURE[mode] || mode) + (project ? " · " + project : "") + (shard ? " · luồng " + shard : "") + "] ";
+    run.startOpts = { run: runId, options, mode, site, max, project, shard, tabs, targetRun, phased };
     cur = run; if (kind === "light") lightRuns.set(lightKey, (lightRuns.get(lightKey) || 0) + 1);
-    try { writeFileSync(logFile, ""); } catch {}
+    if (!_retry) { try { writeFileSync(logFile, ""); } catch {} }
     setModelLine(run, modelLineText(asked.model, asked.effort, true, backend));
     addLine(run, mode === "ctx" ? "Bắt đầu: " + who + " lập ngữ cảnh cho các mục được giao (mã lượt " + runId + ")" : mode === "rev" ? "Bắt đầu: " + who + " viết review cho các mục được giao (mã lượt " + runId + ")" : mode === "index" ? "Bắt đầu: " + who + " gắn nhãn kho ảnh bối cảnh (mã lượt " + runId + ")"
       : mode === "prep" ? "Bắt đầu: " + who + " chuẩn bị trước ảnh bối cảnh cho các sản phẩm của dự án " + project + " (mã lượt " + runId + ")"
@@ -670,12 +690,14 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
   }
 
   function stop() {
+    if (!cur && retry) { clearTimeout(retry.timer); retry = null; last = { ...last, status: "stopped", error: "", updated: new Date(now()).toISOString() }; saveState(last); return { ok: true, status: 200, run_id: last.run_id }; }
     if (!cur) return { ok: false, status: 409, error: "No run is active." };
     const run = cur; run.forced = "stopped"; killTree(run.child);
     setTimeout(() => finish(run, null), graceMs).unref?.();
     return { ok: true, status: 200, run_id: run.state.run_id };
   }
   function shutdown() {
+    if (retry) { clearTimeout(retry.timer); retry = null; }
     if (!cur) return;
     cur.forced = cur.forced || "stopped"; killTree(cur.child);
     try { rmSync(cur.cfg, { force: true }); } catch {}
@@ -687,10 +709,10 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
     const shown = st && !run && st.status === "running" ? { ...st, status: "failed", error: "The app closed while this run was active." } : st;
     const lines = run ? run.lines : (() => { try { return readFileSync(logFile, "utf8").split("\n").filter(Boolean); } catch { return []; } })();
     return {
-      active: !!run, status: shown?.status || "idle", run_id: shown?.run_id || "", mode: shown?.mode || "flow", project: shown?.project || "", started: shown?.started || "",
+      active: !!run || !!(!run && retry), status: !run && retry ? "running" : shown?.status || "idle", run_id: shown?.run_id || "", mode: shown?.mode || "flow", project: shown?.project || "", started: shown?.started || "",
       elapsed_s: shown?.started ? Math.max(0, Math.round(((run ? now() : Date.parse(shown.updated) || now()) - Date.parse(shown.started)) / 1000)) : 0,
-      model_in_use: shown?.model_in_use || "", agent: shown?.agent || "", label_ai: shown?.label_ai || "", quota_reset: shown?.quota_reset || "", last_text: shown?.last_text || "", turns: shown?.turns || 0, error: shown?.error || "", updated: shown?.updated || "", tail: lines.slice(-TAIL_LINES),
+      model_in_use: shown?.model_in_use || "", agent: shown?.agent || "", label_ai: shown?.label_ai || "", quota_reset: shown?.quota_reset || "", last_text: !run && retry ? "Antigravity báo model quá tải: tự thử lại lúc " + new Date(retry.wakeAt).toTimeString().slice(0, 5) + " (lần " + retry.n + "/3)" : shown?.last_text || "", turns: shown?.turns || 0, error: shown?.error || "", updated: shown?.updated || "", tail: lines.slice(-TAIL_LINES),
     };
   }
-  return { start, stop, status, shutdown, isActive: () => !!cur };
+  return { start, stop, status, shutdown, isActive: () => !!cur || !!retry };
 }
