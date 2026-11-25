@@ -62,7 +62,7 @@ const QUEUE_TOOL_TEXT = {
   browser_wait_for: "Chờ trang tải", browser_run_code_unsafe: "Thao tác trên trang web", browser_take_screenshot: "Chụp ảnh trang",
   browser_evaluate: "Đọc chữ trên trang", browser_file_upload: "Tải file lên trang",
 };
-export function friendlyTool(name, input = {}, mode = "flow") {
+export function friendlyTool(name, input = {}, mode = "flow", ai = "") {
   const n = String(name || "").replace(/^mcp__playwright__/, "");
   if (mode === "scan" && SCAN_TOOL_TEXT[n]) return SCAN_TOOL_TEXT[n];
   if (mode === "reviews" && REVIEWS_TOOL_TEXT[n]) return REVIEWS_TOOL_TEXT[n];
@@ -97,8 +97,9 @@ export function friendlyTool(name, input = {}, mode = "flow") {
     // Every per-item step names its item ("Mục 035 · ...") so the progress line tells at a glance what is happening to which item.
     const item = (cmd.match(/-Item\s+["']?(\d{3})/i) || cmd.match(/--tag\s+["']?(\d{3})/i) || [])[1];
     const m = (t) => (item ? `Mục ${item} · ${t}` : t);
-    if (/register-image/i.test(cmd)) return m(/-SignRead/i.test(cmd) ? "Lưu ảnh Flow + kiểm chữ trên biển" : "Lưu ảnh Flow vừa tạo vào kết quả");
-    if (/flow-brief/i.test(cmd)) return m(/-Safe\b/i.test(cmd) ? "Flow từ chối → thử lại 1 lần bằng mô tả an toàn" : "Chuẩn bị nội dung gửi Flow");
+    const agy = ai === "antigravity"; // Antigravity makes the pictures itself: no Flow in the wording
+    if (/register-image/i.test(cmd)) return m(/-SignRead/i.test(cmd) ? (agy ? "Lưu ảnh + kiểm chữ trên biển" : "Lưu ảnh Flow + kiểm chữ trên biển") : (agy ? "Lưu ảnh vừa tạo vào kết quả" : "Lưu ảnh Flow vừa tạo vào kết quả"));
+    if (/flow-brief/i.test(cmd)) return m(/-Safe/i.test(cmd) ? (agy ? "Ảnh bị từ chối → thử lại 1 lần bằng mô tả an toàn" : "Flow từ chối → thử lại 1 lần bằng mô tả an toàn") : (agy ? "Chuẩn bị nội dung tạo ảnh" : "Chuẩn bị nội dung gửi Flow"));
     if (/set-sign-text/i.test(cmd)) return m("Lưu chữ trên biển đã chọn");
     if (/sign-brief/i.test(cmd)) return m("Chọn chữ trên biển theo cảnh");
     if (/agent\.ps1\s+(review-brief|write-review)/i.test(cmd)) return m("Viết review");
@@ -396,7 +397,7 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
       run.state.turns = (run.state.turns || 0) + 1;
       for (const c of ev.message.content) {
         if (c.type === "text" && c.text) { addLine(run, "Claude: " + c.text); const t = sanitize(c.text); if (t) run.state.last_text = t; }
-        else if (c.type === "tool_use" && typeof c.name === "string") addLine(run, friendlyTool(c.name, c.input, run.state.mode));
+        else if (c.type === "tool_use" && typeof c.name === "string") addLine(run, friendlyTool(c.name, c.input, run.state.mode, run.state.agent));
       }
       touch(run);
     } else if (ev.type === "result") {
@@ -446,7 +447,7 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
           return;
         }
         const c = agyToolToClaude(s.tool_name, s.tool_name === "invoke_subagent" ? { count: (s.subagent_info?.subagents || []).length } : p);
-        addLine(run, friendlyTool(c.name, c.input, run.state.mode)); touch(run);
+        addLine(run, friendlyTool(c.name, c.input, run.state.mode, run.state.agent)); touch(run);
       }
       return;
     }
