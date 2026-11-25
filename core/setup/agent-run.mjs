@@ -108,6 +108,7 @@ export function friendlyTool(name, input = {}, mode = "flow") {
     return "Chạy lệnh của công cụ";
   }
   if (n === "Read") return /contact-sheets/i.test(cmd) ? "Xem tấm ảnh ghép (nhiều ảnh một lần)" : /\.(png|jpe?g|webp)$/i.test(cmd) ? "Xem ảnh sản phẩm / ảnh bối cảnh" : "Đọc dữ liệu của lượt chạy";
+  if (n === "AgyImage") return "Antigravity tạo ảnh";
   if (n === "Write" || n === "Edit") return "Ghi file tạm của lượt chạy";
   return "Đang xử lý: " + n;
 }
@@ -258,6 +259,7 @@ export function findAgy(plat = osPlatform()) {
 export function agyToolToClaude(name, params = {}) {
   const n = String(name || "");
   if (n === "call_mcp_tool") return { name: String(params.ToolName || "mcp"), input: {} };
+  if (n === "invoke_subagent" || n === "generate_image") return { name: "AgyImage", input: {} };
   if (n === "run_command") return { name: "Bash", input: { command: String(params.CommandLine || "") } };
   if (n === "read_file" || n === "view_file") return { name: "Read", input: { file_path: String(params.Path || params.AbsolutePath || "") } };
   if (["write_to_file", "replace_file_content", "multi_replace_file_content", "sed_file"].includes(n)) return { name: "Write", input: {} };
@@ -265,8 +267,15 @@ export function agyToolToClaude(name, params = {}) {
 }
 // agy's OWN browser / image / web tools must never run a Flow or scan run: the Playwright MCP is the only browser (one browser = one agent, visible tab rule).
 export const AGY_FORBIDDEN_TOOL = /^(browser_|open_browser_url$|capture_browser|execute_browser_javascript$|list_browser_pages$|read_browser_page$|click_browser_pixel$|generate_image$|search_web$|read_url_content$)/;
+// Image run (Tạo ảnh = Antigravity): no browser at all; the picture comes from agy's built-in image-generator subagent.
+export const agyImageNote = `ANTIGRAVITY TOOL MAP (you are Antigravity, not Claude; the task below uses Claude's tool names, use yours):
+- "Bash" = run_command (a PowerShell on Windows: write the powershell / node commands exactly as given, from the TOOL folder).
+- "Read" = view_file (also for photos: LOOK at them); "Write" / "Edit" = write_to_file / replace_file_content, only for the temp files the steps ask for.
+- This run has NO browser and no Google Flow: never call browser_* tools, never use call_mcp_tool, search_web or read_url_content. Images are made ONLY by invoke_subagent with type_name image-generator (any other subagent stops the run).
+
+`;
 // Put in front of the prompt of an Antigravity run: the prompt is written with Claude's tool names; this maps them to agy's.
-export const agyNote = (light) => `ANTIGRAVITY TOOL MAP (you are Antigravity, not Claude; the task below uses Claude's tool names, use yours):
+export const agyNote = (light, image = false) => image ? agyImageNote : `ANTIGRAVITY TOOL MAP (you are Antigravity, not Claude; the task below uses Claude's tool names, use yours):
 - "Bash" = run_command (a PowerShell on Windows: write "node core/flow-pace.mjs ..." and "powershell -NoProfile -ExecutionPolicy Bypass -File src/agent.ps1 ..." exactly as given, from the TOOL folder).
 - "Read" = view_file (also for photos and contact sheets: LOOK at them); "Write" / "Edit" = write_to_file / replace_file_content, only for the temp files the steps ask for.
 ` + (light ? `- This run has NO browser: never call any browser_* tool.\n` : `- Every Playwright browser tool of the task (browser_tabs, browser_navigate, browser_snapshot, browser_click, browser_type, browser_press_key, browser_wait_for, browser_run_code_unsafe, browser_take_screenshot, browser_evaluate, browser_file_upload) is called through call_mcp_tool with ServerName "${AGY_MCP_SERVER}", ToolName = that tool's name and Arguments = its arguments (browser_run_code_unsafe takes {"code": "async (page) => {...}"}).
@@ -294,13 +303,14 @@ export const newRunId = (d = new Date()) => "agent-" + d.toISOString().replace(/
 // The text block of docs/agent-prompt.md (mode "flow") or docs/scan-prompt.md (mode "scan"), placeholders filled.
 export const PROMPT_FILES = { flow: "agent-prompt.md", scan: "scan-prompt.md", reviews: "reviews-count-prompt.md", queue: "queue-prompt.md", prep: "prep-prompt.md", index: "index-prompt.md" };
 export function buildPrompt({ toolRoot, run, options = "defaults", mode = "flow", site = "", max = 20, project = "", workspace = "", agentName = "Claude Code" }) {
-  const file = PROMPT_FILES[mode];
+  const agyImg = mode === "flow" && agentName === "Antigravity"; // Antigravity makes the images itself: its own prompt file, no Flow, no Google account
+  const file = agyImg ? "agent-prompt-agy-image.md" : PROMPT_FILES[mode];
   if (!file) throw new Error("Unknown run mode: " + mode);
   const md = readFileSync(join(toolRoot, "docs", file), "utf8");
   const m = md.match(/```text\r?\n([\s\S]*?)\r?\n```/);
   if (!m) throw new Error(`docs/${file} has no text block.`);
   let acct = ""; // the Google account Flow must use (run-settings.json flowAccount, set in the app); only the image (flow) run opens Flow
-  if (mode === "flow") acct = readFlowAccount(workspace || join(toolRoot, "workspace"), join(toolRoot, "workspace"));
+  if (mode === "flow" && !agyImg) acct = readFlowAccount(workspace || join(toolRoot, "workspace"), join(toolRoot, "workspace"));
   const acctText = acct ? `\nGOOGLE ACCOUNT FOR FLOW: use ONLY the already signed-in Google account ${acct}. The profile may hold several Google accounts and Flow opens the first one. Before creating the project open https://accounts.google.com/AccountChooser?continue=https%3A%2F%2Fflow.google.com%2F and click THAT email (no password is needed for a signed-in account); on Flow check the avatar menu shows the same email. If that email is not in the list, or Flow says the credits are used up on it: STOP and report. Never sign out, never remove or add an account, never use another account.` : "";
   return m[1].replace(/\{\{TOOL\}\}/g, toolRoot).replace(/\{\{RUN\}\}/g, run).replace(/\{\{OPTIONS\}\}/g, options)
     .replace(/\{\{SITE\}\}/g, site).replace(/\{\{MAX\}\}/g, String(max)).replace(/\{\{PROJECT\}\}/g, project).replace(/agent: Claude Code/g, "agent: " + agentName) + acctText;
@@ -405,12 +415,15 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
           if (t) { addLine(run, "Antigravity: " + t); run.state.last_text = t; }
           touch(run);
         }
-      } else if (s.step_type === "tool" && s.tool_name && !run.agySteps.has(idx)) {
+      } else if ((s.step_type === "tool" || s.step_type === "subagent") && s.tool_name && !run.agySteps.has(idx)) {
         run.agySteps.add(idx);
         const p = s.tool_info?.parameters || {};
-        const bad = AGY_FORBIDDEN_TOOL.test(s.tool_name) ? "công cụ " + s.tool_name + " của chính Antigravity"
-          : s.tool_name === "call_mcp_tool" && run.state.mode && !LIGHT_MODES.includes(run.state.mode) && p.ServerName !== AGY_MCP_SERVER ? "máy chủ MCP \"" + String(p.ServerName || "?") + "\" (không phải " + AGY_MCP_SERVER + ")"
-          : s.tool_name === "call_mcp_tool" && LIGHT_MODES.includes(run.state.mode) ? "công cụ MCP trong lượt không dùng trình duyệt" : "";
+        const imgRun = run.agyImage, noMcp = LIGHT_MODES.includes(run.state.mode) || imgRun;
+        const bad = (imgRun && (s.tool_name === "generate_image" || (s.tool_name === "invoke_subagent" && (s.subagent_info?.subagents || []).length > 0 && (s.subagent_info.subagents).every((x) => /^image-generator$/i.test(String(x.type_name || "")))))) ? ""
+          : s.tool_name === "invoke_subagent" ? "subagent không phải image-generator"
+          : AGY_FORBIDDEN_TOOL.test(s.tool_name) ? "công cụ " + s.tool_name + " của chính Antigravity"
+          : s.tool_name === "call_mcp_tool" && !noMcp && p.ServerName !== AGY_MCP_SERVER ? "máy chủ MCP \"" + String(p.ServerName || "?") + "\" (không phải " + AGY_MCP_SERVER + ")"
+          : s.tool_name === "call_mcp_tool" && noMcp ? "công cụ MCP trong lượt không dùng trình duyệt" : "";
         if (bad) {
           run.abort = "Antigravity dùng " + bad + ", không phải Playwright MCP của lượt chạy: đã dừng để không mở trình duyệt thứ hai.";
           addLine(run, "⚠ " + run.abort); touch(run);
@@ -480,18 +493,20 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
     if ((kind === "light") !== lightMode) return { ok: false, status: 400, error: `Mode ${mode} does not run on this runner.` };
     if (cur) return { ok: false, status: 409, error: `An agent run is already active (started ${cur.state.started}). Wait for it or press Stop.` };
     const agentSet = readAgentSettings(workspace || join(toolRoot, "workspace"), join(toolRoot, "workspace")), backend = agentSet.backend, agy = backend === "antigravity", who = AGENT_NAME[backend];
+    // Antigravity makes the images itself (image-generator subagent): the image run needs no Chrome, no Playwright MCP, no Flow account.
+    const agyImage = agy && mode === "flow", noBrowser = lightMode || agyImage;
     const found = agy ? findAgyCli() : findCli();
     if (!found?.found) return { ok: false, status: 400, error: agy ? "Antigravity CLI (agy) not found: install Antigravity and sign in with Google, or set PR_AGY_CLI to its path." : "Claude CLI not found: install Claude Code, or set PR_CLAUDE_CLI to its path." };
-    if (!lightMode && !npxOk()) return { ok: false, status: 400, error: "npx is not available (it comes with Node.js): the Playwright MCP cannot start." };
+    if (!noBrowser && !npxOk()) return { ok: false, status: 400, error: "npx is not available (it comes with Node.js): the Playwright MCP cannot start." };
     let prompt;
     try { prompt = buildPrompt({ toolRoot, run: runId, options, mode, site, max, project, workspace, agentName: agy ? "Antigravity" : "Claude Code" }); } catch (e) { return { ok: false, status: 500, error: sanitize(e.message) }; }
     mkdirSync(tmpDir, { recursive: true }); mkdirSync(runsDir, { recursive: true });
     const cfg = join(tmpDir, `mcp-${runId}-${randomBytes(3).toString("hex")}.json`);
-    const bc = lightMode ? {} : (getBrowser() || {}), ext = !lightMode && bc.mode !== "own";
+    const bc = noBrowser ? {} : (getBrowser() || {}), ext = !noBrowser && bc.mode !== "own";
     if (ext) { const chk = checkProfile(bc.profile, { account: mode === "flow" ? readFlowAccount(workspace, join(toolRoot, "workspace")) : "" }); if (!chk.ok) return { ok: false, status: 409, error: chk.error }; }
     // Sessions (several windows): the own Chrome profile and a project are used by one live session at a time.
     const holderText = (h) => "phiên \"" + sessionLabel(h.session) + "\"";
-    if (!lightMode && !ext) {
+    if (!noBrowser && !ext) {
       const c = claimLock(toolRoot, "chrome", "own", session, process.pid, kind);
       if (!c.ok) return { ok: false, status: 409, error: "Chrome riêng của tool đang được " + holderText(c.holder) + " dùng. Chọn Chrome thật (profile có sẵn trên máy) hoặc đợi phiên đó chạy xong." };
     }
@@ -507,8 +522,8 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
       if (!c.ok) { releaseLocks(toolRoot, session, process.pid, kind); return { ok: false, status: 409, error: "Kho ảnh đang được " + holderText(c.holder) + " gắn nhãn. Đợi lượt đó xong." }; }
     }
     const group = ext ? takeGroup(workspace, session) : null;
-    if (!lightMode) writeFileSync(cfg, JSON.stringify(mcpConfig({ plat, profile: profileDir, headless, extension: ext ? { profile: bc.profile, name: group.name, color: group.color, background: mode !== "flow" } : null })));
-    if (!lightMode && !ext) mkdirSync(profileDir, { recursive: true });
+    if (!noBrowser) writeFileSync(cfg, JSON.stringify(mcpConfig({ plat, profile: profileDir, headless, extension: ext ? { profile: bc.profile, name: group.name, color: group.color, background: mode !== "flow" } : null })));
+    if (!noBrowser && !ext) mkdirSync(profileDir, { recursive: true });
     const claudeSet = readClaudeSettings(workspace || join(toolRoot, "workspace"), join(toolRoot, "workspace"));
     const asked = agy ? { model: agentSet.agyModel, effort: agentSet.agyEffort } : claudeSet;
     // Optional per-profile Playwright extension token (shared workspace/playwright-tokens.json): through this env for Claude, never in a log.
@@ -524,7 +539,7 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
       : mode === "scan"
       ? "RUN-NOW NOTE: this run uses the tool's OWN Chrome (a dedicated profile, no sign-in needed to scan a shop)" + (headless ? ", running in the background (headless)" : "") + ". There is no Connect step and no extension: ignore any instruction to click Connect or wait for the person; start with browser_tabs or browser_navigate. If the site asks for a login or shows a captcha, stop and report it (never sign in for the person)." + "\n\n"
       : "RUN-NOW NOTE: this run uses the tool's OWN Chrome (a dedicated profile the person already signed in to Google Flow with)" + (headless ? ", running in the background (headless)" : "") + ". There is no Connect step and no extension: ignore any instruction to click Connect or wait for the person; start with browser_tabs or browser_navigate. If Flow shows a Google sign-in page, stop and report CAUSE:LOGIN (never sign in for the person)." + "\n\n";
-    const intro = (ext && mode !== "queue" ? extensionNote({ groupName: group.name, session: sessionLabel(session), downloadsDir: join(workspace, "tmp", "flow-downloads"), tokenSet: !!extToken, flow: mode === "flow" }) : note) + prompt;
+    const intro = (agyImage ? "" : ext && mode !== "queue" ? extensionNote({ groupName: group.name, session: sessionLabel(session), downloadsDir: join(workspace, "tmp", "flow-downloads"), tokenSet: !!extToken, flow: mode === "flow" }) : note) + prompt;
     let args, agyDir = "";
     if (agy) {
       // Antigravity has no per-run MCP flag (--settings refuses mcpServers) and global config must stay untouched, so the run gets a folder of its own
@@ -533,9 +548,9 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
       agyDir = join(tmpdir(), "pr-agy-" + runId + "-" + randomBytes(3).toString("hex"));
       try {
         mkdirSync(join(agyDir, ".agents", "plugins", AGY_PLUGIN), { recursive: true });
-        writeFileSync(join(agyDir, "prompt.md"), agyNote(lightMode) + intro, "utf8");
+        writeFileSync(join(agyDir, "prompt.md"), agyNote(lightMode, agyImage) + intro, "utf8");
         writeFileSync(join(agyDir, ".agents", "plugins", AGY_PLUGIN, "plugin.json"), JSON.stringify({ name: AGY_PLUGIN }));
-        if (!lightMode) {
+        if (!noBrowser) {
           const server = { ...mcpConfig({ plat, profile: profileDir, headless, extension: ext ? { profile: bc.profile, name: group.name, color: group.color } : null }).mcpServers.playwright };
           // agy starts the MCP from its own language server: the extension token travels in this file (a private temp folder, deleted when the run ends).
           if (extToken) server.env = { ...(server.env || {}), PLAYWRIGHT_MCP_EXTENSION_TOKEN: extToken };
@@ -555,7 +570,7 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
     const started = new Date(now()).toISOString();
     const run = { child, cfg, lines: [], buf: "", written: 0, stderr: [], ended: false, forced: "", result: null, timer: null,
       state: { run_id: runId, mode, project, pid: child.pid ?? null, started, updated: started, status: "running", exit_code: null, last_text: "", turns: 0, error: "", model_in_use: asked.model } };
-    run.asked = asked; run.backend = backend; run.who = who; run.agyDir = agyDir;
+    run.asked = asked; run.backend = backend; run.who = who; run.agyDir = agyDir; run.agyImage = agyImage;
     run.prefix = "[" + (FEATURE[mode] || mode) + (project ? " · " + project : "") + "] ";
     cur = run;
     try { writeFileSync(logFile, ""); } catch {}
@@ -565,7 +580,7 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
       : mode === "scan" ? "Bắt đầu: " + who + " quét " + site + " (mã lượt " + runId + ")"
       : mode === "queue" ? "Bắt đầu: " + who + " thêm sản phẩm của dự án " + project + " vào hàng chờ (mã lượt " + runId + ")"
       : mode === "reviews" ? "Bắt đầu: " + who + " đọc số review trên các trang sản phẩm của dự án " + project + " (mã lượt " + runId + ")"
-      : "Bắt đầu: " + who + " điều khiển Google Flow (mã lượt " + runId + ")");
+      : (agyImage ? "Bắt đầu: Antigravity (tạo ảnh) tạo ảnh và viết review (mã lượt " + runId + ")" : "Bắt đầu: " + who + " điều khiển Google Flow (mã lượt " + runId + ")"));
     saveState(run.state);
     child.stdout?.on("data", (c) => feed(run, c));
     child.stderr?.on("data", (c) => { for (const l of c.toString("utf8").split(/\r?\n/)) { const t = sanitize(l); if (t) { run.stderr.push(t); if (run.stderr.length > 20) run.stderr.shift(); addLine(run, "Cảnh báo: " + t); } } });

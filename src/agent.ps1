@@ -482,7 +482,7 @@ function Test-AgentSignRead($Entry) {
     # User 2026-11-23: ONE redo; if the redo is still wrong, keep the image anyway (registered, flagged sign_mismatch so the
     # reviewer sees it in Duyệt) and go on. Never an error that drops the item.
     if ($misses -le 1) {
-        Stop-AgentWith ([ordered]@{ ok = $false; error = "The sign reads '$SignRead' but sign_text is '$expected'. Not registered. Redo this item ONCE in Flow with the same condensed_prompt, then register-image again with -SignRead (if it is still wrong then, it is kept anyway)."; cause = 'SIGN_TEXT_MISMATCH'; item = $id; expected = $expected; read = $SignRead; redo = $true; redos_left = 1 })
+        Stop-AgentWith ([ordered]@{ ok = $false; error = "The sign reads '$SignRead' but sign_text is '$expected'. Not registered. Redo this item ONCE (in Flow, or through the image generator when the agent is Antigravity) with the same condensed_prompt, then register-image again with -SignRead (if it is still wrong then, it is kept anyway)."; cause = 'SIGN_TEXT_MISMATCH'; item = $id; expected = $expected; read = $SignRead; redo = $true; redos_left = 1 })
     }
     return [ordered]@{ expected = $expected; read = $SignRead; ok = $false; misses = $misses; kept_anyway = $true; note = "sign_mismatch: reads '$SignRead' instead of '$expected' after $misses tries; kept for review" }
 }

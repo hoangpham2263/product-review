@@ -1735,7 +1735,7 @@ function updateActionAvailability() {
   for (const b of [ui.btnFlowOpen, ui.btnFlowCheck]) if (b) b.disabled = busy || flowLogin.checking;
   for (const b of [ui.btnRun, ui.btnSetup, ui.btnLogs, ui.btnReview, ui.btnOut, ui.btnUpdate, ui.btnClearLog, ui.btnAdd, ui.btnBulk, ui.btnClear, ui.btnProjects]) b.disabled = busy;
   // Claude (Flow) cannot start until its own Chrome is signed in to Google Flow.
-  if (isFlow(ui.cmbBackend?.value) && !flowExtensionMode() && flowLogin.state !== "logged_in") ui.btnRun.disabled = true;
+  if (ui.cmbBackend?.value === "agent" && !flowExtensionMode() && flowLogin.state !== "logged_in") ui.btnRun.disabled = true;
   ui.btnStop.disabled = !run.active;
   // Chạy tiếp continues a Claude (Flow) run, so it is only offered when Tạo ảnh = Claude (Flow); with Codex, Bắt đầu already continues (finished links leave the queue).
   if (ui.btnResume) ui.btnResume.disabled = busy || !ui.resumeRun || ui.btnRun.disabled || !isFlow(ui.cmbBackend?.value);
@@ -1933,6 +1933,7 @@ function refreshFlowCheck() {
 }
 // Before Bắt đầu / Chạy tiếp with Claude (Flow): re-read the profiles, stop on a wrong account (the server refuses it too), ask on a warning.
 async function flowPreflight() {
+  if (ui.cmbBackend?.value === "agent-agy") return true; // Antigravity makes the images itself: no Chrome profile, no Flow account
   await ui.refreshFlowProfiles?.();
   const c = flowAccountCheck();
   if (c.block) { await messageBox(c.block, "Tài khoản Flow"); return false; }
@@ -1949,7 +1950,7 @@ function applyFlowBrowserMode() {
     updateActionAvailability();
   } else {
     ui.btnFlowOpen.title = "Mở Chrome riêng của tool để đăng nhập Google Flow (đăng nhập xong đóng cửa sổ đó rồi Kiểm tra lại).";
-    flowLogin.state = ""; if (isFlow(ui.cmbBackend?.value)) checkFlowLogin();
+    flowLogin.state = ""; if (ui.cmbBackend?.value === "agent") checkFlowLogin();
   }
 }
 const FLOW_TEXT = {
@@ -1984,8 +1985,8 @@ async function openFlowLogin() {
 function updateAgentControls() {
   const on = isFlow(ui.cmbBackend?.value);
   if (!ui.flowLoginBox) return;
-  ui.flowLoginBox.style.display = on ? "" : "none";
-  if (on && !flowLogin.state && !flowLogin.checking && !flowExtensionMode()) checkFlowLogin();
+  ui.flowLoginBox.style.display = ui.cmbBackend.value === "agent" ? "" : "none"; // Chrome profile / Flow account / sign-in only for Claude (Flow)
+  if (ui.cmbBackend.value === "agent" && !flowLogin.state && !flowLogin.checking && !flowExtensionMode()) checkFlowLogin();
   updateActionAvailability();
   ui.lblTokens.style.display = ui.lblQuota.style.display = on ? "none" : "";
 }
@@ -2016,7 +2017,7 @@ async function resumeRun() {
   attachAgent(Date.now());
 }
 function attachAgent(started) {
-  Object.assign(run, { agent: true, since: 0, total: countUrls(), done: 0, stopped: false, failure: false, started, resultFolder: "", ai: agentName() + " (Google Flow)" });
+  Object.assign(run, { agent: true, since: 0, total: countUrls(), done: 0, stopped: false, failure: false, started, resultFolder: "", ai: agentName() === "Antigravity" ? "Antigravity (tạo ảnh)" : "Claude (Google Flow)" });
   setRunning(true);
   setStatus("Đang chạy", "var(--accent)");
   setBar(0, 1, true);

@@ -11,7 +11,7 @@ import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
 import { randomUUID, createHash } from "node:crypto";
 import { createConfigApi } from "../../core/setup/config-api.mjs";
-import { createAgentRunner, buildPrompt, newRunId, readFlowAccount, FEATURE, CLAUDE_MODEL_GROUPS, CLAUDE_DEFAULT_MODEL, isClaudeModel, CLAUDE_EFFORTS, AGENT_BACKENDS, AGY_EFFORTS, isAgyModel, listAgyModels } from "../../core/setup/agent-run.mjs";
+import { createAgentRunner, buildPrompt, newRunId, readFlowAccount, FEATURE, CLAUDE_MODEL_GROUPS, CLAUDE_DEFAULT_MODEL, isClaudeModel, CLAUDE_EFFORTS, AGENT_BACKENDS, AGY_EFFORTS, isAgyModel, listAgyModels, readAgentSettings } from "../../core/setup/agent-run.mjs";
 import { readFlowBrowser, saveFlowBrowser, localChromeProfiles, tokenProfiles, saveExtensionToken, followFlowAccount } from "../../core/setup/flow-browser.mjs";
 import { currentSession, sessionLabel, sessionWorkspace, sharedWorkspace, registerSession, updateSession, unregisterSession, listSessions, lockHolder, releaseLocks, peekGroup, sessionTitle, profileLabelOf, projectBusyBy, setSessionProject, claimProjectFocus, readSeededJson, updateJsonLocked, SESSION_RE } from "../../core/setup/session.mjs";
 import { createFlowLogin, profileDirOf, profileGoogleAccounts, findChrome, flowOpenUrl, WINDOW_ARGS } from "../../core/setup/flow-login.mjs";
@@ -444,7 +444,8 @@ async function handle(req, res) {
     if (run.proc) return send(res, 409, { error: "Đang chạy." });
     const given = JSON.parse((await body(req)).toString("utf8") || "{}");
     if (agent.isActive()) return send(res, 409, { error: "Đã có một lượt Claude đang chạy." });
-    const login = readFlowBrowser(workspace, sharedWs).mode === "own" ? await flowLogin.status() : { state: "logged_in" };
+    // Antigravity makes the images itself: no Flow, no Chrome, so no Flow sign-in check.
+    const login = readAgentSettings(workspace, sharedWs).backend === "antigravity" || readFlowBrowser(workspace, sharedWs).mode !== "own" ? { state: "logged_in" } : await flowLogin.status();
     if (login.state !== "logged_in") return send(res, 409, { error: login.state === "logged_out" ? "Chưa đăng nhập Google Flow trong Chrome riêng: bấm Mở Chrome để đăng nhập, đăng nhập xong đóng cửa sổ đó rồi Kiểm tra lại." : "Chưa chạy được Claude: " + login.detail });
     // given.run (Chạy tiếp): only an existing Claude run of this window (its folder is used as is).
     if (given.run && (!/^agent-[0-9a-z-]{6,60}$/i.test(String(given.run)) || !existsSync(join(workspace, "output", String(given.run), "agent-items.json")))) return send(res, 400, { error: "Không tìm thấy lượt để chạy tiếp." });

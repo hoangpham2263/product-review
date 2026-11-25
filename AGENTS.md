@@ -133,6 +133,10 @@ Codex Windows sandbox: mỗi `-C WorkDir` có capability SID riêng (`~/.codex/c
 - `workspace/output/`: kết quả và log cục bộ, Git bỏ qua.
 
 <!-- app-lessons:start -->
+## Tạo ảnh bằng Antigravity (không Flow)
+
+- Picker Tạo ảnh = Antigravity chạy `docs/agent-prompt-agy-image.md` (runner `core/setup/agent-run.mjs`): Antigravity tự tạo ảnh bằng subagent `image-generator` (`generate_image`, ảnh tham chiếu = 2 file `uploads` của `flow-brief`), không Google Flow, không Chrome, không Playwright. Mọi luật ảnh vẫn nằm trong `flow-brief`/bước context (chữ trên biển, logo thay, ảnh mặc cắt gần, khung hình từng mục); `register-image` nhận cả jpg. Chi tiết: RUNBOOK.md mục "Agent backend".
+
 ## Bài học đã đúc kết
 
 Bài học được đúc kết thành nguyên tắc ngắn để áp dụng lần sau, không chép lời phản hồi hoặc kể lịch sử xử lý. Chỉ áp dụng đúng URL/danh mục; yêu cầu mới nhất của người dùng có ưu tiên cao nhất. Comment giữ mã và phạm vi để app đọc, bật/tắt bài học.
