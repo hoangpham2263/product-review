@@ -332,11 +332,27 @@ function Get-WornVariation([string]$Key) {
     $v[$sum % $v.Count]
 }
 
+# INVENTED brand names for custom-logo products (polos, hats ...): the sample logo is replaced by one of these, never a real or famous brand. ~60 fictional-sounding names; the name is picked
+# per run + item: consecutive items of a run get different names, the same item always the same one (so the Safe retry and a redo agree), and one product with several logo areas uses it everywhere.
+$script:InventedBrandNames = @('Valdoran', 'Ashgrove Co', 'Tarnwick', 'Lumeris', 'Oakhaven', 'Brindle & Rowe', 'Northcastle', 'Halvorn', 'Kestrel Ridge', 'Marrowby', 'Fenwick Lane', 'Corvane', 'Thistledown', 'Wrenfield', 'Dunmoor',
+    'Quillon', 'Ravensmere', 'Alderwyn', 'Bexmoor', 'Calderyn', 'Dovrel', 'Fallowen', 'Garrowick', 'Hollinbrook', 'Ivermere', 'Jessamoor', 'Kingsvale', 'Larkwyn', 'Mereford', 'Norrowby', 'Oldmarlow', 'Penhallow', 'Quenby Co', 'Redwick',
+    'Stonehelm', 'Thornlea', 'Ullswood', 'Vexford', 'Wyndmere', 'Yarrowby', 'Zennorth', 'Ambrose & Vale', 'Birchmoor Co', 'Cinderfell', 'Dunwick', 'Eskerton', 'Farrowdale', 'Glenhollow', 'Hartlow', 'Ironbrook', 'Juniper & Lane',
+    'Kelmarsh', 'Lowenfield', 'Mistral Hill', 'Nettlecombe', 'Orrinford', 'Pellmoor', 'Rookhaven', 'Saltmarsh & Co', 'Tamberlin')
+function Get-InventedBrandName([string]$Key) {
+    $names = $script:InventedBrandNames
+    $match = [regex]::Matches($Key, '(?<![0-9])([0-9]{3})-') | Select-Object -Last 1
+    $number = 0; $prefix = $Key
+    if ($match) { $number = [int]$match.Groups[1].Value; $prefix = $Key.Substring(0, $match.Index) }
+    $sum = 0; foreach ($c in $prefix.ToCharArray()) { $sum = ($sum * 31 + [int]$c) % 100003 }
+    $names[($sum + $number) % $names.Count]
+}
+
 function Get-CondensedFlowPrompt($Context, [string]$SignText = '', [bool]$SafeArt = $false, [string]$VariationKey = '') {
-    # Custom-logo product (STEP 3C): the sample logo is replaced by one small fictional symbol; -Safe (a retry after Flow refused) stays neutral.
+    # Custom-logo product (STEP 3C): the whole sample logo is replaced by an INVENTED brand name (+ at most a tiny simple symbol); -Safe (a retry after Flow refused) stays neutral (no logo text).
     $customLogo = $Context.PSObject.Properties['custom_logo'] -and $Context.custom_logo -eq $true
     $logoPh = if ($customLogo -and $Context.PSObject.Properties['logo_placeholder']) { [string]$Context.logo_placeholder } else { '' }
     $replaceLogo = $customLogo -and -not $SafeArt
+    $logoName = if ($replaceLogo) { Get-InventedBrandName $VariationKey } else { '' }
     $details = ([string]$Context.details -replace '\s+', ' ').Trim()
     # Exact wording: the details must not quote the sample words ("Your Name") as something to copy.
     $exactSign = [bool]@(Get-SignWordingLines $SignText).Count
@@ -377,7 +393,7 @@ function Get-CondensedFlowPrompt($Context, [string]$SignText = '', [bool]$SafeAr
     $lastRule = if ($signRule) {
         "$signRule Do not add objects, people or props that image 1 does not have. One single frame: no collage, split screen or multiple views."
     } elseif ($replaceLogo) {
-        'LOGO: the logo area of image 2 shows replaceable sample branding' + $(if ($logoPh) { ' (' + $logoPh + ')' } else { '' }) + '. Replace the whole sample mark, tagline included, with ONE small plausible fictional symbol in the same logo or embroidery spot: an original simple non-letter shape, no readable words or initials, no real or famous brand, not an imitation of the sample mark. Keep the exact construction, colors, trim, material and every other artwork detail of image 2. Add no labels or watermarks. Do not add objects, people or props that image 1 does not have. One single frame: no collage, split screen or multiple views.'
+        'LOGO: the logo area of image 2 shows replaceable sample branding' + $(if ($logoPh) { ' (' + $logoPh + ')' } else { '' }) + '. Replace the WHOLE sample branding (mark and tagline) with the invented brand name "' + $logoName + '" in simple clean lettering suited to the item (embroidered style on apparel), optionally with a tiny simple original symbol next to it, in the same logo or embroidery spot, the same size, position and color treatment as the sample logo; use that same name on every logo area of the item. The name is fictional: not a real or famous brand, no initials-only, no copy of the sample mark. Keep the exact construction, colors, trim, material and every other detail of image 2. Add no labels or watermarks. Do not add objects, people or props that image 1 does not have. One single frame: no collage, split screen or multiple views.'
     } else {
         'Show the product without any brand name or logo; add no text, labels or watermarks. Do not add objects, people or props that image 1 does not have. One single frame: no collage, split screen or multiple views.'
     }
@@ -438,6 +454,8 @@ function Invoke-AgentFlowBrief {
     $out = [ordered]@{ ok = $true; run = $script:Batch.Id; item = $entry.id; prompt_file = $promptFile; condensed_prompt = (Get-CondensedFlowPrompt $context $signText ([bool]$Safe) "$($script:Batch.Id)-$($entry.id)"); safe = [bool]$Safe; logo_mode = $(if ($context.PSObject.Properties['custom_logo'] -and $context.custom_logo -eq $true) { if ($Safe) { 'neutral (after a refusal)' } else { 'replace with a fictional symbol' } } else { 'none' })
         aspect = $(if (-not $context.presentation -or $context.presentation -eq 'worn') { (Get-WornVariation "$($script:Batch.Id)-$($entry.id)").aspect } else { Get-FlowAspect $request.Images[0] }); uploads = $uploads; register_command = $cmd }
     if ($signText) { $out.sign_text = $signText }
+    # custom-logo item (not the -Safe retry): the invented brand name the prompt uses, so the person can see it
+    if ($context.PSObject.Properties['custom_logo'] -and $context.custom_logo -eq $true -and -not $Safe) { $out.logo_name = Get-InventedBrandName "$($script:Batch.Id)-$($entry.id)" }
     Write-AgentJson $out
 }
 
