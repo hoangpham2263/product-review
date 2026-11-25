@@ -212,7 +212,9 @@ function Invoke-AgentRunSummary([Parameter(Mandatory)][string]$Run) {
         $d = [string]$decisions[$row.item_id]
         $items += [pscustomobject]@{ id = $row.item_id; url = ''; status = $(if ($d -eq 'ok') { 'kept' } elseif ($d -eq 'bad') { 'rejected' } else { 'awaiting_user_review' }); image = ''; review_only = $true }
     }
-    Write-AgentJson ([ordered]@{
+    $siteHosts = @(@($items | ForEach-Object { try { ([Uri][string]$_.url).Host -replace '^www\.', '' } catch { '' } } | Where-Object { $_ } | Group-Object | Sort-Object Count -Descending | ForEach-Object Name))
+    $siteLabel = if ($siteHosts.Count) { $siteHosts[0] + $(if ($siteHosts.Count -gt 1) { " +$($siteHosts.Count - 1) site khác" } else { '' }) } else { '' }
+    Write-AgentJson ([ordered]@{ site = $siteLabel;
         run = $script:Batch.Id; items = $items
         awaiting_user_review = @($items | Where-Object status -eq 'awaiting_user_review').Count
         errors = @($items | Where-Object status -eq 'error').Count

@@ -71,6 +71,8 @@ textarea.text { resize: none; padding: 2px 4px; line-height: 1.3; overflow-y: sc
 .result.error { border-left-color: var(--error); background: #fbeeee; color: var(--error); }
 .logview { position: absolute; background: #fff; border: 1px solid #7a7a7a; padding: 3px 6px; overflow-y: scroll; font-size: 12px; line-height: 1.5; user-select: text; }
 .logview b { font-weight: 400; }
+.runid { color: var(--muted); font-size: 11px; }
+.runday { color: var(--muted); font-size: 11px; padding: 3px 2px 1px; }
 .logview .ok { color: var(--ok); } .logview .warn { color: var(--warn); } .logview .bad { color: var(--error); } .logview .info { color: var(--info); }
 .progress.marquee > span { width: 22%; animation: marquee 2.2s linear infinite; }
 @keyframes marquee { from { transform: translateX(-100%); } to { transform: translateX(460%); } }

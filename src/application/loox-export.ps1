@@ -43,8 +43,18 @@ function Export-ReviewedCsvMany([string[]]$BatchDirs, [string]$ExportRoot) {
     }
     New-Item -ItemType Directory -Force -Path $ExportRoot | Out-Null
     $stamp = (Get-Date).ToString("yyyy-MM-dd_HH'h'mm'm'ss's'")
-    $path = Join-Path $ExportRoot "loox_$stamp.csv"
-    for ($n = 2; Test-Path -LiteralPath $path; $n++) { $path = Join-Path $ExportRoot "loox_$stamp-$n.csv" }
+    # Named after the site of the exported runs (the main host, + N when several): loox_forteraapparel.com_2026-11-25_1517.csv; no site on record (old runs) = the old name.
+    $hostCounts = @{}
+    foreach ($dir in @($ok | ForEach-Object { $_.Dir } | Select-Object -Unique)) {
+        $itemsFile = Join-Path $dir 'agent-items.json'
+        if (-not (Test-Path -LiteralPath $itemsFile)) { continue }
+        try { foreach ($it in @(@(Get-Content -LiteralPath $itemsFile -Raw -Encoding UTF8 | ConvertFrom-Json) | ForEach-Object { $_ })) { $h = ''; try { $h = ([Uri][string]$it.url).Host -replace '^www\.', '' } catch { }; if ($h) { $hostCounts[$h] = 1 + [int]$hostCounts[$h] } } } catch { }
+    }
+    $hosts = @($hostCounts.Keys | Sort-Object { -$hostCounts[$_] }, { $_ })
+    $siteName = if ($hosts.Count) { ($hosts[0] -replace '[^\w.-]', '_') + $(if ($hosts.Count -gt 1) { '+' + ($hosts.Count - 1) } else { '' }) } else { '' }
+    if ($siteName) { $stamp = (Get-Date).ToString('yyyy-MM-dd_HHmm'); $path = Join-Path $ExportRoot "loox_${siteName}_$stamp.csv" } else { $path = Join-Path $ExportRoot "loox_$stamp.csv" }
+    $base = [IO.Path]::GetFileNameWithoutExtension($path)
+    for ($n = 2; Test-Path -LiteralPath $path; $n++) { $path = Join-Path $ExportRoot "$base-$n.csv" }
     $exportRows = @(foreach ($entry in $ok) {
         # Clear only the exported copy: keep the original image/link for comparison and changing the decision later.
         $copy = $entry.Item.Row.PSObject.Copy()

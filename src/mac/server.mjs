@@ -568,6 +568,43 @@ function progressOf(st) {
   return null;
 }
 // The ONE result line of a finished run (any run type): { level: ok | warn | error, text, name, key }. Numbers come from the same facts on disk as the progress.
+// ----- a human label for every run, from facts on disk: 'forteraapparel.com · 25/11 15:17 · 20 link / 40 mục' (+ the window when it is not the default) -----
+const hostOf = (u) => { try { return new URL(String(u).trim()).hostname.replace(/^www\./, ""); } catch { return ""; } };
+const pad2 = (n) => String(n).padStart(2, "0");
+const dmHm = (d) => pad2(d.getDate()) + "/" + pad2(d.getMonth() + 1) + " " + pad2(d.getHours()) + ":" + pad2(d.getMinutes());
+function startOfRun(name, dir) {
+  const a = name.match(/^agent-(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})/), b = name.match(/^(\d{4})-(\d{2})-(\d{2})_(\d{2})h(\d{2})m(\d{2})s/);
+  const m = a || b;
+  if (m) { const d = new Date(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]); if (!Number.isNaN(d.getTime())) return d; }
+  try { const t = rj(join(dir, "agent-run.json")).started; if (t && !Number.isNaN(Date.parse(t))) return new Date(t); } catch {}
+  try { return statSync(dir).birthtime; } catch { return null; }
+}
+function runInfo(name) {
+  const dir = runDirOf(name), info = { id: name, label: name, where: "", host: "", links: 0, items: 0, handles: [], day: "", started: "" };
+  const j = rj(join(dir, "agent-items.json")), items = (Array.isArray(j) ? j : j.items || []).filter((x) => x && x.id);
+  const urls = items.map((x) => x.url).filter(Boolean), counts = {};
+  for (const u of urls) { const h = hostOf(u); if (h) counts[h] = (counts[h] || 0) + 1; }
+  const hosts = Object.keys(counts).sort((a, b) => counts[b] - counts[a]);
+  info.host = hosts[0] ? hosts[0] + (hosts.length > 1 ? " +" + (hosts.length - 1) + " site khác" : "") : "";
+  info.links = new Set(urls).size; info.items = items.length;
+  info.handles = [...new Set(items.map((x) => x.handle || String(x.url || "").split("/").filter(Boolean).pop()).filter(Boolean))].slice(0, 3);
+  const d = startOfRun(name, dir);
+  if (d) { info.started = d.toISOString(); info.day = d.getFullYear() + "-" + pad2(d.getMonth() + 1) + "-" + pad2(d.getDate()); }
+  const sess = session && self && self.stt ? "Phiên #" + self.stt : "";
+  const parts = [info.host || name, d ? dmHm(d) : "", info.items ? info.links + " link / " + info.items + " mục" : "", sess].filter(Boolean);
+  info.label = info.host || d ? parts.join(" · ") : name;
+  info.where = [info.host, info.links ? info.links + " link" : ""].filter(Boolean).join(" · ");
+  return info;
+}
+// where a run happens, for the result line and the status: the site (image run, scan) or the project, plus the link count
+function runWhere(st) {
+  try {
+    if (st.mode === "flow" && st.run_id) return runInfo(st.run_id).where;
+    if (st.mode === "scan") { const sc = scanOfRun(st.run_id); return sc ? (hostOf(sc.site) || sc.project) : ""; }
+    if (st.project) return projectNameOf(st.project);
+  } catch {}
+  return "";
+}
 const humanError = (e) => String(e || "").replace(/\[CAUSE:[A-Z_]+\]\s*/g, "").replace(/\s+/g, " ").trim();
 function resultOf(st) {
   if (!st || !st.status || st.status === "idle" || st.status === "running" || st.active) return null;
@@ -590,9 +627,9 @@ function resultOf(st) {
     text = "Lỗi · " + cause + (body ? " · " + body : "");
   } else if (level === "warn" && st.status === "stopped") text = "Đã dừng" + (body ? " · " + body : "");
   else text = (level === "warn" ? "Xong một phần · " : "Xong · ") + (body ? body + " · " : "") + dur;
-  return { level, text, name: FEATURE[st.mode] || st.mode, key: st.run_id + "|" + (st.updated || st.started || "") };
+  return { level, text, where: runWhere(st), name: FEATURE[st.mode] || st.mode, key: st.run_id + "|" + (st.updated || st.started || "") };
 }
-const withProgress = (st) => ({ ...st, progress: progressOf(st) });
+const withProgress = (st) => ({ ...st, progress: progressOf(st), where: st.active ? runWhere(st) : "" });
 // The shard files of a sharded run are removed when no light run is active any more (only the ones this server wrote).
 function cleanShardFiles() { if (!shardFiles.length || light.isActive()) return; for (const f of shardFiles.splice(0)) { try { rmSync(f, { force: true }); } catch {} } }
 
@@ -932,9 +969,15 @@ async function handle(req, res) {
   }
   // Status of the light runner (queue and prep runs): its own file runs/prep-run.json.
   // ONE status for the run line of every view: what runs now (main runner, light runner, the Codex Bắt đầu run) and the last finished run.
+  // Duyệt: a readable label for every run folder (newest first is the caller's job)
+  if (path === "/api/runs/labels" && req.method === "GET") {
+    const out = {};
+    try { for (const e of readdirSync(join(workspace, "output"), { withFileTypes: true })) if (e.isDirectory()) out[e.name] = runInfo(e.name); } catch {}
+    return send(res, 200, { runs: out });
+  }
   if (path === "/api/runs/status" && req.method === "GET") {
     const view = (st, kind) => ({ kind, feature: FEATURE[st.mode] || st.mode, mode: st.mode, project: st.project ? projectNameOf(st.project) : "", active: !!st.active, elapsed_s: st.elapsed_s || 0,
-      last_text: st.last_text || "", status: st.status, error: st.error || "", started: st.started || "", updated: st.updated || "", progress: progressOf(st), result: resultOf(st) });
+      last_text: st.last_text || "", status: st.status, error: st.error || "", started: st.started || "", updated: st.updated || "", progress: progressOf(st), result: resultOf(st), where: runWhere(st) });
     const m = agent.status(), l = light.status(), running = [];
     if (run.proc) running.push({ kind: "codex", feature: FEATURE.flow, mode: "flow", project: selfProject() ? projectNameOf(selfProject()) : "", active: true, elapsed_s: Math.round((Date.now() - (run.startedAt || Date.now())) / 1000), last_text: "", status: "running", error: "" });
     if (m.active) running.push(view(m, "main"));

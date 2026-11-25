@@ -442,7 +442,7 @@ function layoutLog(withResult) {
 }
 function showResult(r) {
   ui.resultBox.className = "result " + r.level;
-  ui.resultBox.textContent = r.text;
+  ui.resultBox.textContent = (r.where ? r.where + " · " : "") + r.text;
   ui.resultBox.title = (r.name ? r.name + ": " : "") + r.text; ui.resultBox.hidden = false; ui.resultKey = r.key || "";
   layoutLog(true);
 }
@@ -571,7 +571,7 @@ async function refreshSessionBadge() {
   const j = await fetch("/api/session").then((r) => r.json()).catch(() => null);
   if (!j || j.error) return;
   sessionState = j;
-  document.title = j.title; // the window title bar: Product Review · #stt · phiên · profile (shown once, nowhere else)
+  document.title = j.title + (ui.titleSuffix || ""); // the window title bar: Product Review · #stt · phiên · profile (shown once, nowhere else)
 }
 async function loadSessionPicker() {
   const [pr, ss] = await Promise.all([fetch("/api/sessions/projects").then((x) => x.json()).catch(() => ({ projects: [] })), fetch("/api/sessions").then((x) => x.json()).catch(() => ({ sessions: [] }))]);
@@ -1568,17 +1568,26 @@ async function showReviewDialog() {
     refresh();
   };
   // One checkbox per run (newest first); none is chosen when Duyệt opens; the ones already chosen stay chosen when the list is drawn again.
+  let labels = {};
+  const loadLabels = async () => { labels = (await fetch("/api/runs/labels").then((r) => r.json()).catch(() => ({}))).runs || {}; };
+  const dayText = (day) => { if (!day) return "Không rõ ngày"; const d = new Date(day + "T00:00:00"), t = new Date(); t.setHours(0, 0, 0, 0); const diff = Math.round((t - d) / 86400000); return diff === 0 ? "Hôm nay" : diff === 1 ? "Hôm qua" : String(d.getDate()).padStart(2, "0") + "/" + String(d.getMonth() + 1).padStart(2, "0"); };
   const drawRuns = (all, keep) => {
-    // A run with no picture has nothing to review or export: it is not listed.
+    // A run with no picture has nothing to review or export: it is not listed. Newest first, grouped by day, each row named by its site / time / size (the raw id is the grey tail).
     runs = all.filter((x) => x.images > 0).map((x) => {
       const row = el("label", "check runrow");
       const input = el("input", "", { type: "checkbox" });
       input.checked = !!keep && keep.has(x.path);
       input.onchange = load;
-      row.append(input, document.createTextNode(`${x.name} · ${x.images} ảnh · ${x.pending ? `chưa duyệt ${x.pending}` : "đã duyệt hết"}${x.exported ? " · đã xuất" : ""}`));
-      return { path: x.path, input, row };
+      const info = labels[x.name] || {};
+      const idTail = el("span", "runid", { text: "  " + x.name });
+      row.append(input, document.createTextNode(`${info.label || x.name} · ${x.images} ảnh · ${x.pending ? `chưa duyệt ${x.pending}` : "đã duyệt hết"}${x.exported ? " · đã xuất" : ""}`), idTail);
+      row.title = (info.handles && info.handles.length ? "Sản phẩm đầu: " + info.handles.join(", ") + "\n" : "") + x.name;
+      return { path: x.path, input, row, day: info.day || "", started: info.started || "" };
     });
-    runsBox.replaceChildren(...runs.map((r) => r.row));
+    runs.sort((a, b) => String(b.started).localeCompare(String(a.started)));
+    const kids = []; let lastDay = null;
+    for (const r of runs) { if (r.day !== lastDay) { lastDay = r.day; kids.push(el("div", "runday", { text: dayText(r.day) })); } kids.push(r.row); }
+    runsBox.replaceChildren(...kids);
   };
   pickAll.onclick = () => { runs.forEach((r) => { r.input.checked = true; }); load(); };
   pickNone.onclick = () => { runs.forEach((r) => { r.input.checked = false; }); load(); };
@@ -1590,10 +1599,12 @@ async function showReviewDialog() {
       const file = await api("reviewExportAll", { batches: picked });
       exportBtn.textContent = "✓ Đã xuất";
       hint.textContent = "Đã xuất 1 file: " + file;
+      await loadLabels();
       drawRuns(list(await api("reviewBatches")), new Set(picked));
       setTimeout(() => { exportBtn.textContent = "Xuất file Loox"; refresh(); }, 2000);
     } catch (e) { status.textContent = e.message; exportBtn.textContent = "Xuất file Loox"; refresh(); }
   };
+  await loadLabels();
   const all = list(await api("reviewBatches"));
   drawRuns(all);
   if (!all.some((x) => x.images > 0)) status.textContent = "Chưa có lần chạy nào để duyệt. Lần chạy tạo ra ảnh sẽ hiện ở đây.";
@@ -1928,6 +1939,7 @@ async function pollAgent() {
     if (st.progress && st.progress.total > 0) { setBar(st.progress.done, st.progress.total); ui.lblProgress.textContent = st.progress.label; }
     else { setBar(0, 1, true); ui.lblProgress.textContent = st.progress && st.progress.label ? st.progress.label : `${runAi(st)} đang chuẩn bị…  •  ${time}`; }
     setLog(st.tail || []);
+    if (st.where) { setStatus("Đang chạy · " + st.where, "var(--accent)"); ui.titleSuffix = " · Đang chạy · " + st.where; if (sessionState.title) document.title = sessionState.title + ui.titleSuffix; }
     if (!st.active) return finishAgent(st);
   } catch {}
   setTimeout(pollAgent, 1500);
@@ -1935,6 +1947,7 @@ async function pollAgent() {
 // Antigravity's 429 is Google's per-model CAPACITY throttle (not the account usage limit); the run already retried by itself 3 times.
 const quotaMsg = (st) => "Antigravity báo model quá tải / hết dung lượng tạm thời (không phải hạn mức tài khoản)" + (st.quota_reset ? ", thử lại sau " + new Date(st.quota_reset).toTimeString().slice(0, 5) : "") + ". Đổi model Antigravity (Gemini 3.8 Flash hoặc Claude Sonnet 4.6) hoặc chọn Codex / Claude (Flow) rồi Chạy tiếp.";
 async function finishAgent(st) {
+  ui.titleSuffix = ""; if (sessionState.title) document.title = sessionState.title;
   setRunning(false);
   run.agent = false; run.modelInUse = "";
   await loadState();
