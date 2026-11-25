@@ -689,6 +689,16 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
     return { ok: true, status: 200, run_id: runId, started };
   }
 
+  // The FINAL state of a run that ended outside this runner's own process (the phased image job finishes after its last runner is gone): written into the state file so a
+  // restart reads the truth, not the old failure. Done clears any old error / quota text. Creates the state when the file belongs to another run.
+  function setFinal(runId, patch) {
+    if (cur) return false;
+    const base = last && last.run_id === runId ? last : (() => { const s = readState(); return s && s.run_id === runId ? s : null; })();
+    const now0 = new Date(now()).toISOString();
+    const st = { ...(base || { run_id: runId, mode: "flow", project: "", pid: null, started: now0, exit_code: null, last_text: "", turns: 0, model_in_use: "" }), ...patch, updated: now0 };
+    if (patch.status === "done") { st.error = ""; delete st.quota_reset; delete st.quota_raw; st.exit_code = 0; }
+    last = st; saveState(st); return true;
+  }
   function stop() {
     if (!cur && retry) { clearTimeout(retry.timer); retry = null; last = { ...last, status: "stopped", error: "", updated: new Date(now()).toISOString() }; saveState(last); return { ok: true, status: 200, run_id: last.run_id }; }
     if (!cur) return { ok: false, status: 409, error: "No run is active." };
@@ -714,5 +724,5 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
       model_in_use: shown?.model_in_use || "", agent: shown?.agent || "", label_ai: shown?.label_ai || "", quota_reset: shown?.quota_reset || "", last_text: !run && retry ? "Antigravity báo model quá tải: tự thử lại lúc " + new Date(retry.wakeAt).toTimeString().slice(0, 5) + " (lần " + retry.n + "/3)" : shown?.last_text || "", turns: shown?.turns || 0, error: shown?.error || "", updated: shown?.updated || "", tail: lines.slice(-TAIL_LINES),
     };
   }
-  return { start, stop, status, shutdown, isActive: () => !!cur || !!retry };
+  return { start, stop, status, shutdown, setFinal, isActive: () => !!cur || !!retry };
 }

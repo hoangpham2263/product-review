@@ -88,6 +88,7 @@ function finishJob(status, error = "") {
   const base = agentRunner.status();
   jobFinal = { run_id: j.run, status, error, tail: [...(base.run_id === j.run ? base.tail || [] : []), ...j.lines].slice(-30) };
   imgJob = null;
+  try { agentRunner.setFinal(j.run, { status, error, mode: "flow", agent: j.agent, label_ai: j.label_ai }); } catch {}
   if (jobTimer) { clearInterval(jobTimer); jobTimer = null; }
   cleanShardFiles();
 }
@@ -191,8 +192,20 @@ async function jobTick() {
     }
   } finally { j.busy = false; }
 }
+// Everything of the run is there on disk (every item: image, review, result row): the run is done, whatever an older failure in the state file says (e.g. after a restart).
+function runComplete(run) {
+  const ids = jobIds(run); if (!ids.length) return false;
+  const rows = new Set(doneRows(run));
+  return ids.every((id) => hasImg(run, id) && hasRev(run, id) && rows.has(id));
+}
+function reconcile(base) {
+  if (!base || base.active || base.mode !== "flow" || !base.run_id || (base.status !== "failed" && base.status !== "stopped")) return base;
+  if (!runComplete(base.run_id)) return base;
+  try { agentRunner.setFinal(base.run_id, { status: "done", error: "" }); } catch {}
+  return { ...base, status: "done", error: "", quota_reset: "", quota_raw: "" };
+}
 function jobStatus() {
-  const j = imgJob, base = agentRunner.status();
+  const j = imgJob, base0 = agentRunner.status(), base = j ? base0 : reconcile(base0);
   if (!j) return jobFinal && base.run_id === jobFinal.run_id ? { ...base, status: jobFinal.status, error: jobFinal.error || base.error, active: false, tail: jobFinal.tail || base.tail } : base;
   const workers = lightPool.map((r) => r.status()).filter((x) => x.active), imagesNow = j.phase === "images" && base.run_id === j.run;
   const tail = [...j.lines.slice(-4), ...(imagesNow ? base.tail || [] : workers.flatMap((x) => (x.tail || []).slice(-8)))].slice(-30);
@@ -783,9 +796,10 @@ async function handle(req, res) {
     const dir = join(workspace, "output", id);
     let items = [];
     try { const j = JSON.parse(readFileSync(join(dir, "agent-items.json"), "utf8").replace(/^﻿/, "")); items = Array.isArray(j) ? j : (j.items || []); } catch { return none(); }
-    const left = items.filter((it) => it && it.id && !existsSync(join(dir, "images", it.id + ".png"))).length;
-    if (!left) return none();
-    return send(res, 200, { resumable: true, run: id, items: items.length, left, status: st.status || "", updated: st.updated || st.started || "" });
+    const ids = items.filter((it) => it && it.id).map((it) => it.id), rows = new Set(doneRows(id));
+    const left = ids.filter((x) => !hasImg(id, x)).length, leftReviews = ids.filter((x) => hasImg(id, x) && !hasRev(id, x)).length, leftFinish = ids.filter((x) => hasRev(id, x) && !rows.has(x)).length;
+    if (!left && !leftReviews && !leftFinish) return none();
+    return send(res, 200, { resumable: true, run: id, items: items.length, left, left_reviews: leftReviews, left_finish: leftFinish, status: st.status || "", updated: st.updated || st.started || "" });
   }
   if (path === "/api/agent/status" && req.method === "GET") {
     const st = agent.status(), dir = st.run_id ? join(workspace, "output", st.run_id) : "";

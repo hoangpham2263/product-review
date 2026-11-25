@@ -1890,7 +1890,7 @@ async function startAgent() {
 async function refreshResumable() {
   const r = await fetch("/api/agent/resumable").then((x) => x.json()).catch(() => null);
   ui.resumeRun = r?.resumable ? r.run : "";
-  if (ui.btnResume) ui.btnResume.title = ui.resumeRun ? `Chạy tiếp lượt ${r.run}: còn ${r.left}/${r.items} ảnh chưa làm (giữ mô tả và chữ đã chọn).` : "Không có lượt dở dang để chạy tiếp.";
+  if (ui.btnResume) ui.btnResume.title = ui.resumeRun ? `Chạy tiếp lượt ${r.run}: còn ${r.left}/${r.items} ảnh, ${r.left_reviews || 0} review, ${r.left_finish || 0} mục chưa hoàn tất (giữ mô tả và chữ đã chọn).` : "Không có lượt dở dang để chạy tiếp.";
   updateActionAvailability();
 }
 async function resumeRun() {
