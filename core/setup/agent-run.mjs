@@ -743,7 +743,7 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
   }
   function status() {
     const run = cur, st = run ? run.state : last || readState();
-    const shown = st && !run && st.status === "running" ? { ...st, status: "failed", error: "The app closed while this run was active." } : st;
+    const shown = st && !run && st.status === "running" ? { ...st, status: "stopped", error: "Ứng dụng đã đóng khi lượt này đang chạy (không phải lỗi của lượt). Bấm chạy lại để tiếp tục." } : st;
     const lines = run ? run.lines : (() => { try { return readFileSync(logFile, "utf8").split("\n").filter(Boolean); } catch { return []; } })();
     return {
       active: !!run || !!(!run && retry), status: !run && retry ? "running" : shown?.status || "idle", run_id: shown?.run_id || "", mode: shown?.mode || "flow", project: shown?.project || "", started: shown?.started || "",
