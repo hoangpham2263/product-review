@@ -852,8 +852,14 @@ async function handle(req, res) {
         if (typeof given.flowAccount === "string") { const v = given.flowAccount.trim(); if (!v) delete cur.flowAccount; else if (v.length <= 120 && /^[^\s@"<>]+@[^\s@"<>]+\.[^\s@"<>]+$/.test(v)) cur.flowAccount = v; }
         // the two separate pairs of the Dự án popup: Thêm vào hàng chờ (count 1-200, scenes 1-4) and Chuẩn bị trước (count 0-500, 0 = all; scenes 1-4)
         const int = (v, lo, hi) => (Number.isInteger(v) && v >= lo && v <= hi ? v : undefined);
-        for (const [k, lo, hi] of [["queueCount", 1, 200], ["queueScenes", 1, 4], ["prepCount", 0, 500], ["prepScenes", 1, 4], ["projectThreads", 1, 4], ["scanThreads", 1, 4]]) { const v = int(given[k], lo, hi); if (v !== undefined) cur[k] = v; }
+        for (const [k, lo, hi] of [["queueCount", 1, 200], ["queueScenes", 1, 4], ["prepCount", 0, 500], ["prepScenes", 1, 4], ["projectThreads", 1, 4], ["scanThreads", 1, 4], ["scanMax", 1, 200]]) { const v = int(given[k], lo, hi); if (v !== undefined) cur[k] = v; }
         if (typeof given.prepRetrySkipped === "boolean") cur.prepRetrySkipped = given.prepRetrySkipped;
+        // what the person picked in the Dự án / Quét web popups, per window: the project, its category, "Chỉ chưa dùng", the scan link / max / project
+        if (typeof given.unusedOnly === "boolean") cur.unusedOnly = given.unusedOnly;
+        if (typeof given.lastProject === "string" && (given.lastProject === "" || /^[a-z0-9][a-z0-9-]{1,60}$/.test(given.lastProject))) cur.lastProject = given.lastProject;
+        if (typeof given.lastCategory === "string" && given.lastCategory.length <= 120) cur.lastCategory = given.lastCategory.replace(/[\r\n]+/g, " ");
+        if (typeof given.scanSite === "string" && given.scanSite.length <= 300) cur.scanSite = given.scanSite.replace(/[\r\n]+/g, "").trim();
+        if (typeof given.scanProject === "string" && (given.scanProject === "" || /^[a-z0-9][a-z0-9-]{1,60}$/.test(given.scanProject))) cur.scanProject = given.scanProject;
         delete cur.runMode;
         return cur;
       }, {});

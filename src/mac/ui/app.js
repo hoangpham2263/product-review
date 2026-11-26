@@ -853,16 +853,22 @@ function showScanDialog() {
   const say = (text, color = "") => { status.style.color = color; status.textContent = text; };
   const clock = () => { const s = Math.max(0, Math.floor((Date.now() - startedAt) / 1000)); return String(Math.floor(s / 60)).padStart(2, "0") + ":" + String(s % 60).padStart(2, "0"); };
   const setBusy = (on) => { start.disabled = on; stop.disabled = !on; siteBox.readOnly = maxBox.readOnly = on; projectBox.disabled = on; };
-  // Existing projects: picking one fills the link and its last "tối đa" (no re-typing, and the web is updated, not scanned again).
+  // The link, "Tối đa" and the project picked last time come back (saved per window); a scan that is running shows its own link.
   let known = [];
-  api("projects").then((all) => {
+  const rememberScan = () => fetch("/api/run-settings", { method: "POST", body: JSON.stringify({ scanSite: siteBox.value.trim(), scanMax: Number(maxBox.value) || 20, scanProject: projectBox.value }) }).catch(() => {});
+  const savedScan = fetch("/api/run-settings").then((x) => x.json()).then((s) => { if (s.scanSite) siteBox.value = s.scanSite; if (s.scanMax) maxBox.value = s.scanMax; return s.scanProject || ""; }).catch(() => "");
+  api("projects").then(async (all) => {
     known = list(all);
     projectBox.setItems(["", ...known.map((p) => p.id)], ["Chọn dự án…", ...known.map((p) => `${p.name || p.id} (${p.products} sản phẩm)`)]);
+    const wantProject = await savedScan;
+    if (wantProject && known.some((p) => p.id === wantProject)) projectBox.value = wantProject;
   }).catch(() => {});
   projectBox.onchange = () => {
     const p = known.find((x) => x.id === projectBox.value);
     if (p) { siteBox.value = p.site; maxBox.value = p.max_per_collection || 20; }
+    rememberScan();
   };
+  siteBox.onchange = maxBox.onchange = rememberScan;
   const poll = async () => {
     const st = await fetch("/api/scan/status").then((x) => x.json()).catch(() => null);
     if (!st) return;
@@ -975,14 +981,18 @@ function showProjectsDialog(pick = "") {
   indexBtn.title = "AI xem mỗi ảnh trong kho MỘT lần (trên tấm ảnh ghép) và gắn nhãn: nơi chốn, có người, ánh sáng, chỗ tường trống, hợp loại sản phẩm nào. Chuẩn bị trước và Thêm vào hàng chờ dùng nhãn này để chỉ xem ít ảnh hợp nhất. Chỉ gắn ảnh chưa có nhãn; chạy được khi Bắt đầu đang chạy.";
   view.body.append(listTitle, unpick, projectLine, listBox, addWeb, catLabel, catBox, unusedOnly, countLabel, tableBox, status, thrLabel, runThreads, qTitle, qCountHint, queueCount, qSceneHint, sceneCount, queueBtn, divider, pTitle, retrySkipped, pCountHint, prepCount, pSceneHint, prepScenes, prepBtn, scanBtn, reviewsBtn, openDir, stop, stopMain, close, runBox, indexLine, indexBtn);
   // each pair is remembered separately (this session's run-settings); the buttons read only their own boxes
-  fetch("/api/run-settings").then((x) => x.json()).then((s) => {
+  // the window's saved picks: project, its category, "Chỉ chưa dùng" (default on) come back when the popup opens; loadProjects waits for them
+  let savedPick = { project: "", category: "" };
+  const settingsReady = fetch("/api/run-settings").then((x) => x.json()).then((s) => {
+    savedPick = { project: s.lastProject || "", category: s.lastCategory || "" };
+    unusedOnly.input.checked = s.unusedOnly !== false;
     runThreads.value = s.projectThreads || s.threads || 1;
     if (s.queueCount) queueCount.value = s.queueCount; if (s.queueScenes) sceneCount.value = s.queueScenes;
     if (s.prepCount !== undefined) prepCount.value = s.prepCount; if (s.prepScenes) prepScenes.value = s.prepScenes;
     retrySkipped.input.checked = s.prepRetrySkipped === true;
     refreshPrepared();
   }).catch(() => {});
-  const remember = () => fetch("/api/run-settings", { method: "POST", body: JSON.stringify({ queueCount: queueCount.value, queueScenes: sceneCount.value, prepCount: prepCount.value, prepScenes: prepScenes.value, prepRetrySkipped: retrySkipped.input.checked, projectThreads: thr() }) }).catch(() => {});
+  const remember = () => fetch("/api/run-settings", { method: "POST", body: JSON.stringify({ queueCount: queueCount.value, queueScenes: sceneCount.value, prepCount: prepCount.value, prepScenes: prepScenes.value, prepRetrySkipped: retrySkipped.input.checked, projectThreads: thr(), unusedOnly: unusedOnly.input.checked, lastProject: current, lastCategory: catBox.value }) }).catch(() => {});
   runThreads.onchange = remember;
   queueCount.onchange = remember; prepCount.onchange = remember; prepScenes.onchange = remember; retrySkipped.input.onchange = remember;
   sceneCount.onchange = () => { remember(); refreshPrepared(); }; // the footer counts the prepared rows the queue can use with THIS number of scenes
@@ -1073,7 +1083,7 @@ function showProjectsDialog(pick = "") {
 
   // The category list: every category of the menu, then any that only appear in the table.
   const fillCategories = () => {
-    const keep = catBox.value;
+    const keep = catBox.value || (current && current === savedPick.project ? savedPick.category : ""); // the saved category only for its own project, and only if it still exists
     const names = [], seen = new Set();
     for (const m of list(data?.menu)) { if (m.name && !seen.has(m.name)) { seen.add(m.name); names.push(m.name); } }
     for (const r of data?.rows || []) { if (r.collection && !seen.has(r.collection)) { seen.add(r.collection); names.push(r.collection); } }
@@ -1100,6 +1110,7 @@ function showProjectsDialog(pick = "") {
     sessionState.project = id;
     await refreshSessionBadge(); // the window title follows the focus
     await choose(id);
+    remember(); // this window opens on this project next time
     await loadProjects(id, true); // the list shows the new holder at once
     if (ui.sessionsPanel && ui.sessionsPanel.style.display !== "none") loadSessionPicker(); // and so does an open Các phiên panel
   };
@@ -1229,8 +1240,8 @@ function showProjectsDialog(pick = "") {
   // Gắn nhãn kho ảnh: Claude tags the untagged library photos once (light runner, no browser; Bắt đầu keeps running). The index is shared by every project.
   indexBtn.onclick = () => begin("/api/library/index/run", {}, "index", "Chưa bắt đầu gắn nhãn kho ảnh được.");
   openDir.onclick = () => data && api("openPath", { path: data.project.dir });
-  catBox.onchange = () => { renderTable(); refreshPrepared(); };
-  unusedOnly.input.onchange = () => { renderTable(); refreshPrepared(); };
+  catBox.onchange = () => { savedPick = { project: current, category: catBox.value }; remember(); renderTable(); refreshPrepared(); };
+  unusedOnly.input.onchange = () => { remember(); renderTable(); refreshPrepared(); };
   // Closing the popup leaves a running scan or review update running; opening it again picks it up.
   view.onClose = () => { if (timer) { clearInterval(timer); timer = null; } };
   view.cancel = close.onclick = () => view.close();
@@ -1238,7 +1249,10 @@ function showProjectsDialog(pick = "") {
   // Never an empty box while the list loads: the last known list at once (refreshed right after), else a loading line.
   if (window.__prProjectsCache && window.__prProjectsCache.length) { projects = window.__prProjectsCache.filter((p) => !lockedProject || p.id === lockedProject); renderList(); }
   else listBox.replaceChildren(el("div", "label muted", { text: "Đang tải danh sách dự án…", style: { position: "static", padding: "10px", whiteSpace: "normal" } }));
-  loadProjects(pick || sessionState.project || "").then(() => watch());
+  settingsReady.then(() => loadProjects(pick || sessionState.project || savedPick.project || "")).then(async () => {
+    // after a restart nothing holds a project yet: the saved one is selected again (if it still exists and is free)
+    if (!pick && !sessionState.project && savedPick.project && !current && projects.some((p) => p.id === savedPick.project && !p.heldBy)) await selectProject(savedPick.project);
+  }).then(() => watch());
 }
 
 async function showProductDialog(target = null) {
