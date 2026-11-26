@@ -6,7 +6,7 @@ param(
     [Parameter(Position = 0)][string]$Command = '',
     [string]$Run = '', [string]$Item = '', [string]$File = '', [string]$From = '',
     [int]$Limit = 0, [string]$List = '',
-    [string]$Text = '', [string]$Reason = '', [string]$SignRead = '', [string]$Backend = '', [switch]$Safe,
+    [string]$Text = '', [string]$Reason = '', [string]$SignRead = '', [string]$Backend = '', [switch]$Safe, [switch]$Cached,
     [Parameter(ValueFromRemainingArguments = $true)]$Rest
 )
 
@@ -15,6 +15,7 @@ $OutputEncoding = [Text.UTF8Encoding]::new($false)
 [Console]::InputEncoding = $OutputEncoding
 [Console]::OutputEncoding = $OutputEncoding
 $ProjectRoot = Split-Path $PSScriptRoot -Parent
+. (Join-Path $PSScriptRoot '../core/setup/atomic-file.ps1')
 
 # Several workers (Luồng above 1) run CLI commands of ONE run at the same time: the commands that read-modify-write shared run files (set-sign-text writes agent-items.json
 # and checks the wording of the other items; write-review checks the reviews already written; finish appends to results.json) hold one lock per run, so no two of them
@@ -228,9 +229,45 @@ function Invoke-AgentPrepare {
 }
 
 # --- 2. context-brief / context --------------------------------------------------------------------------------
+# ---- Product context cache: workspace/product-contexts.json (shared by every run and window), key = sha256 of the PRODUCT photo ----
+# The product part of the context (type, presentation, details, lettered, sample text, custom logo flags) only depends on the product photo, so the two items of a
+# product (and a re-queued product, any later run) reuse it: context-brief returns it as cached_context, "context -Cached" stores it without another look.
+$ContextCachePath = if ($env:PR_CONTEXT_CACHE) { $env:PR_CONTEXT_CACHE } else { Join-Path $ProjectRoot 'workspace/product-contexts.json' }
+function Get-ProductPhotoSha($Entry) {
+    $p = [string]$Entry.product_image
+    if (-not $p -or -not (Test-Path -LiteralPath $p -PathType Leaf)) { return '' }
+    return (Get-FileHash -LiteralPath $p -Algorithm SHA256).Hash.ToLowerInvariant()
+}
+function Read-ContextCache {
+    if (-not (Test-Path -LiteralPath $ContextCachePath)) { return @{} }
+    try { $j = [IO.File]::ReadAllText($ContextCachePath).TrimStart([char]0xFEFF) | ConvertFrom-Json } catch { return @{} }
+    $m = @{}; if ($j -and $j.items) { foreach ($p in $j.items.PSObject.Properties) { $m[$p.Name] = $p.Value } }
+    return $m
+}
+function Get-CachedProductContext([string]$Sha) {
+    if (-not $Sha) { return $null }
+    $m = Read-ContextCache
+    if ($m.ContainsKey($Sha)) { return $m[$Sha] }
+    return $null
+}
+function Save-CachedProductContext([string]$Sha, $Raw, $Cats) {
+    if (-not $Sha) { return }
+    try {
+        [void](Use-FileLock ($ContextCachePath + '.lock') {
+            $m = Read-ContextCache
+            $m[$Sha] = [ordered]@{ raw = $Raw; source_categories = @($Cats); saved = (Get-Date).ToString('s') }
+            $out = [ordered]@{}; foreach ($k in @($m.Keys | Sort-Object)) { $out[$k] = $m[$k] }
+            Write-FileAtomic $ContextCachePath (ConvertTo-Json -InputObject ([ordered]@{ schema = 1; items = $out }) -Depth 6) ([Text.UTF8Encoding]::new($false))
+            $true
+        })
+    } catch { }
+}
+
 function Invoke-AgentContextBrief {
     Open-AgentRun $Run
     $entry = Get-AgentItem $Item
+    $hit = Get-CachedProductContext (Get-ProductPhotoSha $entry)
+    if ($hit) { Write-AgentJson ([ordered]@{ ok = $true; run = $script:Batch.Id; item = $entry.id; cached = $true; cached_context = $hit.raw; next = "context -Run $($script:Batch.Id) -Item $($entry.id) -Cached (this product photo already has its context from an earlier item or run: no need to look at it again)" }); return }
     Write-AgentJson ([ordered]@{ ok = $true; run = $script:Batch.Id; item = $entry.id; product_image = $entry.product_image; prompt = (Get-ProductContextPrompt $entry.handle)
             file_format = '{"product":"...","presentation":"worn|held|placed|vehicle","details":"numbered visible details","lettered":true|false (true = the product photo shows SAMPLE customer lettering such as Your Name / YOUR LOGO; false = fixed words or no text),"sample_text":"when lettered: that sample lettering exactly as shown, top to bottom, '' | '' between lines (e.g. Your Name | Est. 2024); else empty","custom_logo":true|false (STEP 3C: a buyer-supplied logo area with replaceable sample branding, e.g. the chest mark of a custom polo),"logo_placeholder":"when custom_logo: the replaceable sample branding words, '' | '' between lines; else empty","source_categories":["category-key"]} (an id is optional; a raw classification with category_key/existing_profile is accepted too)' })
 }
@@ -238,8 +275,15 @@ function Invoke-AgentContextBrief {
 function Invoke-AgentContext {
     Open-AgentRun $Run
     $entry = Get-AgentItem $Item
+    $sha = Get-ProductPhotoSha $entry
+    if ($Cached) {
+        $hit = Get-CachedProductContext $sha
+        if (-not $hit) { throw 'No cached context for this product photo: write the context file as usual.' }
+        $in = $hit.raw; if (@($hit.source_categories).Count) { $in | Add-Member source_categories @($hit.source_categories) -Force }
+    } else {
     if (-not $File -or -not (Test-Path -LiteralPath $File -PathType Leaf)) { throw "-File not found: $File" }
     try { $in = Get-Content -LiteralPath $File -Raw -Encoding UTF8 | ConvertFrom-Json } catch { throw 'The context file is not valid JSON.' }
+    }
     if ($in.error) { throw "Product could not be classified: $($in.error)" }
     # Reduce to the raw classification and validate it with the same code as the AI step.
     $category = if ($in.category_key) { [string]$in.category_key } elseif (@($in.source_categories).Count) { [string]@($in.source_categories)[0] } elseif ($in.id) { [string]$in.id } else { '' }
@@ -248,6 +292,7 @@ function Invoke-AgentContext {
     $context = ConvertFrom-ProductClassification ($raw | ConvertTo-Json -Depth 4)
     $cats = @($in.source_categories | ForEach-Object { [string]$_ } | Where-Object { $_ })
     if ($cats.Count) { $context | Add-Member source_categories $cats -Force }
+    if (-not $Cached) { Save-CachedProductContext $sha $raw $cats }
     # Where the AI step keeps its reply (logs/<id>-context.txt), plus the resolved context for the next commands.
     [IO.File]::WriteAllText((Join-Path $script:Batch.Logs "$($entry.id)-context.txt"), ($raw | ConvertTo-Json -Depth 4), $script:Utf8)
     [IO.File]::WriteAllText((Join-Path $script:Batch.Logs "$($entry.id)-context.json"), ($context | ConvertTo-Json -Depth 8), $script:Utf8)

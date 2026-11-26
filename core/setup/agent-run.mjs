@@ -388,6 +388,8 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
   const readState = () => { try { return JSON.parse(readFileSync(stateFile, "utf8")); } catch { return null; } };
   const saveState = (st) => { try { mkdirSync(runsDir, { recursive: true }); writeFileSync(stateFile, JSON.stringify(st, null, 2)); } catch {} };
   const touch = (run, patch = {}) => { Object.assign(run.state, patch, { updated: new Date(now()).toISOString() }); saveState(run.state); };
+  // Chi tiết: a tool line says how long the run took to get to it from the previous tool line (model thinking + the previous step), from 5 s up, so slow steps show.
+  const timedTool = (run, text) => { const t = Date.now(), prev = run._toolAt || 0; run._toolAt = t; const gap = prev ? Math.round((t - prev) / 1000) : 0; return gap >= 5 ? text + " (+" + gap + " s)" : text; };
   const addLine = (run, text) => {
     let line = sanitize(text); if (!line) return;
     // Same step twice in a row: one line with a count, not a wall of repeats.
@@ -466,7 +468,7 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
       run.state.turns = (run.state.turns || 0) + 1;
       for (const c of ev.message.content) {
         if (c.type === "text" && c.text) { addLine(run, "Claude: " + c.text); const t = sanitize(c.text); if (t) run.state.last_text = t; }
-        else if (c.type === "tool_use" && typeof c.name === "string") addLine(run, friendlyTool(c.name, c.input, run.state.mode, run.state.label_ai));
+        else if (c.type === "tool_use" && typeof c.name === "string") addLine(run, timedTool(run, friendlyTool(c.name, c.input, run.state.mode, run.state.label_ai)));
       }
       touch(run);
     } else if (ev.type === "result") {
@@ -537,7 +539,7 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
           return;
         }
         const c = agyToolToClaude(s.tool_name, p);
-        addLine(run, friendlyTool(c.name, c.input, run.state.mode, run.state.label_ai)); touch(run);
+        addLine(run, timedTool(run, friendlyTool(c.name, c.input, run.state.mode, run.state.label_ai))); touch(run);
       }
       return;
     }

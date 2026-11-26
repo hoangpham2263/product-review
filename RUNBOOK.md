@@ -106,3 +106,11 @@ The prompt is `docs/reviews-count-prompt.md` (runner mode `reviews`, `POST /api/
 5. `project` shows what is stored; Claude reports in Vietnamese and stops.
 
 STOP IF a login wall, captcha or block page. NEVER write, submit, edit, delete or vote on a review, fill a form, sign in, guess a number or set a target; the project stores only the observed count (no target, no "missing" number).
+
+### Antigravity: công cụ chờ không chặn cứng được (đo 2026-11-26)
+
+`manage_task`, `schedule` và `invoke_subagent` là công cụ không cần xin quyền, nên `permissions.deny` của `agy --settings` (3 dạng: `"manage_task"`, `"manage_task(*)"`, `"Tool(manage_task)"`), file `.agents/settings.json` trong thư mục dự án, và việc bỏ `--dangerously-skip-permissions` đều KHÔNG chặn được (gọi vẫn chạy, kết quả "No background tasks are currently running"). Không có cách chặn cứng: giữ lệnh cấm trong prompt và cảnh báo của guard (đếm lần dùng, log "⚠ Antigravity dùng tác vụ nền").
+
+### Tốc độ lệnh agent.ps1 (2026-11-26)
+
+Mỗi lệnh `agent.ps1` từng tốn 9-20 s trước khi làm việc thật, vì `New-WorkflowConfiguration` dựng lại danh mục ảnh kho (`Get-SourceCatalog`: một `Test-Path` cho mỗi trong ~9000 ảnh) dù chỉ kho tham chiếu (flow-brief) cần. Nay danh mục không dựng trong cấu hình và `Get-SourceCatalog` kiểm tra file bằng MỘT lần liệt kê thư mục. Đo trên run giả (máy đang bận, số dao động): context 11.8 s -> 2.2 s, sign-brief 16.0 s -> 2.7 s. Ngữ cảnh sản phẩm được cache theo sha256 ảnh sản phẩm trong `workspace/product-contexts.json` (dùng chung mọi lượt và cửa sổ): `context-brief` trả `cached: true` + `cached_context`, `context -Cached` ghi lại mà không cần nhìn ảnh; hai mục của một sản phẩm và lượt chạy lại dùng chung.

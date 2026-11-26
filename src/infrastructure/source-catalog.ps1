@@ -35,9 +35,12 @@ function Get-SourcePhotoDirectory([string]$SourceDir,[string]$Group) {
 }
 
 # The source library on this machine (for the library picker and the reference archive).
+# Existence is checked against one directory listing (it used to be one Test-Path per catalog entry: ~9 s for 9000 photos).
 function Get-SourceCatalog([string]$SourceDir) {
     $catalog = @{}
     $hashes = @{}
+    $onDisk = New-Object System.Collections.Generic.HashSet[string] ([StringComparer]::OrdinalIgnoreCase)
+    if (Test-Path -LiteralPath $SourceDir -PathType Container) { foreach ($p in [IO.Directory]::EnumerateFiles([IO.Path]::GetFullPath($SourceDir), "*", [IO.SearchOption]::AllDirectories)) { [void]$onDisk.Add($p) } }
     foreach ($entry in @(Get-SampleCatalogEntries $SourceDir)) {
         $root = [IO.Path]::GetFullPath($entry._root).TrimEnd('\', '/') + [IO.Path]::DirectorySeparatorChar
 
@@ -47,7 +50,7 @@ function Get-SourceCatalog([string]$SourceDir) {
             throw 'Conflicting source catalog path.'
         }
         # Only the groups downloaded from the library are on this machine.
-        if (-not (Test-Path -LiteralPath $full -PathType Leaf)) { continue }
+        if (-not $onDisk.Contains($full)) { continue }
         if ($entry.sha256 -and $hashes.ContainsKey($entry.sha256)) { continue }
         if ($entry.sha256) { $hashes[$entry.sha256] = $true }
         $catalog[$full] = $entry
