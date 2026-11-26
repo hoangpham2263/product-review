@@ -89,9 +89,9 @@ function linkStates() {
 }
 function jobLog(j, text) { j.lines.push(new Date().toTimeString().slice(0, 8) + " [Tạo ảnh & review] " + text); if (j.lines.length > 200) j.lines.shift(); j.text = text; }
 function runAgentCli(args, timeout = 240000) {
-  return new Promise((resolveCli) => execFile(PWSH, psFile(join(root, "src", "agent.ps1"), args), { cwd: root, env: toolEnv, timeout, windowsHide: true, encoding: "utf8" }, (err, out) => {
+  return new Promise((resolveCli) => execFile(PWSH, psFile(join(root, "src", "agent.ps1"), args), { cwd: root, env: toolEnv, timeout, windowsHide: true, encoding: "utf8" }, (err, out, stderr) => {
     let r = null; try { r = JSON.parse(String(out || "").trim().split(String.fromCharCode(10)).pop()); } catch { /* below */ }
-    resolveCli(r || { ok: false, error: (err && err.message) || "Không đọc được kết quả của src/agent.ps1." });
+    resolveCli(r || { ok: false, error: cliFailure(err, stderr, timeout, "Lệnh của lượt (agent.ps1 " + String(args[0] || "") + ")") });
   }));
 }
 // Viết review: auto = the image agent writes the reviews itself (and Codex is the text AI of the Codex run); an explicit AI writes them AFTER the images exist, run by the app.
@@ -693,10 +693,16 @@ const withProgress = (st) => ({ ...st, progress: progressOf(st), where: st.activ
 function cleanShardFiles() { if (!shardFiles.length || light.isActive()) return; for (const f of shardFiles.splice(0)) { try { rmSync(f, { force: true }); } catch {} } }
 
 // Runs src/scan.ps1 in this session (PR_WORKSPACE) and returns its one JSON line.
+// What the person reads when a command gives no result: the reason in Vietnamese (timeout / the last stderr line), never the raw command line.
+const cliFailure = (err, stderr, timeout, what) => {
+  if (err && (err.killed || err.signal || /timed? ?out|ETIMEDOUT/i.test(err.code || ""))) return "Quá thời gian: " + what + " chạy quá " + Math.round(timeout / 1000) + " giây. Thử lại sau, hoặc chạy ít sản phẩm hơn.";
+  const line = String(stderr || "").split(/\r?\n/).map((l) => l.trim()).filter(Boolean).pop();
+  return line ? what + " báo lỗi: " + line.slice(0, 240) : what + " không trả về kết quả.";
+};
 function runScan(args, timeout = 180000) {
-  return new Promise((resolveScan) => execFile(PWSH, psFile(join(root, "src", "scan.ps1"), args), { cwd: root, env: toolEnv, timeout, windowsHide: true, encoding: "utf8" }, (err, out) => {
+  return new Promise((resolveScan) => execFile(PWSH, psFile(join(root, "src", "scan.ps1"), args), { cwd: root, env: toolEnv, timeout, windowsHide: true, encoding: "utf8" }, (err, out, stderr) => {
     let r = null; try { r = JSON.parse(String(out || "").trim().split(String.fromCharCode(10)).pop()); } catch { /* below */ }
-    resolveScan(r || { ok: false, error: (err && err.message) || "Không đọc được kết quả của src/scan.ps1." });
+    resolveScan(r || { ok: false, error: cliFailure(err, stderr, timeout, "Lệnh quét / hàng chờ (scan.ps1 " + String(args[0] || "") + ")") });
   }));
 }
 const projectArgs = (given) => [...(String(given.category || "").trim() ? ["-Collection", String(given.category).trim()] : []), ...(given.unused_only ? ["-UnusedOnly"] : [])];

@@ -23,7 +23,7 @@ param(
     [string]$Url = '', [string]$Title = '', [string]$Collection = '', [string]$CollectionUrl = '', [string]$ImageUrl = '', [string]$ImageFile = '', [string]$File = '',
     [int]$Count = -1, [string]$Rating = '', [string]$Source = '', [string]$Used = '', [int]$Limit = 0,
     [string]$Group = '', [string]$Category = '', [string]$SceneNames = '', [int]$SceneCount = 0, [switch]$UnusedOnly, [switch]$AllowReuse, [switch]$Prefetch, [switch]$Skip, [string]$Reason = '', [switch]$TopUp, [switch]$RetrySkipped,
-    [string]$Shard = '', [string]$OnlyFile = '', [string]$Fits = '', [string]$Setting = '', [int]$Cols = 4, [string]$Out = '', [switch]$Grouped, [switch]$Sheet, [string]$Files = '', [string]$Names = '',
+    [string]$Shard = '', [string]$OnlyFile = '', [switch]$DryRun, [string]$Fits = '', [string]$Setting = '', [int]$Cols = 4, [string]$Out = '', [switch]$Grouped, [switch]$Sheet, [string]$Files = '', [string]$Names = '',
     [Parameter(ValueFromRemainingArguments = $true)]$Rest
 )
 
@@ -228,8 +228,12 @@ function Get-QueuedKeys {
     }
     return , $keys
 }
+# PR_SCAN_TRACE=1: timing lines on stderr (where a slow command spends its time).
+$script:TraceClock = [Diagnostics.Stopwatch]::StartNew()
+function Write-ScanTrace([string]$Text) { if ($env:PR_SCAN_TRACE -eq '1') { [Console]::Error.WriteLine(('[trace] {0,7:N1}s   {1}' -f $script:TraceClock.Elapsed.TotalSeconds, $Text)) } }
 # One library group's photos: { name, md5, category, kind, sha256, local } (category from catalog.json, fetched once into workspace/source-photos).
 function Get-LibraryPhotos([string]$LibraryGroup) {
+    Write-ScanTrace "Get-LibraryPhotos $LibraryGroup begins"
     Import-QueueLibs
     $catalogPath = Join-Path $LibraryDir 'catalog.json'
     if (-not (Test-Path -LiteralPath $catalogPath)) { Update-SourceCatalog $LibraryDir }
@@ -251,6 +255,7 @@ function Get-LibraryPhotoFile([string]$LibraryGroup, $Photo) {
     $paths = @(Save-SourceGroupFiles $LibraryDir $LibraryGroup @([pscustomobject]@{ name = $Photo.name; md5 = $Photo.md5 }))
     if (-not $paths.Count -or -not (Test-Path -LiteralPath $paths[0])) { throw "[CAUSE:SCENE_DOWNLOAD] Could not download $($Photo.name)." }
     if ((Get-FileHashText $paths[0] 'MD5') -ne ([string]$Photo.md5).ToLowerInvariant()) { throw "[CAUSE:SCENE_HASH] $($Photo.name) does not match the library manifest (md5)." }
+    try { $Photo.local = [string]$paths[0] } catch { }  # cached photo objects learn the new local path
     return [string]$paths[0]
 }
 
@@ -266,6 +271,7 @@ function Get-LibraryPhotoHash([string]$LibraryGroup, $Photo) {
 $script:UsedScenesCache = $null
 function Get-UsedScenes {
     if ($null -ne $script:UsedScenesCache) { return $script:UsedScenesCache }
+    Write-ScanTrace 'Get-UsedScenes begins'
     $used = New-Object Collections.Generic.List[object]
     if (Test-Path -LiteralPath $QueueMapPath) {
         $saved = Get-Content -LiteralPath $QueueMapPath -Raw -Encoding UTF8 | ConvertFrom-Json
@@ -290,7 +296,9 @@ function Get-UsedScenes {
         }
     }
     # Scenes already picked in advance (prepared.csv, status ready, every project): another product must not take them either.
+    Write-ScanTrace ('used scenes from queue + last runs: ' + $used.Count)
     foreach ($pr in @(Get-PreparedUsedScenes)) { $used.Add($pr) }
+    Write-ScanTrace ('used scenes incl. prepared of every project: ' + $used.Count)
     $script:UsedScenesCache = $used.ToArray()
     return $script:UsedScenesCache
 }
@@ -342,9 +350,8 @@ function Get-PreparedUsedScenes {
         $file = Get-PreparedFile $projectDir.FullName
         if (-not (Test-Path -LiteralPath $file)) { continue }
         foreach ($row in @(Read-PreparedRows $projectDir.FullName | Where-Object { $_.status -eq 'ready' })) {
-            $library = @(Get-LibraryPhotos ([string]$row.group))
             foreach ($name in @(([string]$row.scenes) -split '\|' | Where-Object { $_ })) {
-                $photo = @($library | Where-Object { $_.name -eq $name } | Select-Object -First 1)
+                $photo = @(Get-LibraryPhotoByName ([string]$row.group) $name)
                 if (-not $photo.Count) { continue }
                 $hash = Get-LibraryPhotoHash ([string]$row.group) $photo[0]
                 if ($hash) { $found.Add([pscustomobject]@{ hash = $hash; url = [string]$row.product_url; where = "prepared ($($projectDir.Name))" }) }
@@ -356,11 +363,10 @@ function Get-PreparedUsedScenes {
 # Checks the scene picks of one product like queue-add does (exists in the library, sha256, not two of the same picture, not used by another
 # product) and returns { ok, error, cause, photos = @{ name, file, sha256, md5 } }. Nothing is copied or written.
 function Test-SceneSet([string]$Url, [string]$LibraryGroup, [string[]]$Names, [string[]]$Sha256, [bool]$Reuse) {
-    $library = @(Get-LibraryPhotos $LibraryGroup)
-    if (-not $library.Count) { return [pscustomobject]@{ ok = $false; error = "No photos in group $LibraryGroup."; cause = 'UNKNOWN_GROUP' } }
+    if (-not @(Get-LibraryPhotosCached $LibraryGroup).Count) { return [pscustomobject]@{ ok = $false; error = "No photos in group $LibraryGroup."; cause = 'UNKNOWN_GROUP' } }
     $photos = @(); $seen = @(); $i = 0
     foreach ($name in $Names) {
-        $photo = @($library | Where-Object { $_.name -eq $name })
+        $photo = @(Get-LibraryPhotoByName $LibraryGroup $name)
         if (-not $photo.Count) { return [pscustomobject]@{ ok = $false; error = "No photo '$name' in group $LibraryGroup (use the names from the scenes list)."; cause = 'UNKNOWN_SCENE' } }
         $file = Get-LibraryPhotoFile $LibraryGroup $photo[0]
         $sha = Get-FileHashText $file 'SHA256'
@@ -435,6 +441,18 @@ function Get-LibraryPhotosCached([string]$LibraryGroup) {
     $k = $LibraryGroup.Normalize([Text.NormalizationForm]::FormC)
     if (-not $script:LibraryByGroup.ContainsKey($k)) { $script:LibraryByGroup[$k] = @(Get-LibraryPhotos $k) }
     return $script:LibraryByGroup[$k]
+}
+# One photo of a group by name through a table built once per command (a PowerShell Where-Object over 4500 photos per lookup is what made queue-from-prepared take minutes).
+$script:LibraryNameIndex = @{}
+function Get-LibraryPhotoByName([string]$LibraryGroup, [string]$Name) {
+    $k = $LibraryGroup.Normalize([Text.NormalizationForm]::FormC)
+    if (-not $script:LibraryNameIndex.ContainsKey($k)) {
+        $table = @{}
+        foreach ($p in @(Get-LibraryPhotosCached $k)) { if (-not $table.ContainsKey([string]$p.name)) { $table[[string]$p.name] = $p } }
+        $script:LibraryNameIndex[$k] = $table
+    }
+    $hit = $script:LibraryNameIndex[$k][$Name]
+    if ($hit) { return $hit }
 }
 # Lower-case words of 3+ letters, without filler words and a plural s (for the tag ranking of scene-candidates).
 function Get-TagWords([string]$Text) {
@@ -846,12 +864,20 @@ try {
             if ($Limit -lt 1) { Fail-Scan '-Limit must be 1 or more.' 'BAD_LIMIT' }
             $session = if ($env:PR_SESSION) { $env:PR_SESSION } else { 'default' }
             $sceneDir = Join-Path (Get-SessionWorkspaceDir $ProjectRoot) "reference-inputs/$ProjectId-scenes"
+            # PR_SCAN_TRACE=1 prints where the time goes (stderr); -DryRun validates and reports but writes nothing.
+            $trace = $env:PR_SCAN_TRACE -eq '1'; $watch = [Diagnostics.Stopwatch]::StartNew()
+            $mark = { param($what) if ($trace) { [Console]::Error.WriteLine(('[trace] {0,7:N1}s {1}' -f $watch.Elapsed.TotalSeconds, $what)) } }
             $answer = Use-PreparedLock $dir {
+                & $mark 'lock taken'
                 $rows = @(Read-PreparedRows $dir)
+                & $mark ('prepared rows read: ' + $rows.Count)
                 $queued = Get-QueuedKeys
+                & $mark ('queued keys: ' + $queued.Count)
                 $byKey = @{}; foreach ($pr in $rows) { $byKey[(Get-ScanUrlKey $pr.product_url)] = $pr }
                 $queuedUrls = @(); $dropped = @(); $drop = @{}
-                foreach ($candidate in @(Get-ProjectCandidates $dir)) {
+                $candidatesAll = @(Get-ProjectCandidates $dir)
+                & $mark ('candidates: ' + $candidatesAll.Count)
+                foreach ($candidate in $candidatesAll) {
                     if ($queuedUrls.Count -ge $Limit) { break }
                     $k = Get-ScanUrlKey $candidate.product_url
                     if ($queued.Contains($k) -or -not $byKey.ContainsKey($k)) { continue }
@@ -862,7 +888,9 @@ try {
                     if ($SceneCount -gt 0) { $names = @($names | Select-Object -First $SceneCount); $shas = @($shas | Select-Object -First $SceneCount) }
                     $check = $null
                     try { $check = Test-SceneSet $candidate.product_url ([string]$pr.group) $names $shas $false } catch { $check = [pscustomobject]@{ ok = $false; error = $_.Exception.Message; cause = 'TOOL_ERROR' } }
+                    & $mark ('validated ' + $candidate.product_url + ' ok=' + $check.ok)
                     if (-not $check.ok) { $drop[$k] = $true; $dropped += [ordered]@{ url = $candidate.product_url; cause = $check.cause; reason = ($check.error -replace '^\[CAUSE:[A-Z_]+\]\s*', '') }; continue }
+                    if ($DryRun) { $queuedUrls += $candidate.product_url; continue }
                     $handle = Get-Slug (([Uri]$candidate.product_url).Segments[-1].Trim('/')) 80
                     New-Item -ItemType Directory -Force -Path $sceneDir | Out-Null
                     $picked = @(); $n = 0; $copyFailed = ''
@@ -878,7 +906,8 @@ try {
                     $pr.status = 'consumed'; $pr.consumed_at = (Get-Stamp); $pr.consumed_by = $session
                     $queuedUrls += $candidate.product_url
                 }
-                Write-PreparedRows $dir @($rows | Where-Object { -not $drop.ContainsKey((Get-ScanUrlKey $_.product_url)) })
+                if (-not $DryRun) { Write-PreparedRows $dir @($rows | Where-Object { -not $drop.ContainsKey((Get-ScanUrlKey $_.product_url)) }) }
+                & $mark 'done'
                 return [ordered]@{ queued = $queuedUrls; dropped = $dropped }
             }
             Save-PHashCache
