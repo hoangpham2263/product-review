@@ -365,3 +365,6 @@
   loadRun();
   check();
 })();
+
+// Cấu hình stays open during a run; a changed setting only reaches the NEXT run.
+(function runNote() { const n = document.querySelector(".run-note"); if (!n) return; const tick = () => fetch("/api/agent/status", { cache: "no-store" }).then((r) => r.json()).then((st) => { n.hidden = !(st && st.active); }).catch(() => {}); tick(); setInterval(tick, 5000); })();

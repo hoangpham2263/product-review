@@ -49,6 +49,8 @@ const light = {
     return all.find((x) => x.status === "failed") || all[0] || lightPool[0].status();
   },
 };
+// A 409 for the light runner: when the image job's workers hold it, say so.
+const lightBusyText = (base) => (jobActive() ? "Lượt tạo ảnh nhiều pha đang dùng các worker nhẹ (ngữ cảnh / review): chờ worker xong rồi chạy." : base);
 const clampThreads = (v, fallback = 1) => { const n = Math.round(Number(v)); return Number.isInteger(n) ? Math.min(4, Math.max(1, n)) : fallback; };
 const savedThreads = () => { try { return clampThreads(readSeededJson(join(workspace, "config", "run-settings.json"), join(sharedWs, "config", "run-settings.json"), {}).threads, 1); } catch { return 1; } };
 // ----- Image + review run in PHASES when Luồng N > 1 -----
@@ -1017,7 +1019,7 @@ async function handle(req, res) {
     const scenes = Math.min(4, Math.max(1, Math.round(Number(given.scenes)) || 2));
     const category = String(given.category || "").replace(/[\r\n"]+/g, " ").trim().slice(0, 120);
     const limit = Math.min(500, Math.max(0, Math.round(Number(given.limit)) || 0));
-    if (light.isActive()) return send(res, 409, { error: "Đã có một lượt chuẩn bị / thêm hàng chờ đang chạy. Chờ xong hoặc bấm Dừng." });
+    if (light.isActive()) return send(res, 409, { error: lightBusyText("Đã có một lượt chuẩn bị / thêm hàng chờ đang chạy. Chờ xong hoặc bấm Dừng.") });
     const options = `category: ${category ? `"${category}"` : "(all categories)"}; only unused (used = F): ${given.unused_only ? "T" : "F"}; products to prepare: ${limit || "all"}; scenes per product: ${scenes}; retry skipped (no-fit) products: ${given.retry_skipped ? "T" : "F"}`;
     let urls = null;
     const threads = clampThreads(given.threads, savedThreads());
@@ -1039,7 +1041,7 @@ async function handle(req, res) {
     const given = JSON.parse((await body(req)).toString("utf8") || "{}");
     const group = String(given.group || "").replace(/[\r\n"]+/g, " ").trim().slice(0, 80);
     const limit = Math.min(5000, Math.max(0, Math.round(Number(given.limit)) || 0));
-    if (light.isActive()) return send(res, 409, { error: "Đã có một lượt chuẩn bị / thêm hàng chờ / gắn nhãn đang chạy trong cửa sổ này. Chờ xong hoặc bấm Dừng." });
+    if (light.isActive()) return send(res, 409, { error: lightBusyText("Đã có một lượt chuẩn bị / thêm hàng chờ / gắn nhãn đang chạy trong cửa sổ này. Chờ xong hoặc bấm Dừng.") });
     const options = `library group: ${group ? `"${group}"` : "(every group)"}; photos to tag: ${limit || "all"}`;
     { let n = 0; try { n = Object.keys(rj(join(sharedWs, "source-photos", "scene-index.json"))).length; } catch {} indexMeta = { base: n }; }
     const r = startLightShards({ mode: "index", project: "", options, threads: clampThreads(given.threads, savedThreads()) });

@@ -1007,12 +1007,18 @@ function showProjectsDialog(pick = "") {
   const KIND = { scan: "Đang quét cập nhật", reviews: "Đang đọc số review trên các trang sản phẩm", queue: "Đang thêm sản phẩm vào hàng chờ (chọn ảnh bối cảnh cho từng sản phẩm)", prep: "Đang chuẩn bị trước ảnh bối cảnh cho các sản phẩm", index: "Đang gắn nhãn kho ảnh (AI xem ảnh ghép, mỗi ảnh một lần)" };
   const refreshButtons = () => {
     const has = !!data, mainBusy = !!runningMain, lightBusy = !!runningLight;
+    const WHY_MAIN = "Đang có lượt chạy khác trên bộ chạy chính (một lượt một lần, cùng trình duyệt): chờ xong hoặc bấm Dừng.", WHY_LIGHT = "Đang có lượt chạy nhẹ khác (hàng chờ / chuẩn bị / gắn nhãn / worker của lượt tạo ảnh): chờ xong hoặc bấm Dừng.";
+    const tip = (b, why, extra = "") => { if (b._t0 === undefined) b._t0 = b.title || ""; b.title = b.disabled ? why : b._t0 + extra; };
+    const sharing = " (đang chạy cùng một lượt khác: dùng chung hạn mức AI)";
     scanBtn.disabled = mainBusy || otherActive || !has;
     reviewsBtn.disabled = mainBusy || otherActive || !has || !data.rows.length;
+    tip(scanBtn, WHY_MAIN); tip(reviewsBtn, WHY_MAIN);
     // queue / prep need no browser: only another LIGHT run blocks them, never the main Bắt đầu run
-    queueBtn.disabled = orderActive || (lightBusy && runningLight === "queue") || !has || !data.rows.length;
+    queueBtn.disabled = orderActive || run.active || (lightBusy && runningLight === "queue") || !has || !data.rows.length;
     prepBtn.disabled = lightBusy || otherLight || !has || !data.rows.length;
     indexBtn.disabled = lightBusy || otherLight || orderActive;
+    tip(queueBtn, run.active ? "Đang chạy tạo ảnh: hàng chờ đang được lượt chạy dùng, chờ xong mới thêm." : "Đang có lệnh thêm vào hàng chờ khác.");
+    tip(prepBtn, WHY_LIGHT, run.active || otherActive ? sharing : ""); tip(indexBtn, WHY_LIGHT, run.active || otherActive ? sharing : "");
     runThreads.enabled = !lightBusy; queueCount.enabled = !lightBusy; sceneCount.enabled = !lightBusy; prepCount.enabled = !lightBusy; prepScenes.enabled = !lightBusy;
     openDir.disabled = !has;
     stop.disabled = !(mainBusy || lightBusy || orderActive);
@@ -1071,6 +1077,7 @@ function showProjectsDialog(pick = "") {
       const group = el("div", "", { text: r.collection, title: r.collection, style: oneLine({ color: "var(--muted)" }) });
       const used = el("div", "", { text: r.used ? "T" : "F", title: r.used ? "Đã dùng: bấm để đổi về F" : "Chưa dùng: bấm để đổi thành T", style: { cursor: "pointer", textAlign: "center", color: r.used ? "var(--ok)" : "var(--muted)", border: "1px solid var(--line)", borderRadius: "3px", lineHeight: "18px" } });
       used.onclick = async () => {
+        if (run.active) return say("Đang chạy tạo ảnh: bảng sản phẩm đang được lượt chạy dùng, chờ xong mới đổi T/F.", "var(--warn)");
         try { await api("projectSetUsed", { id: current, url: r.url, used: !r.used }); r.used = !r.used; renderTable(); refreshButtons(); loadProjects(current, true); }
         catch (e) { say(e.message, "var(--error)"); }
       };
@@ -1132,7 +1139,8 @@ function showProjectsDialog(pick = "") {
     { const rs = await refreshRunLine(); runBox.textContent = runLines(rs).join("\n"); }
     const lightNow = lt.active && (lt.mode === "queue" || lt.mode === "prep" || lt.mode === "index");
     const mainNow = st.active && (st.mode === "scan" || st.mode === "reviews");
-    otherLight = !!lightNow && !runningLight; otherActive = !!st.active && !mainNow && !runningMain;
+    const jobWorkers = !!lt.active && (lt.mode === "ctx" || lt.mode === "rev"); // the workers of the image run use the light slots too
+    otherLight = (!!lightNow && !runningLight) || jobWorkers; otherActive = !!st.active && !mainNow && !runningMain;
     // --- the light runner started here (or still running from an earlier popup)
     if (lightNow) {
       if (!runningLight) { runningLight = lt.mode; otherLight = false; lightStarted = Date.now() - (lt.elapsed_s || 0) * 1000; }
@@ -1616,15 +1624,18 @@ async function showReviewDialog() {
   let labels = {};
   const loadLabels = async () => { labels = (await fetch("/api/runs/labels").then((r) => r.json()).catch(() => ({}))).runs || {}; };
   const dayText = (day) => { if (!day) return "Không rõ ngày"; const d = new Date(day + "T00:00:00"), t = new Date(); t.setHours(0, 0, 0, 0); const diff = Math.round((t - d) / 86400000); return diff === 0 ? "Hôm nay" : diff === 1 ? "Hôm qua" : String(d.getDate()).padStart(2, "0") + "/" + String(d.getMonth() + 1).padStart(2, "0"); };
+  let activeRun = "";
+  const loadActive = async () => { const st = await fetch("/api/agent/status").then((r) => r.json()).catch(() => null); activeRun = st && st.active && st.mode === "flow" ? String(st.run_id || "") : ""; };
   const drawRuns = (all, keep) => {
     // A run with no picture has nothing to review or export: it is not listed. Newest first, grouped by day, each row named by its site / time / size (the raw id is the grey tail).
     runs = all.filter((x) => x.images > 0).map((x) => {
       const row = el("div", "check runrow");
       const input = el("input", "", { type: "checkbox" });
-      input.checked = !!keep && keep.has(x.path);
+      input.checked = !!keep && keep.has(x.path) && x.name !== activeRun;
+      input.disabled = x.name === activeRun; // a run that is still going is reviewed and exported once it has finished
       input.onchange = load;
       const info = labels[x.name] || {};
-      const idTail = el("span", "runid", { text: "  " + x.name });
+      const idTail = el("span", "runid", { text: "  " + x.name + (x.name === activeRun ? " · đang chạy, duyệt khi xong" : "") });
       const text = el("span", "runtext", { text: `${info.label || x.name} · ${x.images} ảnh · ${x.pending ? `chưa duyệt ${x.pending}` : "đã duyệt hết"}${x.exported ? " · đã xuất" : ""}` });
       text.style.cursor = "pointer";
       // Click the text = look at this run: it gets selected if it was not (never unselected) and the list jumps to its first review. Only the checkbox itself toggles.
@@ -1653,7 +1664,7 @@ async function showReviewDialog() {
       setTimeout(() => { exportBtn.textContent = "Xuất file Loox"; refresh(); }, 2000);
     } catch (e) { status.textContent = e.message; exportBtn.textContent = "Xuất file Loox"; refresh(); }
   };
-  await loadLabels();
+  await loadLabels(); await loadActive();
   const all = list(await api("reviewBatches"));
   drawRuns(all);
   if (!all.some((x) => x.images > 0)) status.textContent = "Chưa có lần chạy nào để duyệt. Lần chạy tạo ra ảnh sẽ hiện ở đây.";
@@ -1736,14 +1747,20 @@ function showUpdateDialog() {
 // ----- run (Start-GuiBatch, timer ticks) -----
 const actionLocks = new Set();
 function updateActionAvailability() {
-  const busy = run.active || actionLocks.size > 0 || stack.length > 0;
-  for (const b of [ui.btnRun, ui.btnSetup, ui.btnLogs, ui.btnReview, ui.btnOut, ui.btnUpdate, ui.btnClearLog, ui.btnAdd, ui.btnBulk, ui.btnClear, ui.btnProjects]) b.disabled = busy;
+  // While a run goes only what STARTS a run or WRITES the queue is closed (Bắt đầu, Chạy tiếp, Thêm sản phẩm, Nhập hàng loạt, Xóa tất cả, the list, Cập nhật); Dự án (its light jobs),
+  // Duyệt & xuất file, Mở kết quả, Báo lỗi, Xóa thông báo and Cấu hình stay usable. An open popup or a running action still closes everything, as before. Each closed control says why.
+  const runBusy = run.active, modal = actionLocks.size > 0 || stack.length > 0, busy = runBusy || modal;
+  const RUN_WHY = "Đang có lượt chạy trong cửa sổ này: chờ xong hoặc bấm Dừng.", MODAL_WHY = "Đang mở một cửa sổ khác: đóng nó trước.";
+  const setBtn = (b, off, why) => { if (b._t0 === undefined) b._t0 = b.title || ""; b.disabled = off; b.title = off && why ? why : b._t0; };
+  for (const b of [ui.btnRun, ui.btnAdd, ui.btnBulk, ui.btnClear, ui.btnUpdate]) setBtn(b, busy, runBusy ? RUN_WHY : MODAL_WHY);
+  for (const b of [ui.btnSetup, ui.btnLogs, ui.btnReview, ui.btnOut, ui.btnClearLog, ui.btnProjects]) setBtn(b, modal, MODAL_WHY);
   // Claude (Flow) cannot start until its own Chrome is signed in to Google Flow.
-  if (usesFlow(cfg.image) && !flowExtensionMode() && flowLogin.state !== "logged_in") ui.btnRun.disabled = true;
+  if (usesFlow(cfg.image) && !flowExtensionMode() && flowLogin.state !== "logged_in") setBtn(ui.btnRun, true, "Chưa đăng nhập Google Flow: mở Cấu hình để đăng nhập.");
   ui.btnStop.disabled = !run.active;
   // Chạy tiếp continues a Claude (Flow) run, so it is only offered when Tạo ảnh = Claude (Flow); with Codex, Bắt đầu already continues (finished links leave the queue).
-  if (ui.btnResume) ui.btnResume.disabled = busy || !ui.resumeRun || ui.btnRun.disabled || !isFlow(cfg.image);
+  if (ui.btnResume) { ui.btnResume.disabled = busy || !ui.resumeRun || ui.btnRun.disabled || !isFlow(cfg.image); if (ui.btnResume._t0 === undefined) ui.btnResume._t0 = ui.btnResume.title || ""; ui.btnResume.title = busy ? (runBusy ? RUN_WHY : MODAL_WHY) : ui.btnResume._t0; }
   ui.flow.style.pointerEvents = busy ? "none" : "";
+  ui.flow.title = runBusy ? "Danh sách link đang được lượt chạy dùng: chờ xong để sửa." : "";
 }
 function setActionBusy(reason, on) {
   if (on) actionLocks.add(reason); else actionLocks.delete(reason);
@@ -2095,7 +2112,7 @@ function wire() {
       reset();
     }, 700);
   };
-  ui.btnClearLog.onclick = () => { clearLogs(); if (!ui.resultBox.hidden) { ui.resultDismissed = ui.resultKey; hideResult(); } };
+  ui.btnClearLog.onclick = () => { if (!run.active) clearLogs(); if (!ui.resultBox.hidden) { ui.resultDismissed = ui.resultKey; hideResult(); } };
   // Kết quả = the Loox files Duyệt & xuất file made, one per export, named by time (workspace/exports). Each run keeps its own images in workspace/output/<run>.
   ui.btnOut.onclick = () => api("openPath", { path: state.exports });
   ui.btnReview.onclick = async () => { if (!run.active) { await showReviewDialog(); updateReviewButton(); } };
