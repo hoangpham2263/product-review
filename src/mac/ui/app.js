@@ -638,6 +638,7 @@ async function loadState() {
   await refreshSessionBadge();
   Object.assign(state, await api("state"));
   state.rows = list(state.rows).map((info) => ({ url: info.url, info: normInfo(info) }));
+  state.base = state.rows.map((r) => r.url);
   document.title = sessionState.title || ("Product Review " + (state.version || "")).trim();
   renderRows();
   updateStatus();
@@ -646,7 +647,23 @@ async function loadState() {
 // The list saves itself on every change; Bắt đầu checks that every link is ready.
 function persist() { saveQueue(false).catch(() => {}); }
 async function saveQueue(requireReady = false) {
-  return api("queueSave", { urls: state.rows.map((r) => r.url), requireReady });
+  // base = the links of the last sync with urls.txt: the server keeps links added meanwhile (Thêm vào hàng chờ) and does not write back links the run finished.
+  const urls = state.rows.map((r) => r.url);
+  const n = await api("queueSave", { urls, base: state.base || null, requireReady });
+  state.base = urls;
+  return n;
+}
+// After Thêm vào hàng chờ wrote to the queue: without a run, reload the list; DURING a run, only append the new links at the END (rows keep their place, the run's own rows and
+// stages stay as they are; the new ones wait for the next run).
+async function reloadQueueRows() {
+  if (!run.active) return loadState();
+  const fresh = list((await api("state")).rows);
+  const known = new Set(state.rows.map((r) => r.url.trim()));
+  const added = fresh.filter((info) => info.url && !known.has(info.url.trim()));
+  if (!added.length) return;
+  for (const info of added) state.rows.push({ url: info.url, info: normInfo(info) });
+  state.base = [...new Set([...(state.base || []), ...added.map((i) => i.url)])];
+  renderRows(); updateStatus();
 }
 
 async function updateReviewButton() {
@@ -1016,10 +1033,10 @@ function showProjectsDialog(pick = "") {
     reviewsBtn.disabled = mainBusy || otherActive || !has || !data.rows.length;
     tip(scanBtn, WHY_MAIN); tip(reviewsBtn, WHY_MAIN);
     // queue / prep need no browser: only another LIGHT run blocks them, never the main Bắt đầu run
-    queueBtn.disabled = orderActive || run.active || (lightBusy && runningLight === "queue") || !has || !data.rows.length;
+    queueBtn.disabled = orderActive || (lightBusy && runningLight === "queue") || !has || !data.rows.length;
     prepBtn.disabled = lightBusy || otherLight || !has || !data.rows.length;
     indexBtn.disabled = lightBusy || otherLight || orderActive;
-    tip(queueBtn, run.active ? "Đang chạy tạo ảnh: hàng chờ đang được lượt chạy dùng, chờ xong mới thêm." : "Đang có lệnh thêm vào hàng chờ khác.");
+    tip(queueBtn, "Đang có lệnh thêm vào hàng chờ khác.");
     tip(prepBtn, WHY_LIGHT, run.active || otherActive ? sharing : ""); tip(indexBtn, WHY_LIGHT, run.active || otherActive ? sharing : "");
     runThreads.enabled = !lightBusy; queueCount.enabled = !lightBusy; sceneCount.enabled = !lightBusy; prepCount.enabled = !lightBusy; prepScenes.enabled = !lightBusy;
     openDir.disabled = !has;
@@ -1153,7 +1170,7 @@ function showProjectsDialog(pick = "") {
       const tag = "[" + (kind === "queue" ? "Thêm vào hàng chờ" : kind === "index" ? "Gắn nhãn kho ảnh" : "Chuẩn bị trước") + (data && kind !== "index" ? " · " + data.project.name : "") + "] ";
       if (kind === "queue") {
         // the session's own numbers: the order (links of this project in THIS window's urls.txt) and the run's own last text
-        await loadState().catch(() => {});
+        await reloadQueueRows().catch(() => {});
         const od2 = await fetch("/api/project/queue/order").then((x) => x.json()).catch(() => null);
         if (od2 && od2.line) { text = od2.line + (od2.message ? "\n" + od2.message : ""); ok = od2.state === "done" || (!od2.active && lt.status === "done" && od2.added >= od2.total); }
         else text = (lt.status === "done" ? "Lượt thêm vào hàng chờ đã xong." : "Lượt thêm vào hàng chờ dừng" + (lt.error ? ": " + lt.error : ".")) + (lt.last_text ? "\n" + lt.last_text : "");
@@ -1191,7 +1208,7 @@ function showProjectsDialog(pick = "") {
     } else if (st.active && !mainNow) say("Đang có một lượt AI khác chạy (tạo ảnh). Quét và cập nhật review chờ xong; Chuẩn bị trước và Thêm vào hàng chờ vẫn dùng được.", "var(--warn)");
     // Thêm vào hàng chờ order: its live line wins over the run text; when it ends, the main list is reloaded and the result shown once
     if (od && od.active) { say(od.line + (runningLight ? "\n" + (lt.last_text || "") : ""), "var(--accent)"); orderWasActive = true; }
-    else if (orderWasActive && od) { orderWasActive = false; await loadState().catch(() => {}); refreshPrepared(); say((od.line || "") + (od.message ? "\n" + od.message : ""), od.state === "done" ? "var(--ok)" : "var(--warn)"); }
+    else if (orderWasActive && od) { orderWasActive = false; await reloadQueueRows().catch(() => {}); refreshPrepared(); say((od.line || "") + (od.message ? "\n" + od.message : ""), od.state === "done" ? "var(--ok)" : "var(--warn)"); }
     refreshButtons();
     if (!st.active && !lt.active && !runningMain && !runningLight && !orderActive && timer) { clearInterval(timer); timer = null; }
   };
@@ -1202,7 +1219,7 @@ function showProjectsDialog(pick = "") {
     const r = await fetch(url, { method: "POST", body: JSON.stringify({ ...body, random: randomOnly.input.checked, threads: thr() }) });
     const answer = await r.json().catch(() => ({}));
     if (!r.ok) return say(answer.error || failText, "var(--error)");
-    if (answer.finished) { await loadState().catch(() => {}); refreshPrepared(); refreshButtons(); return say(answer.message || "Xong.", "var(--ok)"); }
+    if (answer.finished) { await reloadQueueRows().catch(() => {}); refreshPrepared(); refreshButtons(); return say(answer.message || "Xong.", "var(--ok)"); }
     ticks = 0;
     if (isLight) { runningLight = kind; lightStarted = Date.now(); } else { runningMain = kind; startedAt = Date.now(); }
     refreshButtons(); say("Đang bắt đầu…", "var(--accent)"); watch();
@@ -1222,14 +1239,14 @@ function showProjectsDialog(pick = "") {
       const answer = await r.json().catch(() => ({}));
       refreshButtons();
       if (!r.ok) return say(answer.error || "Chưa thêm vào hàng chờ được.", "var(--error)");
-      await loadState().catch(() => {});
+      await reloadQueueRows().catch(() => {});
       return say(`Đã thêm ${answer.added} sản phẩm (không ảnh bối cảnh). Xem danh sách ở cửa sổ chính.`, "var(--ok)");
     }
     queueBtn.disabled = prepBtn.disabled = true; say("Đang lấy từ kho đã chuẩn bị…", "var(--accent)");
     const r = await fetch("/api/project/queue/run", { method: "POST", body: JSON.stringify({ project: current, category: catBox.value, unused_only: unusedOnly.input.checked, count: queueCount.value, scenes: sceneCount.value, random: randomOnly.input.checked, threads: thr() }) });
     const a = await r.json().catch(() => ({}));
     if (!r.ok) { refreshButtons(); say(a.error || "Chưa thêm vào hàng chờ được.", "var(--error)"); return; }
-    await loadState().catch(() => {});
+    await reloadQueueRows().catch(() => {});
     const got = a.from_prepared || 0, need = a.needs_claude || 0, dropNote = (a.dropped || []).length ? ` (${a.dropped.length} dòng đã chuẩn bị không còn hợp lệ, đã trả về "chưa chuẩn bị")` : "";
     fastNote = `Đã lấy ${got} từ kho đã chuẩn bị, ${need} cần ${taskAi("queueAgent")} chọn thêm${dropNote}.`;
     refreshPrepared();

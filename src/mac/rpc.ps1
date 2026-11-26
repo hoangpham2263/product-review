@@ -158,13 +158,27 @@ if ([Windows.Forms.Clipboard]::ContainsFileDropList()) {
                     }
                 }
             }
-            New-Item -ItemType Directory -Path (Split-Path $mapPath -Parent) -Force | Out-Null
-            Write-FeedbackJson $mapPath $map
-            [IO.File]::WriteAllLines($workspace.Queue, [string[]]$urls, [Text.UTF8Encoding]::new($true))
-            return $urls.Count
+            # Under the queue mutex, from a FRESH read: queue-add / queue-from-prepared / the running batch change urls.txt and references.json meanwhile. A.base = the links this page last
+            # synced with the file: a link in the file that is not in base was added elsewhere (kept); a link in base that left the file was removed elsewhere (a finished link: not written back).
+            $finalUrls = Use-QueueMutex $workspace.Root {
+                $inFile = @(if (Test-Path -LiteralPath $workspace.Queue) { Get-Content -LiteralPath $workspace.Queue -Encoding UTF8 | ForEach-Object { $_.Trim() } | Where-Object { $_ } })
+                $final = $urls
+                if ($null -ne $A.base) {
+                    $base = @(@($A.base) | ForEach-Object { ([string]$_).Trim() } | Where-Object { $_ })
+                    $final = @($urls | Where-Object { ($base -notcontains $_) -or ($inFile -contains $_) })
+                    $final += @($inFile | Where-Object { ($base -notcontains $_) -and ($urls -notcontains $_) -and ($final -notcontains $_) })
+                    $final = @($final | Select-Object -Unique)
+                }
+                $freshMap = Read-ManualReferenceMap $mapPath; $freshMap.allow_library_fallback = $false
+                New-Item -ItemType Directory -Path (Split-Path $mapPath -Parent) -Force | Out-Null
+                Write-FeedbackJson $mapPath $freshMap
+                [IO.File]::WriteAllLines($workspace.Queue, [string[]]$final, [Text.UTF8Encoding]::new($true))
+                ,$final
+            }
+            return @($finalUrls).Count
         }
         'rejectedCount' { return @(Get-UnsentRejectedSamples $root).Count }
-        'pruneMap' { Remove-ManualEntriesExcept $mapPath @(if (Test-Path $workspace.Queue) { Get-Content $workspace.Queue -Encoding UTF8 | ForEach-Object { $_.Trim() } | Where-Object { $_ } }); return $true }
+        'pruneMap' { [void](Use-QueueMutex $workspace.Root { Remove-ManualEntriesExcept $mapPath @(if (Test-Path $workspace.Queue) { Get-Content $workspace.Queue -Encoding UTF8 | ForEach-Object { $_.Trim() } | Where-Object { $_ } }); $true }); return $true }
         # Nhập hàng loạt: problems by line, the links, and whether any row brings images (then src/import-batch.ps1 runs).
         'importParse' {
             $parsed = ConvertFrom-ProductBatch ([string]$A.text) ([string]$A.folder)

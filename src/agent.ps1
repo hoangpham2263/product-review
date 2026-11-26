@@ -150,7 +150,11 @@ function Invoke-AgentPrepare {
     Open-AgentRun $Run
     $queuePath = if ($List) { $List } else { Join-Path (Get-SessionWorkspaceDir $ProjectRoot) 'urls.txt' }
     if (-not (Test-Path -LiteralPath $queuePath)) { throw "URL list not found: $queuePath" }
-    $queue = Read-UrlQueue $queuePath
+    # The queue is read under the queue mutex (queue-add appends to it during a run). A run works ONLY from the links it started with (urls.input.txt, written by its first prepare):
+    # a continuation (Chạy tiếp, a second prepare) never takes rows added to the queue meanwhile; they wait for the next run.
+    $queue = Use-QueueMutex (Split-Path ([IO.Path]::GetFullPath($queuePath)) -Parent) { Read-UrlQueue $queuePath }
+    $snapshot = @(if (Test-Path -LiteralPath $script:Batch.InputUrls -PathType Leaf) { Get-Content -LiteralPath $script:Batch.InputUrls -Encoding UTF8 | ForEach-Object { $_.Trim() } | Where-Object { $_ -and -not $_.StartsWith("#") } })
+    if ($snapshot.Count) { $queue = [pscustomobject]@{ Lines = $queue.Lines; Items = @($queue.Items | Where-Object { $snapshot -ccontains $_.Url }) } }
     $existing = @(Read-AgentItems)
     # A continuation: the error files of items that will be retried (no image yet) are old news. They are moved to logs/old-errors/ so no later command (run-summary,
     # finish ...) echoes them and nothing can mistake an old 429 text for a new one.
