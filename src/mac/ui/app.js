@@ -481,6 +481,36 @@ function rowStatus(row) {
 }
 // Each row's status label, so a run can update it without rebuilding the row (a rebuild reloads every thumbnail).
 let statusOf = new WeakMap();
+// State of every queue link in the newest agent run (Flow / Antigravity / Claude runs keep their links in the queue): done, running, partial, failed.
+const normLink = (u) => String(u || "").trim().replace(/[#?].*$/, "").replace(/\/+$/, "").toLowerCase();
+function linkStage(l) {
+  if (!l || l.state === "todo") return null;
+  if (l.state === "done") return { text: `✔ Xong · ${l.img} ảnh · ${l.rev} review`, color: "var(--ok)", link: true };
+  if (l.state === "running") return { text: `◔ Đang làm · ${l.img}/${l.total} ảnh · ${l.rev}/${l.total} review`, color: "var(--accent)", link: true };
+  if (l.state === "failed") return { text: `✖ Thiếu ${l.fail}/${l.total} ảnh · ${l.img} ảnh`, color: "var(--error)", link: true };
+  return { text: `◑ Chưa xong · ${l.img}/${l.total} ảnh · ${l.rev}/${l.total} review`, color: "var(--warn)", link: true };
+}
+async function refreshLinkStates() {
+  if (run.active || document.hidden) return;
+  let res = null;
+  try { res = await (await fetch("/api/runs/links")).json(); } catch { return; }
+  if (!res || !res.links) return;
+  let changed = false;
+  for (const row of state.rows) {
+    if (row.stage && !row.stage.link) continue;
+    const next = linkStage(res.links[normLink(row.url)]);
+    if ((next && next.text) !== (row.stage && row.stage.text)) { row.stage = next; changed = true; }
+  }
+  if (!changed) return;
+  for (const row of state.rows) {
+    const status = statusOf.get(row);
+    if (!status || !status.isConnected) return renderRows();
+    const st = row.stage || rowStatus(row);
+    if (status.textContent !== st.text) status.textContent = st.text;
+    status.style.color = st.color;
+  }
+}
+setInterval(refreshLinkStates, 4000);
 function renderRows() {
   statusOf = new WeakMap();
   const width = Math.max(700, ui.flow.clientWidth - 40);

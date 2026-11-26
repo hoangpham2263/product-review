@@ -66,6 +66,27 @@ const hasCtx = (run, id) => existsSync(join(runDirOf(run), "logs", id + "-contex
 const hasImg = (run, id) => existsSync(join(runDirOf(run), "images", id + ".png"));
 const hasRev = (run, id) => existsSync(join(runDirOf(run), "logs", id + "-review.txt"));
 function doneRows(run) { try { const r = JSON.parse(readFileSync(join(runDirOf(run), "results.json"), "utf8").replace(/^\uFEFF/, "")); return (Array.isArray(r) ? r : []).map((x) => String(x.photo_path || "").replace(/\\/g, "/").split("/").pop().replace(/\.[^.]+$/, "")); } catch { return []; } }
+const normLink = (u) => String(u || "").trim().replace(/[#?].*$/, "").replace(/\/+$/, "").toLowerCase();
+function linkStates() {
+  const st = agent.status();
+  let run = st.run_id && existsSync(join(runDirOf(st.run_id), "agent-items.json")) ? st.run_id : "";
+  if (!run) { try { run = readdirSync(join(workspace, "output"), { withFileTypes: true }).filter((e) => e.isDirectory() && /^agent-/.test(e.name) && existsSync(join(runDirOf(e.name), "agent-items.json"))).map((e) => e.name).sort().pop() || ""; } catch {} }
+  if (!run) return { run: "", active: false, links: {} };
+  let items = [];
+  try { const j = JSON.parse(readFileSync(join(runDirOf(run), "agent-items.json"), "utf8").replace(/^﻿/, "")); items = Array.isArray(j) ? j : j.items || []; } catch {}
+  const fin = new Set(doneRows(run)), active = !!(st.active && st.run_id === run) || !!(imgJob && imgJob.run === run), links = {};
+  for (const it of items) {
+    if (!it || !it.id) continue;
+    const l = (links[normLink(it.url)] ||= { total: 0, img: 0, rev: 0, done: 0, fail: 0 });
+    l.total++;
+    const img = hasImg(run, it.id);
+    if (img) l.img++;
+    if (hasRev(run, it.id)) l.rev++;
+    if (fin.has(it.id)) l.done++; else if (!img && existsSync(join(runDirOf(run), "logs", it.id + "-agent-error.txt"))) l.fail++;
+  }
+  for (const l of Object.values(links)) l.state = l.done >= l.total ? "done" : active ? "running" : l.fail ? "failed" : (l.img || l.rev) ? "partial" : "todo";
+  return { run, active, links };
+}
 function jobLog(j, text) { j.lines.push(new Date().toTimeString().slice(0, 8) + " [Tạo ảnh & review] " + text); if (j.lines.length > 200) j.lines.shift(); j.text = text; }
 function runAgentCli(args, timeout = 240000) {
   return new Promise((resolveCli) => execFile(PWSH, psFile(join(root, "src", "agent.ps1"), args), { cwd: root, env: toolEnv, timeout, windowsHide: true, encoding: "utf8" }, (err, out) => {
@@ -1008,6 +1029,8 @@ async function handle(req, res) {
   // Status of the light runner (queue and prep runs): its own file runs/prep-run.json.
   // ONE status for the run line of every view: what runs now (main runner, light runner, the Codex Bắt đầu run) and the last finished run.
   // Duyệt: a readable label for every run folder (newest first is the caller's job)
+  // Per queue link: how far the newest agent run of this window got (images, reviews, finished), for the link list on the main screen.
+  if (path === "/api/runs/links" && req.method === "GET") return send(res, 200, linkStates());
   if (path === "/api/runs/labels" && req.method === "GET") {
     const out = {};
     try { for (const e of readdirSync(join(workspace, "output"), { withFileTypes: true })) if (e.isDirectory()) out[e.name] = runInfo(e.name); } catch {}
