@@ -29,8 +29,9 @@ function setup(outcomes, events = 8) { // events = tool steps each launch gets t
     const kid = new EventEmitter(); kid.stdout = new PassThrough(); kid.stderr = new PassThrough(); kid.stdin = new PassThrough(); kid.pid = ++spawns;
     const outcome = outcomes[Math.min(spawns - 1, outcomes.length - 1)];
     setTimeout(() => {
+      if (outcome && typeof outcome === "object") kid.stderr.write("error: " + outcome.stderr + "\n");
       for (let i = 1; i <= events; i++) kid.stdout.write(JSON.stringify({ event: "step_update", step_update: { step_index: i, state: "DONE", step_type: "tool", tool_name: "run_command", tool_info: { parameters: { CommandLine: "echo " + i } } } }) + "\n");
-      kid.stdout.write(JSON.stringify({ event: "result", result: outcome === "ok" ? { status: "SUCCESS", response: "ok", num_turns: 1 } : { status: "ERROR", error: outcome } }) + "\n");
+      kid.stdout.write(JSON.stringify({ event: "result", result: outcome === "ok" ? { status: "SUCCESS", response: "ok", num_turns: 1 } : typeof outcome === "object" ? { status: "ERROR" } : { status: "ERROR", error: outcome } }) + "\n");
       setTimeout(() => kid.emit("close", outcome === "ok" ? 0 : 1), 5);
     }, 10);
     return kid;
@@ -47,6 +48,12 @@ test("a dropped connection mid-run is retried and the run completes", async () =
   const st = f.runner.status();
   assert.equal(st.status, "done"); assert.equal(f.spawns(), 2);
   assert.ok(st.tail.some((l) => /Mất kết nối với Antigravity, tự chạy lại \(lần 1\/5/.test(l)));
+  f.done();
+});
+test("the reason only on stderr (the result event carries no error text) is retried too, also by a light runner mode", async () => {
+  const f = setup([{ stderr: DROP }, "ok"]);
+  assert.ok(await until(() => !f.runner.isActive()));
+  assert.equal(f.runner.status().status, "done"); assert.equal(f.spawns(), 2);
   f.done();
 });
 test("an ordinary failure is not retried", async () => {

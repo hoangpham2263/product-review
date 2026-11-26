@@ -545,7 +545,7 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
       if (typeof r.num_turns === "number" && r.num_turns > 0) run.state.turns = r.num_turns;
       if (typeof r.response === "string" && r.response.trim()) run.state.last_text = sanitize(r.response);
       if (!ok && r.error) run.agyError = sanitize(r.error);
-      if (!ok && r.error) netRetry(run, String(r.error));
+      if (!ok) netRetry(run, String(r.error || run.stderr.join(" ")));
       addLine(run, ok ? "Antigravity đã xử lý xong các bước" : `Antigravity báo lỗi (${run.result.subtype || "không rõ"})`);
       touch(run);
     }
@@ -580,7 +580,7 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
         if (n > 0 && made === 0 && results === 0) nothing = "0/" + n + " mục hoàn tất: không có ảnh nào được tạo và không có kết quả nào. Xem lý do của từng mục trong báo cáo cuối của " + (run.who || "Claude") + ".";
       } catch {}
     }
-    if (!run.retryDelay && !run.forced && !run.abort && run.backend === "antigravity" && code !== 0 && !run.result && run.stderr.some((l) => isTransientAgyError(l))) netRetry(run, run.stderr.join(" "));
+    if (!run.retryDelay && !run.forced && !run.abort && run.backend === "antigravity" && code !== 0 && (!run.result || run.result.is_error) && run.stderr.some((l) => isTransientAgyError(l))) netRetry(run, run.stderr.join(" "));
     const status = run.retryDelay && !run.forced ? "retrying" : nothing || run.abort ? "failed" : run.forced || (code === 0 && !run.result?.is_error ? "done" : "failed");
     const error = status === "failed" ? sanitize(nothing || run.abort || err || run.agyError || run.stderr.at(-1) || (run.result?.is_error ? `${run.who || "Claude"} reported ${run.result.subtype || "an error"}.` : `${run.who || "Claude"} exited with code ${code}.`))
       : status === "timeout" ? `Stopped after the ${minutes}-minute limit.` : "";
