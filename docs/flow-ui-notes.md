@@ -2,6 +2,12 @@
 
 Nhãn đúng như UI. Rút từ các lượt chạy thành công (khoảng 40 ảnh/lượt) và lượt chậm (mất 6-10 phút dò UI). Bổ sung bài học mới vào `workspace/flow-ui-lessons.md`.
 
+## Tốc độ (đo 2026-11-26: Grenheim và DreamyVows đều ~3,4 phút/ảnh; Flow render xong từ lâu, cổ chai là số lượt gọi tool của agent)
+- `flow-brief` in `js.{ready,prep,submit,collect}`: file trong logs của lượt (sinh bởi `core/flow-snippets.mjs`, mỗi file cho đúng MỘT mục). Chạy bằng `browser_run_code_unsafe` với `filename`. prep = bước 4-9 gộp một lệnh; submit = bước 10; collect = bước 12 (mở ô kết quả + bấm 1K).
+- Tải: `download-lock acquire` > collect > `node core/flow-pace.mjs download-collect --tag <mục>` (đợi file, chuyển vào workspace/tmp/flow-downloads/<mục>.<ext>, kiểm là ảnh, tự nhả khoá) > NHÌN ảnh một lần > register-image. Khoá chỉ giữ lúc bấm + chuyển file (trước đây giữ cả lúc agent xem ảnh, các cửa sổ khác phải chờ).
+- Không dùng browser_snapshot / chụp màn hình / browser_wait_for. Chưa có ảnh thì làm bước ngữ cảnh của nhóm sau rồi kiểm lại bằng `ready`.
+- Gate không đổi (5-12 s, 20-45 s sau nhóm, tối đa 8 prompt/2 phút).
+
 ## Thứ tự nhanh (mục đầu ~3 phút, mỗi mục sau ~2-3 phút)
 0. Dự án Flow dùng lại: `node core/flow-pace.mjs project get` (mỗi profile một dự án). Có url thì mở thẳng, cài đặt Hình ảnh / Nano Banana 2.1 / x1 vẫn còn, chỉ kiểm chip và đổi tỉ lệ nếu cần. Chưa có hoặc không mở được thì tạo mới (bước 3-4) rồi `project set --url <url>`. Làm các mục gom theo cùng tỉ lệ.
 1. Mỗi lệnh `browser_run_code_unsafe` mở đầu bằng `await page.bringToFront();`. Dùng `getByRole`/`aria-label`, KHÔNG click theo toạ độ chuột, KHÔNG đoán icon.

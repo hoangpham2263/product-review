@@ -136,7 +136,13 @@ function Stop-AgentWith([Collections.Specialized.OrderedDictionary]$Value) { if 
 # Loads the saved context of an item (written by the context command).
 function Get-AgentContext([string]$Id) {
     $path = Join-Path $script:Batch.Logs "$Id-context.json"
-    if (-not (Test-Path -LiteralPath $path)) { throw "No context yet for $Id. Run: context -Run $($script:Batch.Id) -Item $Id -File <json>" }
+    if (-not (Test-Path -LiteralPath $path)) {
+        # The context workers of a pipelined image run (server.mjs) are still making contexts: say so instead of letting the image agent redo step 2 on the same item.
+        $pend = Join-Path $script:Batch.Dir 'ctx-pending.json'
+        if ((Test-Path -LiteralPath $pend) -and ((Get-Date) - (Get-Item -LiteralPath $pend).LastWriteTime).TotalSeconds -lt 120) {
+            $ids = @(try { Get-Content -LiteralPath $pend -Raw -Encoding UTF8 | ConvertFrom-Json } catch { @() })
+            if ($ids -contains $Id) { Stop-AgentWith ([ordered]@{ ok = $false; cause = 'CONTEXT_PENDING'; item = $Id; error = "Context of $Id is still being made by a context worker: do NOT do step 2 yourself; take the next item that has a context (flow-brief answers ok) and come back to this one later." }) }
+        } throw "No context yet for $Id. Run: context -Run $($script:Batch.Id) -Item $Id -File <json>" }
     Get-Content -LiteralPath $path -Raw -Encoding UTF8 | ConvertFrom-Json
 }
 
@@ -515,6 +521,14 @@ function Invoke-AgentFlowBrief {
     $out = [ordered]@{ ok = $true; run = $script:Batch.Id; item = $entry.id; prompt_file = $promptFile; condensed_prompt = (Get-CondensedFlowPrompt $context $signText ([bool]$Safe) "$($script:Batch.Id)-$($entry.id)"); safe = [bool]$Safe; logo_mode = $(if ($context.PSObject.Properties['custom_logo'] -and $context.custom_logo -eq $true) { if ($Safe) { 'neutral (after a refusal)' } else { 'replace with a fictional symbol' } } else { 'none' })
         aspect = $(if (-not $context.presentation -or $context.presentation -eq 'worn') { (Get-WornVariation "$($script:Batch.Id)-$($entry.id)").aspect } else { Get-FlowAspect $request.Images[0] }); uploads = $uploads; register_command = $cmd }
     if ($signText) { $out.sign_text = $signText }
+    # Ready-made Playwright snippets for THIS item (core/flow-snippets.mjs): the agent runs them with browser_run_code_unsafe {filename} instead of ~10 hand-made calls. Never fatal.
+    try {
+        $briefFile = Join-Path $script:Batch.Logs "$($entry.id)-flow-brief.json"
+        [IO.File]::WriteAllText($briefFile, ([ordered]@{ aspect = $out.aspect; uploads = @($uploads); prompt = $out.condensed_prompt } | ConvertTo-Json -Depth 4), $script:Utf8)
+        $snipJson = & node (Join-Path $ProjectRoot 'core/flow-snippets.mjs') write $briefFile $script:Batch.Logs $entry.id 2>$null
+        $snip = $snipJson | ConvertFrom-Json
+        if ($snip.ok) { $out.js = [ordered]@{ ready = $snip.ready; prep = $snip.prep; submit = $snip.submit; collect = $snip.collect } }
+    } catch { }
     # custom-logo item (not the -Safe retry): the invented brand name the prompt uses, so the person can see it
     if ($context.PSObject.Properties['custom_logo'] -and $context.custom_logo -eq $true -and -not $Safe) { $out.logo_name = Get-InventedBrandName "$($script:Batch.Id)-$($entry.id)" }
     Write-AgentJson $out
