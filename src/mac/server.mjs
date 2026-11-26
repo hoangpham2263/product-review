@@ -99,7 +99,7 @@ const reviewAiOf = () => { try { const s = readSeededJson(join(workspace, "confi
 const REVIEW_AI_NAME = { codex: "Codex", claude: "Claude", antigravity: "Antigravity" };
 function startImgJob(run, threads, agentName, labelAi = agentName, reviewAi = "auto") {
   imgJob = { run, n: clampThreads(threads), phase: "prepare", started: Date.now(), lines: [], text: "Đang chuẩn bị…", agent: agentName, label_ai: labelAi, reviewAi, stopped: false, busy: false,
-    claimed: new Set(), revTries: {}, active: 0, finTried: new Set(), finBusy: false, finFailed: 0, workerBatch: null, launches: 0, noProgress: 0, lastHave: 0, imagesDone: false, fatal: "", imageError: "", imageIssue: "" };
+    claimed: new Set(), revTries: {}, active: 0, finTried: new Set(), finNext: {}, finTries: {}, finBusy: false, finFailed: 0, workerBatch: null, launches: 0, noProgress: 0, lastHave: 0, imagesDone: false, fatal: "", imageError: "", imageIssue: "" };
   jobFinal = null;
   jobLog(imgJob, "Chia việc " + imgJob.n + " luồng: ngữ cảnh → tạo ảnh (review và hoàn tất chạy song song ngay khi có ảnh)");
   jobTimer = jobTimer || setInterval(() => { jobTick().catch(() => {}); }, 2000);
@@ -130,11 +130,22 @@ function startPhaseWorkers(j, mode, ids) {
 }
 // An item the image agent explicitly gave up on ([CAUSE:REFUSED] ...) has an error file and no image: it is not "missing", the run does not wait for it.
 const hasGaveUp = (run, id) => { try { return /CAUSE:(REFUSED|QUOTA)/.test(readFileSync(join(runDirOf(run), "logs", id + "-agent-error.txt"), "utf8")) && !hasImg(run, id); } catch { return false; } };
+// A CLI command that met the per-run lock another worker holds (LOCK_BUSY): wait a moment and ask again (bounded), logged ONCE per item as an amber note; never a failed attempt.
+async function runCliPatient(j, args, short, timeout) {
+  let noted = false, r;
+  for (let i = 0; i < 8 && !j.stopped; i++) {
+    r = await runAgentCli(args, timeout);
+    if (r.ok || !(r.cause === "LOCK_BUSY" || /LOCK_BUSY|worker khác/.test(String(r.error || "")))) return r;
+    if (!noted) { noted = true; jobLog(j, "⚠ Mục " + short + ": đợi worker khác ghi, thử lại"); }
+    await new Promise((x) => setTimeout(x, 1500 + Math.random() * 2500));
+  }
+  return r;
+}
 // One review by an explicit text AI: review-brief -> ai-draft (that AI + the image) -> write-review (quality gate under the run lock; up to 3 repairs naming the problem; the 4th
 // draft is kept, an item is never dropped for its wording). CLI text calls, no browser.
 async function autoReviewItem(j, id) {
   const ai = j.reviewAi, name = REVIEW_AI_NAME[ai], short = (id.match(/^\d+/) || [id])[0];
-  const b = await runAgentCli(["review-brief", "-Run", j.run, "-Item", id]);
+  const b = await runCliPatient(j, ["review-brief", "-Run", j.run, "-Item", id], short);
   if (!b.ok) { jobLog(j, "Mục " + short + ": chưa lập được đề review (" + String(b.error || "").slice(0, 100) + ")"); return; }
   let extra = "";
   for (let attempt = 1; attempt <= 4 && !j.fatal && !j.stopped; attempt++) {
@@ -145,7 +156,7 @@ async function autoReviewItem(j, id) {
       else jobLog(j, "Mục " + short + ": " + name + " lỗi (" + String(d.error || d.cause || "").slice(0, 100) + ")");
       return;
     }
-    const w = await runAgentCli(["write-review", "-Run", j.run, "-Item", id, "-File", out]);
+    const w = await runCliPatient(j, ["write-review", "-Run", j.run, "-Item", id, "-File", out], short);
     if (w.ok) return;
     extra = "Your previous draft was rejected: " + [].concat(w.problems || w.error || "").join(" ") + " Rewrite it fixing only that, keep the observations about the photo.";
   }
@@ -172,19 +183,24 @@ function pumpReviews(j, draining) {
   }
 }
 // finish (the results upload) per item as soon as image + review exist: one at a time, never blocking the tick.
+// A failed results upload (network down for a moment: HTTP 0 ...) is retried with a growing wait before it counts as a failure.
+const FIN_WAITS = String(process.env.PR_FIN_WAITS || "").split(",").map(Number).filter((n) => n > 0).length ? String(process.env.PR_FIN_WAITS).split(",").map(Number) : [10000, 30000, 120000, 300000]; // PR_FIN_WAITS only for tests
 async function pumpFinish(j) {
   if (j.finBusy) return;
   const done = new Set(doneRows(j.run));
-  const need = jobIds(j.run).filter((id) => hasImg(j.run, id) && hasRev(j.run, id) && !done.has(id) && !j.finTried.has(id));
+  const need = jobIds(j.run).filter((id) => hasImg(j.run, id) && hasRev(j.run, id) && !done.has(id) && !j.finTried.has(id) && !(j.finNext[id] > Date.now()));
   if (!need.length) return;
   j.finBusy = true;
   try {
     for (const id of need) {
       if (j.stopped) break;
-      j.finTried.add(id);
       const short = (id.match(/^\d+/) || [id])[0];
-      const r = await runAgentCli(["finish", "-Run", j.run, "-Item", id]);
-      if (!r.ok) { j.finFailed++; jobLog(j, "Mục " + short + " chưa hoàn tất: " + String(r.error || r.cause || "").slice(0, 160)); }
+      const r = await runCliPatient(j, ["finish", "-Run", j.run, "-Item", id], short);
+      if (r.ok) { j.finTried.add(id); continue; }
+      const transient = r.cause === "RESULT_UPLOAD" || /HTTP 0|network|timed? ?out|ECONN|fetch failed|connection/i.test(String(r.error || ""));
+      const n = (j.finTries[id] || 0) + 1; j.finTries[id] = n;
+      if (transient && n <= FIN_WAITS.length) { const wait = FIN_WAITS[n - 1]; j.finNext[id] = Date.now() + wait; jobLog(j, "⚠ Mục " + short + ": tải kết quả lên kho chưa được (mạng?), tự thử lại lần " + n + "/" + FIN_WAITS.length + " sau " + Math.round(wait / 1000) + " giây"); }
+      else { j.finTried.add(id); j.finFailed++; jobLog(j, "Mục " + short + " chưa tải lên kho: " + String(r.error || r.cause || "").slice(0, 160)); }
     }
   } finally { j.finBusy = false; }
 }
@@ -247,6 +263,8 @@ async function jobTick() {
       if (j.fatal) return finishJob("failed", j.fatal);
       if (j.imageError) return finishJob("failed", j.imageError);
       if (j.imageIssue) return finishJob("failed", j.imageIssue);
+      const uploadPending = ids.filter((id) => !hasGaveUp(j.run, id) && hasImg(j.run, id) && hasRev(j.run, id) && !done.has(id)).length;
+      if (open && open === uploadPending) return finishJob("done", "Xong, nhưng " + uploadPending + " mục chưa tải lên kho: bấm Chạy tiếp");
       if (open) return finishJob("failed", open + " mục chưa hoàn tất (xem log)");
       return finishJob("done", gaveUp ? gaveUp + " mục không tạo được ảnh (bị từ chối hoặc lỗi)" : "");
     }
@@ -680,6 +698,7 @@ function resultOf(st) {
     case "index": body = nm.done !== undefined ? "Gắn nhãn +" + nm.done + " ảnh" : "Gắn nhãn kho ảnh"; break;
     default: body = "";
   }
+  if (st.status === "done" && /chưa tải lên kho/.test(String(st.error || ""))) return { level: "warn", text: humanError(st.error), where: runWhere(st), name: FEATURE[st.mode] || st.mode, key: st.run_id + "|" + (st.updated || st.started || "") };
   let text;
   if (st.status === "failed") {
     const err = humanError(st.error);

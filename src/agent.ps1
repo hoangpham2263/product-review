@@ -28,7 +28,7 @@ function Enter-RunCliLock([string]$RunName) {
     while ($true) {
         try { return [IO.File]::Open($path, [IO.FileMode]::OpenOrCreate, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None) }
         catch [IO.IOException] {
-            if ((Get-Date) -gt $deadline) { throw '[CAUSE:LOCK_BUSY] another worker of this run is writing; try again in a few seconds.' }
+            if ((Get-Date) -gt $deadline) { throw '[CAUSE:LOCK_BUSY] Đợi worker khác của lượt này ghi xong, thử lại sau vài giây.' }
             Start-Sleep -Milliseconds (80 + (Get-Random -Maximum 120))
         }
     }

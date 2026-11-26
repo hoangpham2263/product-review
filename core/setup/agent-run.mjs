@@ -723,7 +723,7 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
     const base = last && last.run_id === runId ? last : (() => { const s = readState(); return s && s.run_id === runId ? s : null; })();
     const now0 = new Date(now()).toISOString();
     const st = { ...(base || { run_id: runId, mode: "flow", project: "", pid: null, started: now0, exit_code: null, last_text: "", turns: 0, model_in_use: "" }), ...patch, updated: now0 };
-    if (patch.status === "done") { st.error = ""; delete st.quota_reset; delete st.quota_raw; st.exit_code = 0; }
+    if (patch.status === "done") { st.error = patch.error || ""; delete st.quota_reset; delete st.quota_raw; st.exit_code = 0; }
     last = st; saveState(st); return true;
   }
   function stop() {

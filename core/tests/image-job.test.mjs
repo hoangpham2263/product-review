@@ -7,12 +7,14 @@ import path from "node:path";
 import os from "node:os";
 import { fileURLToPath } from "node:url";
 
+process.env.PR_FIN_WAITS = "20,20,20,20"; // the upload retry waits, shortened for the test
+
 const serverFile = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "..", "src", "mac", "server.mjs");
 const src = fs.readFileSync(serverFile, "utf8");
 const code = src.slice(src.indexOf("let imgJob = null"), src.indexOf("// Everything of the run is there on disk")).replace("function runAgentCli(", "function realRunAgentCli(")
   + "\nreturn { start: startImgJob, tick: jobTick, state: () => ({ imgJob, jobFinal }) };";
 
-async function scenario(mode, reviewAi) {
+async function scenario(mode, reviewAi, opts = {}) {
   const N = 8, base = fs.mkdtempSync(path.join(os.tmpdir(), "job-")), run = "agent-job1", dir = path.join(base, "output", run);
   fs.mkdirSync(path.join(dir, "images"), { recursive: true }); fs.mkdirSync(path.join(dir, "logs"), { recursive: true });
   const ids = Array.from({ length: N }, (_, i) => String(i + 1).padStart(3, "0") + "-p");
@@ -25,8 +27,11 @@ async function scenario(mode, reviewAi) {
       setTimeout(() => { for (const id of take) fs.writeFileSync(path.join(dir, "images", id + ".png"), "x"); this._active = false; this._status = { status: "done", error: "" }; }, 30); return { ok: true }; },
     status() { return this._status; }, setFinal() {}, stop() {},
   };
+  const failures = {}; let busyGiven = false;
   const runAgentCli = async (args) => {
     const id = args[args.indexOf("-Item") + 1];
+    if (opts.busyOnce && args[0] === "review-brief" && !busyGiven) { busyGiven = true; return { ok: false, cause: "LOCK_BUSY", error: "Đợi worker khác của lượt này ghi xong, thử lại sau vài giây." }; }
+    if (args[0] === "finish" && opts.finishFail) { failures[id] = (failures[id] || 0) + 1; if (opts.finishFail === "always" || failures[id] <= opts.finishFail) return { ok: false, cause: "RESULT_UPLOAD", error: "HTTP 0" }; }
     if (args[0] === "ai-draft") fs.writeFileSync(args[args.indexOf("-File") + 1], "review");
     if (args[0] === "write-review") fs.writeFileSync(path.join(dir, "logs", id + "-review.txt"), "ok");
     if (args[0] === "finish") { const f = path.join(dir, "results.json"); let r = []; try { r = JSON.parse(fs.readFileSync(f, "utf8")); } catch {} r.push({ photo_path: "C:/x/" + id + ".png" }); fs.writeFileSync(f, JSON.stringify(r)); }
@@ -40,7 +45,7 @@ async function scenario(mode, reviewAi) {
   const job = new Function(...names, code)(...vals);
   job.start(run, 2, "antigravity", "antigravity", reviewAi);
   for (let i = 0; i < 600; i++) { await job.tick(); if (!job.state().imgJob) break; await new Promise((r) => setTimeout(r, 10)); }
-  const out = { launches, images: ids.filter((id) => fs.existsSync(path.join(dir, "images", id + ".png"))).length, reviews: ids.filter((id) => fs.existsSync(path.join(dir, "logs", id + "-review.txt"))).length, final: job.state().jobFinal };
+  const out = { jobLines: job.state().jobFinal ? job.state().jobFinal.tail : [], launches, images: ids.filter((id) => fs.existsSync(path.join(dir, "images", id + ".png"))).length, reviews: ids.filter((id) => fs.existsSync(path.join(dir, "logs", id + "-review.txt"))).length, final: job.state().jobFinal };
   fs.rmSync(base, { recursive: true, force: true });
   return out;
 }
@@ -52,6 +57,20 @@ test("an image agent that quits after one group is launched again until every it
 test("the agent AI reviews (rev workers) and the finish step follow too", async () => {
   const r = await scenario("group", "auto");
   assert.equal(r.images, 8); assert.equal(r.reviews, 8); assert.equal(r.final.status, "done");
+});
+test("a busy per-run lock is a short wait, not a failed attempt", async () => {
+  const r = await scenario("group", "claude", { busyOnce: true });
+  assert.equal(r.reviews, 8); assert.equal(r.final.status, "done");
+  assert.equal(r.jobLines.filter((l) => /đợi worker khác ghi/.test(l)).length, 1);
+});
+test("a results upload that fails for a moment (network) is retried and the run completes", async () => {
+  const r = await scenario("group", "claude", { finishFail: 2 });
+  assert.equal(r.final.status, "done"); assert.equal(r.final.error, "");
+});
+test("when only the upload keeps failing the run is done with an amber note, not a failure", async () => {
+  const r = await scenario("group", "claude", { finishFail: "always" });
+  assert.equal(r.images, 8); assert.equal(r.reviews, 8);
+  assert.equal(r.final.status, "done"); assert.match(r.final.error, /chưa tải lên kho: bấm Chạy tiếp/);
 });
 test("an agent that makes nothing is not run forever and the run is never reported done", async () => {
   const r = await scenario("stuck", "claude");
