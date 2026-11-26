@@ -5,6 +5,7 @@
 //   node core/flow-pace.mjs reset                  clears the record (a new Flow project / a new run).
 //   node core/flow-pace.mjs download-lock acquire --tag <id> [--stale-min 5] [--wait-min 10]   BLOCKS until no other window is downloading.
 //   node core/flow-pace.mjs download-lock release --tag <id>
+//   node core/flow-pace.mjs download-collect --tag <id> [--dest <dir>] [--wait-s 30]   after the download click: wait for the file, move it to <dest>/<id>.<ext>, check it, release the lock.
 // The agent runs `gate` right BEFORE every prompt it submits and submits right after it returns. Nothing else paces the run, so the
 // pauses cannot be skipped by writing a faster browser script. Rules (fast, but never a rhythm):
 //   - 5-12 s random gap between two prompts;
@@ -134,6 +135,49 @@ async function downloadLock(action, args) {
   }
 }
 
+
+// download-collect: ONE call after the download click = wait for the new file in Downloads, move it into <dest>/<tag>.<ext>, check it is a real image (size read from its header)
+// and RELEASE the download lock (always, so the lock is held only for the click + the move, never while the agent looks at the picture). Pace and lock semantics are unchanged.
+function imageInfo(buf) {
+  if (buf.length > 24 && buf[0] === 0x89 && buf[1] === 0x50) return { type: 'png', width: buf.readUInt32BE(16), height: buf.readUInt32BE(20) };
+  if (buf.length > 4 && buf[0] === 0xff && buf[1] === 0xd8) {
+    for (let i = 2; i + 9 < buf.length;) { if (buf[i] !== 0xff) { i++; continue; } const m = buf[i + 1]; if (m >= 0xc0 && m <= 0xcf && m !== 0xc4 && m !== 0xc8 && m !== 0xcc) return { type: 'jpeg', height: buf.readUInt16BE(i + 5), width: buf.readUInt16BE(i + 7) }; i += 2 + buf.readUInt16BE(i + 2); }
+    return { type: 'jpeg', width: 0, height: 0 };
+  }
+  if (buf.length > 30 && buf.toString('ascii', 0, 4) === 'RIFF' && buf.toString('ascii', 8, 12) === 'WEBP') return { type: 'webp', width: 0, height: 0 };
+  return null;
+}
+async function downloadCollect(args) {
+  const tag = String(args.tag || '').trim();
+  if (!tag) { out({ ok: false, error: 'Thiếu --tag <id>.' }); process.exit(1); }
+  const dir = args.dir || process.env.PR_DOWNLOADS_DIR || path.join(os.homedir(), 'Downloads');
+  const dest = args.dest || path.join(process.env.PR_WORKSPACE || path.join(ROOT, 'workspace'), 'tmp', 'flow-downloads');
+  const since = args['since-ms'] ? Number(args['since-ms']) : Date.now() - 120000, until = Date.now() + Math.max(3, Number(args['wait-s']) || 30) * 1000;
+  let found = null;
+  try {
+    while (!found && Date.now() < until) {
+      const cands = [];
+      for (const n of fs.readdirSync(dir)) {
+        if (!/\.(png|jpe?g|webp)$/i.test(n) || /^pr-ref-.*-[12]\.(png|jpe?g|webp)$/i.test(n)) continue;
+        let st; try { st = fs.statSync(path.join(dir, n)); } catch { continue; }
+        if (st.isFile() && st.mtimeMs >= since && st.size > 2000) cands.push({ n, mtime: st.mtimeMs, size: st.size, tagged: n.includes(tag) });
+      }
+      cands.sort((a, b) => (b.tagged - a.tagged) || (b.mtime - a.mtime));
+      const c = cands[0];
+      if (c) { await sleep(400); try { if (fs.statSync(path.join(dir, c.n)).size === c.size) { found = c; break; } } catch {} }
+      else await sleep(400);
+    }
+    if (!found) { out({ ok: false, error: 'No new image appeared in ' + dir + ' within the wait (is the 1K download menu item clicked?).', cause: 'NO_DOWNLOAD' }); return; }
+    fs.mkdirSync(dest, { recursive: true });
+    const ext = path.extname(found.n).toLowerCase(), target = path.join(dest, tag + ext);
+    try { fs.renameSync(path.join(dir, found.n), target); } catch { fs.copyFileSync(path.join(dir, found.n), target); fs.rmSync(path.join(dir, found.n), { force: true }); }
+    const buf = fs.readFileSync(target), info = imageInfo(buf);
+    if (!info) { out({ ok: false, error: 'The moved file is not a PNG/JPEG/WebP image.', cause: 'NOT_IMAGE', path: target }); return; }
+    out({ ok: true, tag, path: target, bytes: buf.length, type: info.type, width: info.width, height: info.height, from: found.n, tagged: found.tagged, lock_released: true,
+      next: 'LOOK at the picture once (Read), then register-image -Item ' + tag + ' -From <path>' });
+  } finally { try { const cur = JSON.parse(fs.readFileSync(DOWNLOAD_LOCK, 'utf8')); if (cur.tag === tag || args.force) fs.rmSync(DOWNLOAD_LOCK, { force: true }); } catch {} }
+}
+
 // The Flow project of each Chrome profile (user 2026-11-23: set the project up ONCE and reuse it every run, no new project and no new settings each time):
 // workspace/config/flow-projects.json { "<profile>": { "url": "https://flow.google.com/project/<id>", "saved": "<iso time>" } }.
 const PROJECTS_FILE = path.join(ROOT, 'workspace', 'config', 'flow-projects.json');
@@ -159,8 +203,9 @@ for (let i = 0; i < rest.length; i++) { if (rest[i].startsWith('--')) { args[res
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   if (cmd === 'gate') await gate(args);
   else if (cmd === 'download-lock') await downloadLock(positional[0], args);
+  else if (cmd === 'download-collect') await downloadCollect(args);
   else if (cmd === 'status') { const st = load(); out({ ok: true, profile: PROFILE || 'shared', file: FILE, in_group: st.in_group, group_size: st.group_size, last_2min: st.times.filter((t) => Date.now() - t < 120000).length, total_recorded: st.times.length }); }
   else if (cmd === 'project') projectCmd(rest.find((x) => !x.startsWith('--')), args);
   else if (cmd === 'reset') { save({ times: [], in_group: 0, group_size: rnd(2, 3), tags: [] }); out({ ok: true, reset: true }); }
-  else { out({ ok: false, error: 'Lệnh: project get|set --url <url>|clear | gate --tag <item id> | download-lock acquire|release --tag <id> | status | reset' }); process.exit(1); }
+  else { out({ ok: false, error: 'Lệnh: project get|set --url <url>|clear | gate --tag <item id> | download-lock acquire|release --tag <id> | download-collect --tag <id> [--dest d] | status | reset' }); process.exit(1); }
 }
