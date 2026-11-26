@@ -193,6 +193,9 @@ function Invoke-AgentRunSummary([Parameter(Mandatory)][string]$Run) {
     $ids = New-Object System.Collections.Generic.List[string]
     if (Test-Path -LiteralPath $script:Batch.Refs) { Get-ChildItem -LiteralPath $script:Batch.Refs -Directory | ForEach-Object { $ids.Add($_.Name) } }
     if (Test-Path -LiteralPath $script:Batch.Images) { Get-ChildItem -LiteralPath $script:Batch.Images -Filter '*.png' -File | ForEach-Object { if (-not $ids.Contains($_.BaseName)) { $ids.Add($_.BaseName) } } }
+    # The items of the run itself (agent-items.json) count too: an item with no image yet has neither a refs subfolder nor an image, and must still show as needs_image.
+    $itemUrl = @{}
+    foreach ($it in @(Read-AgentItems)) { if (-not $ids.Contains([string]$it.id)) { $ids.Add([string]$it.id) }; $itemUrl[[string]$it.id] = [string]$it.url }
     $items = @(foreach ($id in ($ids | Sort-Object)) {
         $p = Get-AgentItemPaths $id
         $m = Read-AgentJsonFile $p.Manifest
@@ -204,7 +207,7 @@ function Invoke-AgentRunSummary([Parameter(Mandatory)][string]$Run) {
         elseif ($state -and $state.status -eq 'review_failed') { $cause = 'Review quality check failed'; 'error' }
         elseif (Test-Path -LiteralPath $p.Image) { 'needs_review_text' }
         else { 'needs_image' }
-        $o = [ordered]@{ id = $id; url = $(if ($m) { [string]$m.product_url } else { '' }); status = $status; image = $(if (Test-Path -LiteralPath $p.Image) { $p.Image } else { '' }) }
+        $o = [ordered]@{ id = $id; url = $(if ($m) { [string]$m.product_url } elseif ($itemUrl.ContainsKey($id)) { $itemUrl[$id] } else { '' }); status = $status; image = $(if (Test-Path -LiteralPath $p.Image) { $p.Image } else { '' }) }
         if ($cause) { $o.cause = $cause }
         [pscustomobject]$o
     })

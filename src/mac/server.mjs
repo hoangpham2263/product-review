@@ -218,7 +218,8 @@ async function jobTick() {
         // the image agent has exited: stopped, a real error, or "done": done with images still missing means it quit early (e.g. after one group) -> run it again for the rest
         const st = agentRunner.status();
         if (st.status === "stopped") return finishJob("stopped");
-        if (st.status === "failed") { j.imageError = st.error || "Lượt tạo ảnh lỗi"; j.imagesDone = true; }
+        // "0/N mục hoàn tất: không có ảnh nào được tạo" is the agent giving up WITHOUT a real error (e.g. it believed the list was empty): relaunch it like an early exit
+        if (st.status === "failed" && !/^\d+\/\d+ mục hoàn tất/.test(String(st.error || ""))) { j.imageError = st.error || "Lượt tạo ảnh lỗi"; j.imagesDone = true; }
         else {
           j.noProgress = have > j.lastHave ? 0 : j.noProgress + 1;
           if (!missing) j.imagesDone = true;

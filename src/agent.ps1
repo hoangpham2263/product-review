@@ -212,7 +212,19 @@ function Invoke-AgentPrepare {
     if (@($queue.Items).Count -and -not (Test-Path -LiteralPath $script:Batch.InputUrls -PathType Leaf) -or (@($queue.Items).Count -and -not @(Get-Content -LiteralPath $script:Batch.InputUrls -ErrorAction SilentlyContinue).Count)) {
         Write-Lines $script:Batch.InputUrls $queue.Lines
     }
-    Write-AgentJson ([ordered]@{ ok = $true; run = $script:Batch.Id; dir = $script:Batch.Dir; items = $result.ToArray() })
+    # EVERY item of the run that is not finished is listed (the ones added now are new = true), so a continuation, or a run the app prepared before the agent started, is never reported
+    # as an empty list ("nothing to do"); the items that failed validation just now follow with their error.
+    $finishedIds = @{}
+    try { foreach ($row in @(Read-AgentResults)) { $finishedIds[[IO.Path]::GetFileNameWithoutExtension([string]$row.photo_path)] = $true } } catch { }
+    $newIds = @{}; foreach ($r in $result) { if (-not $r.Contains('error')) { $newIds[[string]$r.id] = $true } }
+    $listing = New-Object Collections.Generic.List[object]
+    foreach ($it in $all) {
+        if ($finishedIds.ContainsKey([string]$it.id)) { continue }
+        $listing.Add([ordered]@{ id = $it.id; url = $it.url; handle = $it.handle; product_image = $it.product_image; review_photo = $it.review_photo; new = [bool]$newIds[[string]$it.id]
+                has_context = (Test-Path -LiteralPath (Join-Path $script:Batch.Logs "$($it.id)-context.json")); has_image = (Test-Path -LiteralPath (Join-Path $script:Batch.Images "$($it.id).png")); has_review = (Test-Path -LiteralPath (Join-Path $script:Batch.Logs "$($it.id)-review.txt")) })
+    }
+    foreach ($r in $result) { if ($r.Contains('error')) { $listing.Add($r) } }
+    Write-AgentJson ([ordered]@{ ok = $true; run = $script:Batch.Id; dir = $script:Batch.Dir; total_items = $all.Count; unfinished = @($listing | Where-Object { -not $_.Contains('error') }).Count; items = $listing.ToArray() })
 }
 
 # --- 2. context-brief / context --------------------------------------------------------------------------------
