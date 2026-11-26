@@ -1536,6 +1536,7 @@ async function showReviewDialog() {
     paint();
     refresh();
   };
+  const showRun = (path) => { const n = items.findIndex((i) => i.batch === path); if (n >= 0 && flow.children[n]) flow.children[n].scrollIntoView({ block: "start" }); };
   const load = async () => {
     const picked = chosen();
     items = picked.length ? list(await api("reviewItemsMany", { batches: picked })) : [];
@@ -1574,13 +1575,17 @@ async function showReviewDialog() {
   const drawRuns = (all, keep) => {
     // A run with no picture has nothing to review or export: it is not listed. Newest first, grouped by day, each row named by its site / time / size (the raw id is the grey tail).
     runs = all.filter((x) => x.images > 0).map((x) => {
-      const row = el("label", "check runrow");
+      const row = el("div", "check runrow");
       const input = el("input", "", { type: "checkbox" });
       input.checked = !!keep && keep.has(x.path);
       input.onchange = load;
       const info = labels[x.name] || {};
       const idTail = el("span", "runid", { text: "  " + x.name });
-      row.append(input, document.createTextNode(`${info.label || x.name} · ${x.images} ảnh · ${x.pending ? `chưa duyệt ${x.pending}` : "đã duyệt hết"}${x.exported ? " · đã xuất" : ""}`), idTail);
+      const text = el("span", "runtext", { text: `${info.label || x.name} · ${x.images} ảnh · ${x.pending ? `chưa duyệt ${x.pending}` : "đã duyệt hết"}${x.exported ? " · đã xuất" : ""}` });
+      text.style.cursor = "pointer";
+      // Click the text = look at this run: it gets selected if it was not (never unselected) and the list jumps to its first review. Only the checkbox itself toggles.
+      text.onclick = async () => { if (!input.checked) { input.checked = true; await load(); } showRun(x.path); runs.forEach((r) => r.row.classList.toggle("active", r.path === x.path)); };
+      row.append(input, text, idTail);
       row.title = (info.handles && info.handles.length ? "Sản phẩm đầu: " + info.handles.join(", ") + "\n" : "") + x.name;
       return { path: x.path, input, row, day: info.day || "", started: info.started || "" };
     });
