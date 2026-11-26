@@ -89,6 +89,9 @@ function linkStates() {
   for (const l of Object.values(links)) l.state = l.done >= l.total ? "done" : active ? "running" : l.fail ? "failed" : (l.img || l.rev) ? "partial" : "todo";
   return { run, active, links };
 }
+// Items the context workers have not made yet (the marker flow-brief reads: CONTEXT_PENDING). Rewritten every tick (the CLI ignores a marker older than 2 minutes); [] once they are done.
+const CTX_FIRST_GROUP = 3;
+function markCtxPending(j) { try { const ids = j.ctxDone ? [] : jobIds(j.run).filter((id) => !hasCtx(j.run, id) && !hasImg(j.run, id)); writeFileSync(join(runDirOf(j.run), "ctx-pending.json"), JSON.stringify(ids)); } catch { /* best effort */ } }
 function jobLog(j, text) { j.lines.push(new Date().toTimeString().slice(0, 8) + " [Tạo ảnh & review] " + text); if (j.lines.length > 200) j.lines.shift(); j.text = text; }
 function runAgentCli(args, timeout = 240000) {
   return new Promise((resolveCli) => execFile(PWSH, psFile(join(root, "src", "agent.ps1"), args), { cwd: root, env: toolEnv, timeout, windowsHide: true, encoding: "utf8" }, (err, out, stderr) => {
@@ -218,7 +221,13 @@ async function jobTick() {
       j.phase = j.n > 1 ? "ctx-next" : "images";  // Luồng 1: the image agent does the context itself
     }
     if (j.phase === "context") {
-      if (lightPool.some((r) => r.isActive())) return;
+      // PIPELINE: the image agent starts as soon as the first group has its context (the ctx workers keep going); it never waits for all of them. Without this Flow sat idle for the whole
+      // context phase (measured: 21 of 27 minutes before the first prompt of a 40-item run). flow-brief answers CONTEXT_PENDING for an item the workers have not reached yet.
+      if (lightPool.some((r) => r.isActive())) {
+        markCtxPending(j);
+        if (!jobIds(j.run).filter((id) => !hasImg(j.run, id)).slice(0, CTX_FIRST_GROUP).every((id) => hasCtx(j.run, id))) return;
+        j.ctxOverlap = true; jobLog(j, "Ngữ cảnh của nhóm đầu đã xong: bắt đầu tạo ảnh, ngữ cảnh các mục sau vẫn chạy song song");
+      } else j.ctxDone = true;
       j.phase = "images";
     }
     if (j.phase === "ctx-next") {
@@ -228,6 +237,7 @@ async function jobTick() {
     }
     if (j.phase === "images") {
       // reviews and finish follow the images live
+      if (j.ctxOverlap && !j.ctxDone) { if (lightPool.some((r) => r.isActive())) markCtxPending(j); else { j.ctxDone = true; markCtxPending(j); } } // rev workers only start when no ctx worker runs, so idle = ctx done for good
       pumpReviews(j, false); pumpFinish(j).catch(() => {});
       if (agentRunner.isActive()) return;
       const ids = jobIds(j.run), have = ids.filter((id) => hasImg(j.run, id)).length;
@@ -239,6 +249,7 @@ async function jobTick() {
         // "0/N mục hoàn tất: không có ảnh nào được tạo" is the agent giving up WITHOUT a real error (e.g. it believed the list was empty): relaunch it like an early exit
         if (st.status === "failed" && !/^\d+\/\d+ mục hoàn tất/.test(String(st.error || ""))) { j.imageError = st.error || "Lượt tạo ảnh lỗi"; j.imagesDone = true; }
         else {
+          if (j.ctxOverlap && !j.ctxDone && missing && have <= j.lastHave) return; // exited with nothing done while contexts are still coming: wait for them, do not burn a launch
           j.noProgress = have > j.lastHave ? 0 : j.noProgress + 1;
           if (!missing) j.imagesDone = true;
           else if (j.noProgress >= 2 || j.launches >= 6) { j.imageIssue = missing + " mục chưa có ảnh (đã chạy lại " + (j.launches - 1) + " lần)"; j.imagesDone = true; }

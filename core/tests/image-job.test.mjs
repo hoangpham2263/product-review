@@ -19,11 +19,11 @@ async function scenario(mode, reviewAi, opts = {}) {
   fs.mkdirSync(path.join(dir, "images"), { recursive: true }); fs.mkdirSync(path.join(dir, "logs"), { recursive: true });
   const ids = Array.from({ length: N }, (_, i) => String(i + 1).padStart(3, "0") + "-p");
   fs.writeFileSync(path.join(dir, "agent-items.json"), JSON.stringify(ids.map((id) => ({ id }))));
-  let launches = 0;
+  let launches = 0, startedWhileCtx = null, pendingAtStart = null; const lights = [];
   const agentRunner = {
     _active: false, _status: { status: "idle" },
     isActive() { return this._active; },
-    start() { launches++; this._active = true; const missing = ids.filter((id) => !fs.existsSync(path.join(dir, "images", id + ".png"))), take = mode === "stuck" ? [] : missing.slice(0, 4);
+    start() { launches++; if (startedWhileCtx === null) { startedWhileCtx = lights.some((l) => l._a); try { pendingAtStart = JSON.parse(fs.readFileSync(path.join(dir, "ctx-pending.json"), "utf8")); } catch { pendingAtStart = null; } } this._active = true; const missing = ids.filter((id) => !fs.existsSync(path.join(dir, "images", id + ".png"))), take = mode === "stuck" ? [] : missing.slice(0, 4);
       setTimeout(() => { for (const id of take) fs.writeFileSync(path.join(dir, "images", id + ".png"), "x"); this._active = false; this._status = { status: "done", error: "" }; }, 30); return { ok: true }; },
     status() { return this._status; }, setFinal() {}, stop() {},
   };
@@ -38,14 +38,14 @@ async function scenario(mode, reviewAi, opts = {}) {
     return { ok: true };
   };
   const fakeLight = () => ({ _a: false, isActive() { return this._a; }, start(o) { this._a = true; const part = JSON.parse(fs.readFileSync(o.options.match(/items file: ([^;]+)/)[1], "utf8"));
-    for (const id of part) { if (o.mode === "ctx") fs.writeFileSync(path.join(dir, "logs", id + "-context.json"), "{}"); if (o.mode === "rev") fs.writeFileSync(path.join(dir, "logs", id + "-review.txt"), "ok"); }
-    setTimeout(() => { this._a = false; }, 20); return { ok: true }; }, stop() {}, status() { return {}; } });
+    for (const [i, id] of part.entries()) { if (o.mode === "ctx" && opts.slowCtx && i >= 3) { setTimeout(() => fs.writeFileSync(path.join(dir, "logs", id + "-context.json"), "{}"), 400); continue; } if (o.mode === "ctx") fs.writeFileSync(path.join(dir, "logs", id + "-context.json"), "{}"); if (o.mode === "rev") fs.writeFileSync(path.join(dir, "logs", id + "-review.txt"), "ok"); }
+    setTimeout(() => { this._a = false; }, o.mode === "ctx" && opts.slowCtx ? 500 : 20); return { ok: true }; }, stop() {}, status() { return {}; } });
   const names = ["workspace", "readFileSync", "existsSync", "join", "dirname", "mkdirSync", "writeFileSync", "newRunId", "shardFiles", "cleanShardFiles", "clampThreads", "runAgentCli", "agentRunner", "lightPool", "setInterval", "clearInterval", "setImmediate", "readdirSync"];
-  const vals = [base, fs.readFileSync, fs.existsSync, path.join, path.dirname, fs.mkdirSync, fs.writeFileSync, () => "x-0000", [], () => {}, (v) => Math.min(4, Math.max(1, v | 0)), runAgentCli, agentRunner, [fakeLight(), fakeLight(), fakeLight(), fakeLight()], () => 0, () => {}, () => {}, fs.readdirSync];
+  const vals = [base, fs.readFileSync, fs.existsSync, path.join, path.dirname, fs.mkdirSync, fs.writeFileSync, () => "x-0000", [], () => {}, (v) => Math.min(4, Math.max(1, v | 0)), runAgentCli, agentRunner, [...[0, 1, 2, 3].map(() => { const l = fakeLight(); lights.push(l); return l; })], () => 0, () => {}, () => {}, fs.readdirSync];
   const job = new Function(...names, code)(...vals);
   job.start(run, 2, "antigravity", "antigravity", reviewAi);
   for (let i = 0; i < 600; i++) { await job.tick(); if (!job.state().imgJob) break; await new Promise((r) => setTimeout(r, 10)); }
-  const out = { jobLines: job.state().jobFinal ? job.state().jobFinal.tail : [], launches, images: ids.filter((id) => fs.existsSync(path.join(dir, "images", id + ".png"))).length, reviews: ids.filter((id) => fs.existsSync(path.join(dir, "logs", id + "-review.txt"))).length, final: job.state().jobFinal };
+  const out = { startedWhileCtx, pendingAtStart, jobLines: job.state().jobFinal ? job.state().jobFinal.tail : [], launches, images: ids.filter((id) => fs.existsSync(path.join(dir, "images", id + ".png"))).length, reviews: ids.filter((id) => fs.existsSync(path.join(dir, "logs", id + "-review.txt"))).length, final: job.state().jobFinal };
   fs.rmSync(base, { recursive: true, force: true });
   return out;
 }
@@ -75,4 +75,11 @@ test("when only the upload keeps failing the run is done with an amber note, not
 test("an agent that makes nothing is not run forever and the run is never reported done", async () => {
   const r = await scenario("stuck", "claude");
   assert.equal(r.launches, 2); assert.equal(r.final.status, "failed"); assert.match(r.final.error, /chưa có ảnh/);
+});
+
+test("pipeline: the image agent starts when the first group has its context while the ctx workers still run; flow-brief is told which contexts are pending", async () => {
+  const r = await scenario("group", "claude", { slowCtx: true });
+  assert.equal(r.startedWhileCtx, true);
+  assert.ok(Array.isArray(r.pendingAtStart) && r.pendingAtStart.length > 0, "ctx-pending.json lists the items still without context");
+  assert.equal(r.images, 8); assert.equal(r.reviews, 8); assert.equal(r.final.status, "done");
 });
