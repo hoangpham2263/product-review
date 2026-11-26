@@ -999,6 +999,13 @@ async function handle(req, res) {
     if (!fast.ok) return send(res, 500, { error: fast.error || "Chưa lấy được từ kho đã chuẩn bị." });
     const got = Number(fast.queued) || 0, need = count - got, dropped = fast.dropped || [];
     if (need <= 0) return send(res, 200, { ok: true, from_prepared: got, needs_claude: 0, dropped, finished: true });
+    // "Bốc ngẫu nhiên, không AI": the rest is drawn by code from the library group of each product, in seconds
+    if (given.random) {
+      const ra = await runScan(["scene-auto", "-Mode", "queue", "-Project", id, "-Limit", String(need), "-SceneCount", String(scenes), ...filters], 900000);
+      if (!ra.ok) return send(res, 500, { error: ra.error || "Chưa bốc ngẫu nhiên được.", from_prepared: got });
+      const n = Number(ra.done) || 0, left = Number(ra.left_out) || 0;
+      return send(res, 200, { ok: true, from_prepared: got, needs_claude: 0, dropped, finished: true, message: "Đã thêm " + n + " sản phẩm bốc ngẫu nhiên" + (left ? ", " + left + " sản phẩm chưa có ảnh phù hợp" : "") + ". Xem danh sách ở cửa sổ chính.", added: n });
+    }
     // 2. nothing left that Claude could queue: say so instead of starting it
     if (!(await productsLeft(id, scenes, filters))) return send(res, 200, { ok: true, from_prepared: got, needs_claude: 0, dropped, finished: true, message: got ? "Chỉ còn " + got + " sản phẩm để thêm: đã thêm hết (các sản phẩm khác đã dùng hoặc đã ở hàng chờ)." : "Không còn sản phẩm nào để thêm vào hàng chờ (đã dùng hoặc đã ở hàng chờ)." });
     // 3. the shortfall is NEVER dropped: an order of this session fills it (from the stock while a prep run adds rows, then Claude for the rest)
@@ -1019,6 +1026,12 @@ async function handle(req, res) {
     const scenes = Math.min(4, Math.max(1, Math.round(Number(given.scenes)) || 2));
     const category = String(given.category || "").replace(/[\r\n"]+/g, " ").trim().slice(0, 120);
     const limit = Math.min(500, Math.max(0, Math.round(Number(given.limit)) || 0));
+    if (given.random) {
+      const rp = await runScan(["scene-auto", "-Mode", "prep", "-Project", id, "-SceneCount", String(scenes), ...(limit ? ["-Limit", String(limit)] : []), ...projectArgs({ ...given, category }), ...(given.retry_skipped ? ["-RetrySkipped"] : [])], 900000);
+      if (!rp.ok) return send(res, 500, { error: rp.error || "Chưa bốc ngẫu nhiên được." });
+      const n = Number(rp.done) || 0, left = Number(rp.left_out) || 0;
+      return send(res, 200, { ok: true, finished: true, message: "Đã chuẩn bị " + n + " sản phẩm bốc ngẫu nhiên" + (left ? ", " + left + " chưa có ảnh phù hợp" : "") + "." });
+    }
     if (light.isActive()) return send(res, 409, { error: lightBusyText("Đã có một lượt chuẩn bị / thêm hàng chờ đang chạy. Chờ xong hoặc bấm Dừng.") });
     const options = `category: ${category ? `"${category}"` : "(all categories)"}; only unused (used = F): ${given.unused_only ? "T" : "F"}; products to prepare: ${limit || "all"}; scenes per product: ${scenes}; retry skipped (no-fit) products: ${given.retry_skipped ? "T" : "F"}`;
     let urls = null;

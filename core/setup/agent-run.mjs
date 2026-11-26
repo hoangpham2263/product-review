@@ -75,10 +75,10 @@ export function friendlyTool(name, input = {}, mode = "flow", ai = "") {
       if (/scene-index-todo/i.test(cmd)) return "Lấy lô ảnh kho chưa gắn nhãn (một tấm ảnh ghép)";
       if (/scene-index-add/i.test(cmd)) return "Lưu nhãn ảnh kho vừa xem";
       if (/scene-index-status/i.test(cmd)) return "Xem số ảnh kho đã gắn nhãn";
-      if (/scene-candidates/i.test(cmd)) return "Lấy ảnh bối cảnh hợp loại sản phẩm (tấm ảnh ghép)";
+      if (/scene-candidates/i.test(cmd)) return "Bốc mẫu ảnh bối cảnh ngẫu nhiên (tấm ảnh ghép)";
       if (/contact-sheet/i.test(cmd)) return "Ghép ảnh thành một tấm để xem";
       if (/prep-todo/i.test(cmd)) return "Lấy danh sách sản phẩm cần chuẩn bị";
-      if (/prep-add/i.test(cmd)) return "Lưu ảnh bối cảnh đã chọn vào kho chuẩn bị";
+      if (/prep-add/i.test(cmd)) return "Lưu các ảnh bối cảnh đã chọn vào kho chuẩn bị";
       if (/prep-status/i.test(cmd)) return "Xem số đã chuẩn bị";
       if (/queue-from-prepared/i.test(cmd)) return "Lấy sản phẩm từ kho chuẩn bị vào hàng chờ";
       if (/queue-todo/i.test(cmd)) return "Lấy danh sách sản phẩm cần thêm vào hàng chờ";

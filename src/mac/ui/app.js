@@ -954,6 +954,8 @@ function showProjectsDialog(pick = "") {
   const qSceneHint = small("Ảnh ngữ cảnh / sản phẩm", 110, 150), sceneCount = at(numeric(1, 4, 2), 110, 508, 64, 28);
   sceneCount.title = "Số ảnh ngữ cảnh khác nhau cho mỗi sản phẩm khi thêm vào hàng chờ, 1-4. Lấy trước từ kho đã chuẩn bị (dòng có ít nhất số ảnh này), phần thiếu AI chọn.";
   const queueBtn = at(button("Thêm vào hàng chờ"), 270, 506, 160, 32);
+  const randomOnly = at(checkbox("Bốc ngẫu nhiên, không AI"), 230, 470, 215, 18); randomOnly.style.fontSize = "12px";
+  randomOnly.title = "Bỏ AI: mỗi sản phẩm lấy ngẫu nhiên ảnh từ nhóm kho ảnh hợp với nó, không trùng ảnh đã dùng. Xong trong vài giây, không tốn hạn mức. Áp dụng cho Thêm vào hàng chờ và Chuẩn bị trước. Bỏ chọn để AI xem và chọn ảnh hợp nhất.";
   const divider = at(el("div", "abs"), 448, 470, 1, 68); divider.style.background = "var(--line)";
   const pTitle = group("Chuẩn bị trước", 466);
   // retry the products skipped earlier because no scene fitted (their skipped row is replaced); off by default, remembered per session
@@ -965,7 +967,7 @@ function showProjectsDialog(pick = "") {
   const pSceneHint = small("Ảnh ngữ cảnh / sản phẩm", 616, 150), prepScenes = at(numeric(1, 4, 4), 616, 508, 64, 28);
   prepScenes.title = "Số ảnh ngữ cảnh chuẩn bị cho mỗi sản phẩm, 1-4. Nên để 4: Thêm vào hàng chờ dùng được mọi số ảnh từ 1 đến 4 từ cùng một dòng.";
   const prepBtn = at(button("Chuẩn bị trước"), 770, 506, 110, 32);
-  prepBtn.title = "AI chọn sẵn ảnh bối cảnh cho các sản phẩm chưa chuẩn bị của dự án (theo danh mục và ô Chỉ chưa dùng), lưu vào kho đã chuẩn bị; không đụng hàng chờ, chạy được khi Bắt đầu đang chạy. Lần sau Thêm vào hàng chờ lấy ngay từ kho này.";
+  prepBtn.title = "Chọn sẵn ảnh bối cảnh cho các sản phẩm chưa chuẩn bị của dự án (theo danh mục và ô Chỉ chưa dùng) và lưu vào kho đã chuẩn bị; không đụng hàng chờ. Lần sau Thêm vào hàng chờ lấy ngay từ kho này.";
   const scanBtn = at(button("Quét cập nhật"), 16, 556, 120, 32);
   const reviewsBtn = at(button("Cập nhật số review"), 145, 556, 150, 32);
   const openDir = at(button("Mở thư mục"), 304, 556, 100, 32);
@@ -975,11 +977,11 @@ function showProjectsDialog(pick = "") {
   Object.assign(runBox.style, { whiteSpace: "pre-line", lineHeight: "18px", fontSize: "11px", overflow: "hidden" });
   const close = at(button("Đóng"), 800, 556, 80, 32);
   // the scene library tag index (shared by every project): state line + its own button on the last row
-  const indexLine = at(label("Kho ảnh: …", "muted"), 16, 646, 680, 20);
+  const indexLine = at(label("", "muted"), 16, 646, 680, 20); indexLine.style.display = "none";
   Object.assign(indexLine.style, oneLine({ fontSize: "11px" }));
-  const indexBtn = at(button("Gắn nhãn kho ảnh"), 720, 640, 160, 32);
+  const indexBtn = at(button("Gắn nhãn kho ảnh"), 720, 640, 160, 32); indexBtn.style.display = "none"; // dormant: no tagging step in the flow
   indexBtn.title = "AI xem mỗi ảnh trong kho MỘT lần (trên tấm ảnh ghép) và gắn nhãn: nơi chốn, có người, ánh sáng, chỗ tường trống, hợp loại sản phẩm nào. Chuẩn bị trước và Thêm vào hàng chờ dùng nhãn này để chỉ xem ít ảnh hợp nhất. Chỉ gắn ảnh chưa có nhãn; chạy được khi Bắt đầu đang chạy.";
-  view.body.append(listTitle, unpick, projectLine, listBox, addWeb, catLabel, catBox, unusedOnly, countLabel, tableBox, status, thrLabel, runThreads, qTitle, qCountHint, queueCount, qSceneHint, sceneCount, queueBtn, divider, pTitle, retrySkipped, pCountHint, prepCount, pSceneHint, prepScenes, prepBtn, scanBtn, reviewsBtn, openDir, stop, stopMain, close, runBox, indexLine, indexBtn);
+  view.body.append(randomOnly, listTitle, unpick, projectLine, listBox, addWeb, catLabel, catBox, unusedOnly, countLabel, tableBox, status, thrLabel, runThreads, qTitle, qCountHint, queueCount, qSceneHint, sceneCount, queueBtn, divider, pTitle, retrySkipped, pCountHint, prepCount, pSceneHint, prepScenes, prepBtn, scanBtn, reviewsBtn, openDir, stop, stopMain, close, runBox, indexLine, indexBtn);
   // each pair is remembered separately (this session's run-settings); the buttons read only their own boxes
   // the window's saved picks: project, its category, "Chỉ chưa dùng" (default on) come back when the popup opens; loadProjects waits for them
   let savedPick = { project: "", category: "" };
@@ -1045,7 +1047,7 @@ function showProjectsDialog(pick = "") {
     const left = Math.max(0, (r.photos || 0) - (r.indexed || 0));
     indexLine.textContent = r.offline ? `Kho ảnh: ${r.indexed} ảnh đã gắn nhãn (không kết nối được kho để đếm tổng)` : `Kho ảnh: ${r.photos} ảnh · ${r.indexed} đã gắn nhãn` + (left ? ` · ${left} chưa gắn nhãn` : " · đã gắn nhãn hết");
   };
-  refreshIndex();
+
 
   const renderList = () => {
     unpick.style.display = current && !lockedProject ? "" : "none";
@@ -1197,9 +1199,10 @@ function showProjectsDialog(pick = "") {
   const begin = async (url, body, kind, failText) => {
     const isLight = kind === "queue" || kind === "prep" || kind === "index";
     if (!isLight && run.active) return say("Đang có một lượt chạy trong cửa sổ chính. Chờ xong rồi chạy.", "var(--warn)");
-    const r = await fetch(url, { method: "POST", body: JSON.stringify({ ...body, threads: thr() }) });
+    const r = await fetch(url, { method: "POST", body: JSON.stringify({ ...body, random: randomOnly.input.checked, threads: thr() }) });
     const answer = await r.json().catch(() => ({}));
     if (!r.ok) return say(answer.error || failText, "var(--error)");
+    if (answer.finished) { await loadState().catch(() => {}); refreshPrepared(); refreshButtons(); return say(answer.message || "Xong.", "var(--ok)"); }
     ticks = 0;
     if (isLight) { runningLight = kind; lightStarted = Date.now(); } else { runningMain = kind; startedAt = Date.now(); }
     refreshButtons(); say("Đang bắt đầu…", "var(--accent)"); watch();
@@ -1223,7 +1226,7 @@ function showProjectsDialog(pick = "") {
       return say(`Đã thêm ${answer.added} sản phẩm (không ảnh bối cảnh). Xem danh sách ở cửa sổ chính.`, "var(--ok)");
     }
     queueBtn.disabled = prepBtn.disabled = true; say("Đang lấy từ kho đã chuẩn bị…", "var(--accent)");
-    const r = await fetch("/api/project/queue/run", { method: "POST", body: JSON.stringify({ project: current, category: catBox.value, unused_only: unusedOnly.input.checked, count: queueCount.value, scenes: sceneCount.value, threads: thr() }) });
+    const r = await fetch("/api/project/queue/run", { method: "POST", body: JSON.stringify({ project: current, category: catBox.value, unused_only: unusedOnly.input.checked, count: queueCount.value, scenes: sceneCount.value, random: randomOnly.input.checked, threads: thr() }) });
     const a = await r.json().catch(() => ({}));
     if (!r.ok) { refreshButtons(); say(a.error || "Chưa thêm vào hàng chờ được.", "var(--error)"); return; }
     await loadState().catch(() => {});

@@ -1,4 +1,4 @@
-# Index prompt (Claude Code tags the scene photo library ONCE, so Chuẩn bị trước and Thêm vào hàng chờ look at few images per decision)
+# Index prompt (optional tool: Claude Code tags the scene photo library; no step of Chuẩn bị trước or Thêm vào hàng chờ needs it, and it has no button in the Dự án popup)
 
 The only source of this prompt: the app ("Gắn nhãn kho ảnh" in the Dự án popup) and `buildPrompt({ mode: "index" })` in `core/setup/agent-run.mjs` read the `text` block below. Placeholders: `{{TOOL}}` = this tool's folder, `{{RUN}}` = the run id, `{{OPTIONS}}` = this run's options (library group, how many photos). Same fixed template as `docs/prep-prompt.md` and `docs/queue-prompt.md`: TASK, OPTIONS, TOOL, STEPS (numbered, 1:1 with "Gắn nhãn kho ảnh" in the "Dự án" section of RUNBOOK.md), STOP IF, NEVER.
 
