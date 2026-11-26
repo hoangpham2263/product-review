@@ -237,11 +237,15 @@ function Get-LibraryPhotos([string]$LibraryGroup) {
     Import-QueueLibs
     $catalogPath = Join-Path $LibraryDir 'catalog.json'
     if (-not (Test-Path -LiteralPath $catalogPath)) { Update-SourceCatalog $LibraryDir }
-    $byFile = @{}
-    if (Test-Path -LiteralPath $catalogPath) {
-        $catalog = Get-Content -LiteralPath $catalogPath -Raw -Encoding UTF8 | ConvertFrom-Json
-        foreach ($photo in @($catalog.photos)) { $byFile[([string]$photo.file).Normalize([Text.NormalizationForm]::FormC)] = $photo }
+    # the 5 MB catalog is parsed once per command, not once per library group
+    if (-not $script:CatalogByFile) {
+        $script:CatalogByFile = @{}
+        if (Test-Path -LiteralPath $catalogPath) {
+            $catalog = Get-Content -LiteralPath $catalogPath -Raw -Encoding UTF8 | ConvertFrom-Json
+            foreach ($photo in @($catalog.photos)) { $script:CatalogByFile[([string]$photo.file).Normalize([Text.NormalizationForm]::FormC)] = $photo }
+        }
     }
+    $byFile = $script:CatalogByFile
     $prefix = $LibraryGroup.Normalize([Text.NormalizationForm]::FormC)
     return @(Get-SourceGroupFiles $LibraryDir $LibraryGroup | ForEach-Object {
             $info = $byFile["$prefix/$($_.name)"]

@@ -206,6 +206,8 @@ export const AGY_MODEL_RE = /^[A-Za-z0-9._\-]{1,60}$/;
 export const AGY_EFFORTS = ["low", "medium", "high", "xhigh"];
 // "" = no --model flag: agy uses its own default and the run reports the model agy says it runs (init event).
 export const AGY_DEFAULT_MODEL = "";
+// Light observational work (queue / prep / index / ctx) uses this fast model when the user chose none; a saved choice always wins, reviews keep the default.
+export const AGY_FAST_MODEL = "gemini-3.8-flash-medium", AGY_FAST_MODES = ["queue", "prep", "index", "ctx"];
 // The plugin + server name of the per-run Playwright MCP; agy exposes its tools as call_mcp_tool(ServerName "<plugin>_<server>", ToolName "browser_*").
 export const AGY_PLUGIN = "prreview", AGY_SERVER = "flow", AGY_MCP_SERVER = AGY_PLUGIN + "_" + AGY_SERVER;
 // Checked with `agy models` on agy 1.5.16; used only when the live list cannot be read.
@@ -640,7 +642,8 @@ export function createAgentRunner({ toolRoot, workspace, profileDir = join(works
     if (!noBrowser) writeFileSync(cfg, JSON.stringify(mcpConfig({ plat, profile: profileDir, headless, extension: ext ? { profile: bc.profile, name: group.name, color: group.color, background: mode !== "flow" } : null })));
     if (!noBrowser && !ext) mkdirSync(profileDir, { recursive: true });
     const claudeSet = readClaudeSettings(workspace || join(toolRoot, "workspace"), join(toolRoot, "workspace"));
-    const asked = agy ? { model: agentSet.agyModel, effort: agentSet.agyEffort } : claudeSet;
+    const fastDefault = agy && !agentSet.agyModel && AGY_FAST_MODES.includes(mode);
+    const asked = agy ? { model: agentSet.agyModel || (fastDefault ? AGY_FAST_MODEL : ""), effort: fastDefault ? "" : agentSet.agyEffort } : claudeSet;
     // Optional per-profile Playwright extension token (shared workspace/playwright-tokens.json): through this env for Claude, never in a log.
     const extToken = ext ? extensionToken(join(toolRoot, "workspace"), bc.profile) : "";
     const note = mode === "ctx" || mode === "rev"
