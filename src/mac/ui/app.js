@@ -1617,8 +1617,8 @@ async function showReviewDialog() {
     status.textContent = `Đã chọn ${chosen().length} lần chạy • Đã duyệt ${done}/${items.length} đánh giá • Giữ ${good} • Bỏ ${done - good}`;
     exportBtn.disabled = !(items.length > 0 && done === items.length && good > 0);
   };
-  const decideFor = (item, paint) => async (value) => {
-    const next = item.decision === value ? "" : value;
+  const decideFor = (item, paint) => async (value, toggle = true) => {
+    const next = toggle && item.decision === value ? "" : value; // the row buttons toggle; the preview window always sets what was clicked
     await api("reviewDecide", { batch: item.batch, id: item.id, decision: next, reason: "" });
     item.decision = next;
     paint();
@@ -1734,9 +1734,9 @@ function showReviewPreview(item, decide) {
   // Giữ or Bỏ decides and closes the window, so there is no separate Đóng; Esc closes without deciding.
   const keep = at(button("Giữ cả ảnh"), 650, 670, 130, 36), textOnly = at(button("Chỉ lấy nội dung"), 790, 670, 146, 36), skip = at(button("Bỏ đánh giá"), 946, 670, 122, 36);
   state_.textContent = { ok: "Đang giữ đánh giá và ảnh", text: "Chỉ giữ nội dung, CSV không có ảnh", bad: "Đang bỏ đánh giá này khỏi CSV" }[item.decision] || "Chưa chọn giữ hoặc bỏ";
-  keep.onclick = async () => { await decide("ok"); view.close(); };
-  textOnly.onclick = async () => { await decide("text"); view.close(); };
-  skip.onclick = async () => { await decide("bad"); view.close(); };
+  keep.onclick = async () => { await decide("ok", false); view.close(); };
+  textOnly.onclick = async () => { await decide("text", false); view.close(); };
+  skip.onclick = async () => { await decide("bad", false); view.close(); };
   b.append(original, at(label(item.review_only ? "Chỉ review · không có ảnh kết quả" : "Ảnh kết quả"), 548, 12, 500, 24), product, sceneLabel, scene, result, body, state_, keep, textOnly, skip);
 }
 
