@@ -142,7 +142,11 @@ textarea.text { resize: none; padding: 2px 4px; line-height: 1.3; overflow-y: sc
 .text.mono { font: 11px/1.45 Menlo, Consolas, monospace; white-space: pre; overflow: auto; }
 
 .runs { position: absolute; overflow-y: auto; overflow-x: hidden; border: 1px solid #000; background: var(--surface); }
-.check.runrow { position: static; padding: 3px 8px; }
+.check.runrow { position: static; display: grid; grid-template-columns: 15px minmax(0, 1fr) 84px 132px 112px; column-gap: 10px; align-items: center; padding: 3px 8px; font-weight: 400; }
+.runrow > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.runrow .rc-when, .runrow .rc-size { color: var(--muted); }
+.runrow .rc-state { text-align: right; }
+.runrow .rc-state.warn { color: var(--warn); } .runrow .rc-state.info { color: var(--info); } .runrow .rc-state.ok { color: var(--ok); }
 .check.runrow:hover { background: #e5f1fb; }
 
 .combo option:disabled { color: #8a8a8a; }

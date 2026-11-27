@@ -1673,12 +1673,16 @@ async function showReviewDialog() {
       const info = labels[x.name] || {};
       const main = info.site || info.short || x.name; // the site, else "Lượt cũ lan-N", else the folder name; the raw id is only a dim tail when nothing nicer exists
       const idTail = el("span", "runid", { text: (info.site || main === x.name ? "" : "  " + x.name) + (x.name === activeRun ? "  đang chạy, duyệt khi xong" : "") });
-      const text = el("span", "runtext", { text: [main, info.when, `${info.items || x.images} mục`, `${x.images} ảnh`, x.exported ? "đã xuất" : x.pending ? `chưa duyệt ${x.pending}` : "đã duyệt hết"].filter(Boolean).join(" · ") });
+      const status = x.exported ? ["đã xuất", "ok"] : x.pending ? ["chưa duyệt " + x.pending, "warn"] : ["đã duyệt hết", "info"];
+      const nameCell = el("span", "runtext rc-name"); nameCell.append(document.createTextNode(main), idTail);
+      const text = nameCell;
+      const whenCell = el("span", "rc-when", { text: info.when || "" }), sizeCell = el("span", "rc-size", { text: `${info.items || x.images} mục · ${x.images} ảnh` }), stateCell = el("span", "rc-state " + status[1], { text: status[0] });
+      row.title = [main, info.when, `${info.items || x.images} mục · ${x.images} ảnh`, status[0]].filter(Boolean).join(" · ") + String.fromCharCode(10) + x.name;
       text.style.cursor = "pointer";
       // Click the text = look at this run: it gets selected if it was not (never unselected) and the list jumps to its first review. Only the checkbox itself toggles.
       text.onclick = async () => { if (!input.checked) { input.checked = true; await load(); } showRun(x.path); runs.forEach((r) => r.row.classList.toggle("active", r.path === x.path)); };
-      row.append(input, text, idTail);
-      row.title = (info.handles && info.handles.length ? "Sản phẩm đầu: " + info.handles.join(", ") + "\n" : "") + x.name;
+      row.append(input, nameCell, whenCell, sizeCell, stateCell);
+      row.title += (info.handles && info.handles.length ? String.fromCharCode(10) + "Sản phẩm đầu: " + info.handles.join(", ") : "");
       return { path: x.path, input, row, day: info.day || "", started: info.started || "" };
     });
     runs.sort((a, b) => String(b.started).localeCompare(String(a.started)));
