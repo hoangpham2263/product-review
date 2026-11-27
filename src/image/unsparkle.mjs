@@ -206,8 +206,9 @@ function unveilStar(image, lum, star, assumePresent) {
       if (plausible(ra, 0.1, 0.7) && plausible(ia.alpha, 0.1, 0.7) && Math.abs(ra - ia.alpha) <= AGREE) alpha = (ra + ia.alpha) / 2;
       else alpha = plausible(ra, BAND_LOW, BAND_HIGH) ? ra : ALPHA_DEFAULT;
     }
-  } else if (assumePresent) {
-    // The picture is known to come from Flow and the star only shows weakly (bright or busy corner): take it when the lift is plausible.
+  } else if (assumePresent && plausible(ea, 0.24, 0.36)) {
+    // The picture is known to come from Flow and the star only shows weakly (bright or busy corner), but the whole outline still steps by
+    // the one strength Google uses (0.30): that is the proof. A corner with no step of that size has no star (Antigravity pictures, mislabelled runs).
     method = "weak";
     alpha = ia.share >= 0.75 && plausible(ia.alpha, ALPHA_LOW, ALPHA_HIGH) ? ia.alpha : plausible(ea, ALPHA_LOW, ALPHA_HIGH) ? ea : ALPHA_DEFAULT;
   } else return null;

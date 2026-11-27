@@ -132,13 +132,14 @@ test("the 'AI' pill is painted out, and the picture away from it is untouched", 
   }
 });
 
-test("a clean newer-size picture is left alone, and a faint star on a white corner is still taken when Flow made the picture", () => {
+test("a clean newer-size picture is left alone, and a faint star on a pale grainy corner is still taken when Flow made the picture", () => {
   for (const [w, h] of [[512, 512], [896, 1200], [1024, 1024]]) {
     const image = noisy(w, h, 100), before = Uint8Array.from(image.data);
     assert.equal(removeSparkle(image).applied, false); assert.deepEqual(image.data, before);
   }
-  const white = { width: 1024, height: 1024, data: Uint8Array.from({ length: 1024 * 1024 * 4 }, (_, i) => (i % 4 === 3 ? 255 : 250)) };
-  const { marked } = starAt(white, 0.3);
+  for (const base of [60, 100, 170, 215]) { const clean = noisy(1024, 1024, base), before = Uint8Array.from(clean.data); assert.equal(removeSparkle(clean, { assumePresent: true }).applied, false, `no star, base ${base}`); assert.deepEqual(clean.data, before); }
+  // A pale, grainy corner: the star steps by too little to be proven alone, but its outline still steps by 0.30 all round.
+  const { marked } = starAt(noisy(1024, 1024, 170), 0.3);
   assert.equal(removeSparkle({ ...marked, data: Uint8Array.from(marked.data) }).applied, false, "no proof of a star without the Flow hint");
   assert.equal(removeSparkle(marked, { assumePresent: true }).applied, true);
 });
