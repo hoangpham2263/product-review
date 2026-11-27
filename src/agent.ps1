@@ -549,11 +549,19 @@ function Invoke-AgentRegisterImage {
         Copy-Item -LiteralPath $output -Destination (Join-Path $script:Batch.Logs "$id-attempt-$($attempt - 1)-generated.png") -Force
     }
     Copy-Item -LiteralPath $From -Destination $output -Force
-    $sparkle = 'none'
+    $sparkle = 'none'; $sparkleWarning = $null
+    # Flow always stamps a mark (sparkle or 'AI' pill); Antigravity's own generator does not, so only a Flow picture can MISS one.
+    $fromFlow = ($env:PR_AGENT_ENGINE -eq 'antigravity-flow') -or ($env:PR_AGENT_ENGINE -ne 'antigravity' -and $From -notmatch '[\\/]\.gemini[\\/]')
     try {
         ConvertTo-PngFile $output
         Assert-GeneratedImage $output
-        if (Remove-ReviewImageSparkle $output (Join-Path $script:Batch.Logs "$id-flow-original.png")) { $sparkle = 'removed' }
+        $mark = Remove-ReviewImageSparkle $output (Join-Path $script:Batch.Logs "$id-flow-original.png") -Flow:$fromFlow
+        if ($mark.applied) { $sparkle = $(if ($mark.kind -eq 'pill') { 'pill-removed' } elseif ($mark.method -eq 'weak') { 'removed-weak' } else { 'removed' }) }
+        elseif ($fromFlow) {
+            $sparkle = 'not-found'
+            $sparkleWarning = "WARNING: no Google mark (star or AI pill) found on the Flow image of item $id; check the bottom right corner and clean it by hand if it shows."
+            [Console]::Error.WriteLine($sparkleWarning)
+        }
         Assert-GeneratedImage $output
     } catch {
         Remove-Item -LiteralPath $output -Force -ErrorAction SilentlyContinue
@@ -562,11 +570,14 @@ function Invoke-AgentRegisterImage {
     $bytes = [IO.File]::ReadAllBytes($output)
     $hash = Get-BytesHash $bytes
     $status = [ordered]@{ status = 'awaiting_user_review'; ai_image_qa_performed = $false; generation_attempt = $attempt; output = $output; engine = $(if ($env:PR_AGENT_ENGINE -eq 'antigravity-flow') { 'antigravity-flow' } elseif ($env:PR_AGENT_ENGINE -eq 'antigravity' -or $From -match '[\\/]\.gemini[\\/]') { 'antigravity' } else { 'claude-flow' }) }
+    $status.sparkle = $sparkle
+    if ($sparkleWarning) { $status.sparkle_warning = $sparkleWarning }
     if ($signCheck) { $status.sign_check = $signCheck }
     [IO.File]::WriteAllText($statusPath, ($status | ConvertTo-Json), $script:Utf8)
     $duplicates = @(Get-ChildItem -LiteralPath $script:Batch.Images -Filter '*.png' | Where-Object { $_.FullName -ne $output -and (Get-BytesHash ([IO.File]::ReadAllBytes($_.FullName))) -eq $hash } | ForEach-Object { $_.BaseName })
     $info = Get-ImageSize $bytes
     $out = [ordered]@{ ok = $true; run = $script:Batch.Id; item = $id; image = $output; size = [ordered]@{ width = $info.Width; height = $info.Height; bytes = $bytes.Length }; sparkle = $sparkle; sha256 = $hash }
+    if ($sparkleWarning) { $out.warning_sparkle = $sparkleWarning }
     if ($duplicates.Count) { $out.warning = "Same image hash as: $($duplicates -join ', ')"; $out.duplicate_of = $duplicates }
     if ($signCheck) { $out.sign_check = $signCheck }
     Write-AgentJson $out
