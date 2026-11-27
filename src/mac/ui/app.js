@@ -1129,8 +1129,8 @@ function showProjectsDialog(pick = "") {
     if (data) { if (!quiet && !runningMain && !runningLight) say(idleText(), ""); refreshPrepared(); }
   };
   // The project of a window is the one selected here: another live window cannot take it (409 with the Vietnamese message).
-  const selectProject = async (id) => {
-    if (id === current) return;
+  const selectProject = async (id, force = false) => {
+    if (id === current && !force) return;
     const r = await fetch("/api/session/project", { method: "POST", body: JSON.stringify({ project: id }) }).then(async (x) => ({ ok: x.ok, ...(await x.json().catch(() => ({}))) })).catch(() => ({ ok: true }));
     if (!r.ok) return say(r.error || "Dự án đang được phiên khác dùng.", "var(--error)");
     sessionState.project = id;
@@ -1279,7 +1279,7 @@ function showProjectsDialog(pick = "") {
   else listBox.replaceChildren(el("div", "label muted", { text: "Đang tải danh sách dự án…", style: { position: "static", padding: "10px", whiteSpace: "normal" } }));
   settingsReady.then(() => loadProjects(pick || sessionState.project || savedPick.project || "")).then(async () => {
     // after a restart nothing holds a project yet: the saved one is selected again (if it still exists and is free)
-    if (!pick && !sessionState.project && savedPick.project && !current && projects.some((p) => p.id === savedPick.project && !p.heldBy)) await selectProject(savedPick.project);
+    if (!pick && !sessionState.project && savedPick.project && (!current || current === savedPick.project) && projects.some((p) => p.id === savedPick.project && !p.heldBy)) await selectProject(savedPick.project, true);
   }).then(() => watch());
 }
 
