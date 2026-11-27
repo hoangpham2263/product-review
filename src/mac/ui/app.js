@@ -971,6 +971,7 @@ function showProjectsDialog(pick = "") {
   const qSceneHint = small("Ảnh ngữ cảnh / sản phẩm", 110, 150), sceneCount = at(numeric(1, 4, 2), 110, 508, 64, 28);
   sceneCount.title = "Số ảnh ngữ cảnh khác nhau cho mỗi sản phẩm khi thêm vào hàng chờ, 1-4. Lấy trước từ kho đã chuẩn bị (dòng có ít nhất số ảnh này), phần thiếu AI chọn.";
   const queueBtn = at(button("Thêm vào hàng chờ"), 270, 506, 160, 32);
+  queueBtn.title = "Ưu tiên sản phẩm ít review trước (chưa kiểm tra số review = 0).";
   const randomOnly = at(checkbox("Bốc ngẫu nhiên, không AI"), 230, 470, 215, 18); randomOnly.style.fontSize = "12px";
   randomOnly.title = "Bỏ AI: mỗi sản phẩm lấy ngẫu nhiên ảnh từ nhóm kho ảnh hợp với nó, không trùng ảnh đã dùng. Xong trong vài giây, không tốn hạn mức. Áp dụng cho Thêm vào hàng chờ và Chuẩn bị trước. Bỏ chọn để AI xem và chọn ảnh hợp nhất.";
   const divider = at(el("div", "abs"), 448, 470, 1, 68); divider.style.background = "var(--line)";
@@ -984,7 +985,7 @@ function showProjectsDialog(pick = "") {
   const pSceneHint = small("Ảnh ngữ cảnh / sản phẩm", 616, 150), prepScenes = at(numeric(1, 4, 4), 616, 508, 64, 28);
   prepScenes.title = "Số ảnh ngữ cảnh chuẩn bị cho mỗi sản phẩm, 1-4. Nên để 4: Thêm vào hàng chờ dùng được mọi số ảnh từ 1 đến 4 từ cùng một dòng.";
   const prepBtn = at(button("Chuẩn bị trước"), 770, 506, 110, 32);
-  prepBtn.title = "Chọn sẵn ảnh bối cảnh cho các sản phẩm chưa chuẩn bị của dự án (theo danh mục và ô Chỉ chưa dùng) và lưu vào kho đã chuẩn bị; không đụng hàng chờ. Lần sau Thêm vào hàng chờ lấy ngay từ kho này.";
+  prepBtn.title = "Chọn sẵn ảnh bối cảnh cho các sản phẩm chưa chuẩn bị của dự án (theo danh mục và ô Chỉ chưa dùng) và lưu vào kho đã chuẩn bị, sản phẩm ít review trước; không đụng hàng chờ. Lần sau Thêm vào hàng chờ lấy ngay từ kho này.";
   const scanBtn = at(button("Quét cập nhật"), 16, 556, 120, 32);
   const reviewsBtn = at(button("Cập nhật số review"), 145, 556, 150, 32);
   const openDir = at(button("Mở thư mục"), 304, 556, 100, 32);

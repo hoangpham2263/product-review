@@ -394,10 +394,20 @@ function Test-SceneSet([string]$Url, [string]$LibraryGroup, [string[]]$Names, [s
 }
 # The rows of products.csv a queue / prep command works on: -Collection, -UnusedOnly, with a project photo on disk, in table order.
 function Get-ProjectCandidates([string]$Dir) {
-    return @(Read-ScanRows (Join-Path $Dir 'products.csv') | Where-Object {
-            (-not $Collection -or $_.collection -eq $Collection) -and (-not $UnusedOnly -or -not (Test-UsedFlag $_.used)) -and
-            $_.product_image -and (Test-Path -LiteralPath (Join-Path (Join-Path $Dir 'images') $_.product_image))
-        })
+    return @(Sort-FewestReviews @(Read-ScanRows (Join-Path $Dir 'products.csv') | Where-Object {
+                (-not $Collection -or $_.collection -eq $Collection) -and (-not $UnusedOnly -or -not (Test-UsedFlag $_.used)) -and
+                $_.product_image -and (Test-Path -LiteralPath (Join-Path (Join-Path $Dir 'images') $_.product_image))
+            }))
+}
+# Products with the FEWEST reviews first (Thêm vào hàng chờ, Chuẩn bị trước, -Limit takes the N fewest): reviews_count ascending, a product never
+# checked (empty count) counts as 0; ties keep table order (index as second key: Sort-Object of Windows PowerShell is not stable).
+function Sort-FewestReviews($Rows) {
+    $i = 0
+    return @(@($Rows) | ForEach-Object {
+            $c = 0; $p = $_.PSObject.Properties['reviews_count']
+            if ($p) { [void][int]::TryParse(([string]$p.Value).Trim(), [ref]$c) }
+            [pscustomobject]@{ c = $c; i = $i++; row = $_ }
+        } | Sort-Object c, i | ForEach-Object { $_.row })
 }
 
 # ---- Scene index: workspace/source-photos/scene-index.json (shared by every project and session, written under scene-index.json.lock) ----
@@ -736,17 +746,14 @@ switch ($Command) {
             Write-ScanJson ([ordered]@{ project = $ProjectId; url = $Url; reviews_count = $Count; checked_at = (Get-Stamp) })
         }
         'queue-todo' {
-            # The products to queue: the project's own rows, in table order, not queued yet; -Collection (a category) and -UnusedOnly narrow it, -Limit caps it.
+            # The products to queue: the project's own rows, fewest reviews first (Sort-FewestReviews), not queued yet; -Collection (a category) and -UnusedOnly narrow it, -Limit caps it.
             # Products that already have a READY prepared row are left out (Thêm vào hàng chờ takes them from the stock); -TopUp -SceneCount S lists instead the
             # ready rows prepared with FEWER than S scenes, with their scenes: the queue run keeps those and picks only the missing ones (queue-add with all of them).
             $dir = Get-ScanDir $ProjectId
             $queued = Get-QueuedKeys
             $readyRows = @{}
             foreach ($pr in @(Read-PreparedRows $dir | Where-Object { $_.status -eq 'ready' })) { $readyRows[(Get-ScanUrlKey $pr.product_url)] = $pr }
-            $todoRows = @(Read-ScanRows (Join-Path $dir 'products.csv') | Where-Object {
-                    (-not $Collection -or $_.collection -eq $Collection) -and (-not $UnusedOnly -or -not (Test-UsedFlag $_.used)) -and -not $queued.Contains((Get-ScanUrlKey $_.product_url)) -and
-                    $_.product_image -and (Test-Path -LiteralPath (Join-Path (Join-Path $dir 'images') $_.product_image))
-                })
+            $todoRows = @(Get-ProjectCandidates $dir | Where-Object { -not $queued.Contains((Get-ScanUrlKey $_.product_url)) })
             if ($TopUp) { $todoRows = @($todoRows | Where-Object { $k = Get-ScanUrlKey $_.product_url; $readyRows.ContainsKey($k) -and ($SceneCount -le 0 -or [int]$readyRows[$k].scene_count -lt $SceneCount) }) }
             else { $todoRows = @($todoRows | Where-Object { -not $readyRows.ContainsKey((Get-ScanUrlKey $_.product_url)) }) }
             $todoRows = @(Select-OnlyFile $todoRows { param($r) $r.product_url })
@@ -761,15 +768,12 @@ switch ($Command) {
             Write-ScanJson $answer
         }
         'queue-direct' {
-            # No Claude, no scenes: the first -Limit products in table order (same filters as queue-todo: -Collection, -UnusedOnly, not queued yet) go into
+            # No Claude, no scenes: the first -Limit products, fewest reviews first (same filters as queue-todo: -Collection, -UnusedOnly, not queued yet) go into
             # the queue with only the link and the project product photo. `used` is not touched.
             Import-QueueLibs
             $dir = Get-ScanDir $ProjectId
             $queued = Get-QueuedKeys
-            $directRows = @(Read-ScanRows (Join-Path $dir 'products.csv') | Where-Object {
-                    (-not $Collection -or $_.collection -eq $Collection) -and (-not $UnusedOnly -or -not (Test-UsedFlag $_.used)) -and -not $queued.Contains((Get-ScanUrlKey $_.product_url)) -and
-                    $_.product_image -and (Test-Path -LiteralPath (Join-Path (Join-Path $dir 'images') $_.product_image))
-                })
+            $directRows = @(Get-ProjectCandidates $dir | Where-Object { -not $queued.Contains((Get-ScanUrlKey $_.product_url)) })
             if ($Limit -gt 0) { $directRows = @($directRows | Select-Object -First $Limit) }
             $addedUrls = @()
             foreach ($directRow in $directRows) { [void](Add-QueueEntry $dir $directRow @()); $addedUrls += $directRow.product_url }
@@ -958,7 +962,7 @@ switch ($Command) {
                     consumed_total = @($prepared | Where-Object { $_.status -eq 'consumed' }).Count; ready_total = @($prepared | Where-Object { $_.status -eq 'ready' }).Count })
         }
         'queue-from-prepared' {
-            # Puts up to -Limit READY rows of prepared.csv into the queue instantly (no agent): the project's products in table order (same filters as queue-todo),
+            # Puts up to -Limit READY rows of prepared.csv into the queue instantly (no agent): the project's products, fewest reviews first (same filters as queue-todo),
             # not queued yet. Every row is re-validated first (scene files exist, sha256 matches, scene not used by another product); a row that no longer
             # validates is dropped back to "not prepared"; a queued row becomes consumed. -SceneCount S takes only rows with at least S scenes and queues the first S.
             Import-QueueLibs
