@@ -671,16 +671,26 @@ function startOfRun(name, dir) {
   try { return statSync(dir).birthtime; } catch { return null; }
 }
 function runInfo(name) {
-  const dir = runDirOf(name), info = { id: name, label: name, where: "", host: "", links: 0, items: 0, handles: [], day: "", started: "" };
+  const dir = runDirOf(name), info = { id: name, label: name, where: "", host: "", site: "", short: "", when: "", links: 0, items: 0, handles: [], day: "", started: "" };
   const j = rj(join(dir, "agent-items.json")), items = (Array.isArray(j) ? j : j.items || []).filter((x) => x && x.id);
   const urls = items.map((x) => x.url).filter(Boolean), counts = {};
   for (const u of urls) { const h = hostOf(u); if (h) counts[h] = (counts[h] || 0) + 1; }
   const hosts = Object.keys(counts).sort((a, b) => counts[b] - counts[a]);
   info.host = hosts[0] ? hosts[0] + (hosts.length > 1 ? " +" + (hosts.length - 1) + " site khác" : "") : "";
   info.links = new Set(urls).size; info.items = items.length;
+  // Older runs (lan-N, review runs) have no agent-items.json: the site comes from their link list, the size from results.json.
+  info.site = hosts[0] || "";
+  if (!info.site) {
+    const seen = {};
+    for (const f of ["urls.input.txt", "urls.completed.txt"]) { try { for (const l of readFileSync(join(dir, f), "utf8").split(/\r?\n/)) { const h = hostOf(l); if (h) seen[h] = (seen[h] || 0) + 1; } } catch {} }
+    info.site = Object.keys(seen).sort((a, b) => seen[b] - seen[a])[0] || "";
+  }
+  const lan = name.match(/-(lan-\d+)$/);
+  info.short = lan ? "Lượt cũ " + lan[1] : "";
   info.handles = [...new Set(items.map((x) => x.handle || String(x.url || "").split("/").filter(Boolean).pop()).filter(Boolean))].slice(0, 3);
   const d = startOfRun(name, dir);
-  if (d) { info.started = d.toISOString(); info.day = d.getFullYear() + "-" + pad2(d.getMonth() + 1) + "-" + pad2(d.getDate()); }
+  if (d) info.when = dmHm(d);
+  if (d) { info.started =d.toISOString(); info.day = d.getFullYear() + "-" + pad2(d.getMonth() + 1) + "-" + pad2(d.getDate()); }
   const sess = session && self && self.stt ? "Phiên #" + self.stt : "";
   const parts = [info.host || name, d ? dmHm(d) : "", info.items ? info.links + " link / " + info.items + " mục" : "", sess].filter(Boolean);
   info.label = info.host || d ? parts.join(" · ") : name;

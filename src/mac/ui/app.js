@@ -1585,7 +1585,7 @@ async function showReviewDialog() {
   const runsBox = at(el("div", "runs"), 12, 40, null, 116, { right: 12 });
   // Drag the bar under the run list to give it more or less room; the review list below follows.
   const grip = at(el("div", ""), 12, 156, null, 6, { right: 12 });
-  Object.assign(grip.style, { cursor: "ns-resize", background: "var(--line)", borderRadius: "3px" });
+  Object.assign(grip.style, { position: "absolute", cursor: "ns-resize", touchAction: "none", background: "var(--line)", borderRadius: "3px" });
   grip.title = "Kéo lên xuống để đổi chiều cao danh sách lần chạy";
   const setRunsHeight = (h, save = false) => {
     const max = Math.max(116, (b.clientHeight || 600) - 330), v = Math.max(60, Math.min(max, Math.round(h)));
@@ -1608,7 +1608,7 @@ async function showReviewDialog() {
   const openBtn = at(button("Mở thư mục xuất"), null, null, 150, 40, { right: 204, left: false, bottom: 17, top: false });
   openBtn.onclick = () => api("openPath", { path: state.exports });
   b.append(heading, pickAll, pickNone, runsBox, grip, hint, flow, status, openBtn, exportBtn);
-  try { const h = Number(localStorage.getItem("pr.reviewRunsHeight")); if (h) setRunsHeight(h); } catch {}
+  try { const h = Number(localStorage.getItem("pr.reviewRunsHeight")); if (Number.isFinite(h) && h >= 60) setRunsHeight(h); else localStorage.removeItem("pr.reviewRunsHeight"); } catch {}
   let items = [], runs = [];
   const chosen = () => runs.filter((r) => r.input.checked).map((r) => r.path);
   const refresh = () => {
@@ -1671,8 +1671,9 @@ async function showReviewDialog() {
       input.disabled = x.name === activeRun; // a run that is still going is reviewed and exported once it has finished
       input.onchange = load;
       const info = labels[x.name] || {};
-      const idTail = el("span", "runid", { text: "  " + x.name + (x.name === activeRun ? " · đang chạy, duyệt khi xong" : "") });
-      const text = el("span", "runtext", { text: `${info.label || x.name} · ${x.images} ảnh · ${x.pending ? `chưa duyệt ${x.pending}` : "đã duyệt hết"}${x.exported ? " · đã xuất" : ""}` });
+      const main = info.site || info.short || x.name; // the site, else "Lượt cũ lan-N", else the folder name; the raw id is only a dim tail when nothing nicer exists
+      const idTail = el("span", "runid", { text: (info.site || main === x.name ? "" : "  " + x.name) + (x.name === activeRun ? "  đang chạy, duyệt khi xong" : "") });
+      const text = el("span", "runtext", { text: [main, info.when, `${info.items || x.images} mục`, `${x.images} ảnh`, x.exported ? "đã xuất" : x.pending ? `chưa duyệt ${x.pending}` : "đã duyệt hết"].filter(Boolean).join(" · ") });
       text.style.cursor = "pointer";
       // Click the text = look at this run: it gets selected if it was not (never unselected) and the list jumps to its first review. Only the checkbox itself toggles.
       text.onclick = async () => { if (!input.checked) { input.checked = true; await load(); } showRun(x.path); runs.forEach((r) => r.row.classList.toggle("active", r.path === x.path)); };
