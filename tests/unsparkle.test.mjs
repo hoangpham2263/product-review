@@ -8,7 +8,7 @@ import { join, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import { encodePng, decodePng } from "../src/image/png.mjs";
-import { removeSparkle, sparkleCover, pillCover } from "../src/image/unsparkle.mjs";
+import { removeSparkle, sparkleCover, pillCover, flowStarCover } from "../src/image/unsparkle.mjs";
 
 const script = resolve(dirname(fileURLToPath(import.meta.url)), "../src/image/unsparkle.mjs");
 // A picture with detail (diagonal stripes and a gradient) so that "the detail comes back" means something.
@@ -142,6 +142,30 @@ test("a clean newer-size picture is left alone, and a faint star on a pale grain
   const { marked } = starAt(noisy(1024, 1024, 170), 0.3);
   assert.equal(removeSparkle({ ...marked, data: Uint8Array.from(marked.data) }).applied, false, "no proof of a star without the Flow hint");
   assert.equal(removeSparkle(marked, { assumePresent: true }).applied, true);
+});
+
+// A busy corner (hard stripes, grain, a dark line) under the star as Flow really draws it, with its faint dark rim and sub-pixel centre:
+// the fit must leave no outline, no notch in the lines and no ghost, not just a clean middle.
+test("on a busy corner the fitted star leaves no outline, notch or ghost", () => {
+  for (const [w, h] of [[896, 1200], [1024, 1024], [1376, 768]]) {
+    const S = Math.min(w, h), cx = w - S / 6 - 0.2, cy = h - S / 6 + 0.15, r = 0.036 * S, clean = { width: w, height: h, data: new Uint8Array(w * h * 4) };
+    let seed = 3; const rnd = () => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; };
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+      const i = (y * w + x) * 4, stripe = Math.floor((x * 0.8 + y * 0.45) / 9) % 2 ? 175 : 55, line = Math.abs(y - x * 0.3 - (h - w * 0.3) + S * 0.17) < 1.5 ? -45 : 0;
+      const g = Math.max(0, stripe + line + (rnd() - 0.5) * 14); clean.data[i] = g; clean.data[i + 1] = g * 0.85; clean.data[i + 2] = g * 0.7; clean.data[i + 3] = 255;
+    }
+    const marked = { ...clean, data: Uint8Array.from(clean.data) }, { cover, box } = flowStarCover(w, h, cx, cy, r), rim = flowStarCover(w, h, cx, cy, r + 1).cover;
+    for (let p = 0; p < cover.length; p++) {
+      const a = 0.3 * cover[p], k = 0.04 * Math.max(0, rim[p] - cover[p]);
+      if (a || k) for (let c = 0; c < 3; c++) marked.data[p * 4 + c] = Math.round(marked.data[p * 4 + c] * (1 - a - k) + 255 * a);
+    }
+    const result = removeSparkle(marked, { assumePresent: true });
+    assert.equal(result.applied, true, `${w}x${h}`); assert.equal(result.kind, "star");
+    let worst = 0, sum = 0, n = 0;
+    for (let y = box[1]; y <= box[3]; y++) for (let x = box[0]; x <= box[2]; x++) for (let c = 0; c < 3; c++) { const d = Math.abs(marked.data[(y * w + x) * 4 + c] - clean.data[(y * w + x) * 4 + c]); worst = Math.max(worst, d); sum += d; n++; }
+    assert.ok(sum / n <= 2.5, `${w}x${h}: mean error ${(sum / n).toFixed(2)} over the star`);
+    assert.ok(worst <= 45, `${w}x${h}: worst pixel off by ${worst}`);
+  }
 });
 
 test("the command line takes --flow and reports the kind", () => {

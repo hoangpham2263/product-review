@@ -16,7 +16,7 @@ import { decodePng, encodePng } from "./png.mjs";
 
 const MIN_SIDE = 300, LEGACY_CENTER = 101, LEGACY_RADIUS = 25.8, CURVE = 0.66, CORE = 0.98, EDGE_DIST = 2.5;
 const STAR_SCORE = 12, PILL_SCORE = 14;           // 15th percentile of the outline step
-const ALPHA_LOW = 0.2, ALPHA_HIGH = 0.4, ALPHA_DEFAULT = 0.3, BAND_LOW = 0.22, BAND_HIGH = 0.38, AGREE = 0.06, STRONG_MIX = 0.5;
+const ALPHA_LOW = 0.2, ALPHA_HIGH = 0.4, ALPHA_DEFAULT = 0.3, BAND_LOW = 0.22, BAND_HIGH = 0.38, AGREE = 0.06;
 const STAR_FRACTION = 1 / 6, STAR_RADIUS_FRACTIONS = [0.030, 0.032, 0.034, 0.036, 0.038, 0.040];
 const PILL = { w: 0.0536, h: 0.039, right: 0.0625, bottom: 0.0558 };   // fractions of the shorter side (centre from the edges)
 
@@ -185,8 +185,173 @@ function interiorAlpha(image, cover, inside, bg) {
 const clamp = (v) => Math.max(0, Math.min(255, Math.round(v)));
 const insideOf = (cover, [x0, y0, x1, y1], W) => { const inside = []; for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) if (cover[y * W + x] > 0.02) inside.push([x, y]); return inside; };
 
+// ----- repair: the mark is fitted to the picture (shape, place to a fraction of a pixel, edge softness, strength), then undone -----
+// The star as Flow draws it, measured on clean Flow corners: its radius every 5 degrees from a tip (0) to the middle of a side (45),
+// as a fraction of r. Blunter at the very tip and slimmer at the sides than the superellipse that finds it. r is 3.6 % of the shorter
+// side in the newer files and 26.1 px in the older ones; the strength is 0.29..0.30 in both.
+const STAR_RHO = [0.957, 0.7838, 0.6769, 0.6173, 0.566, 0.54, 0.521, 0.507, 0.4876, 0.4925];
+const STAR_R = 0.036, LEGACY_R = 26.1, SUB = 6, FREE_GAIN = 0.88, UNSTABLE = 0.7;
+const starShape = (P) => (X, Y) => {
+  const dx = X - P.cx, dy = Y - P.cy; let deg = Math.atan2(Math.abs(dy), Math.abs(dx)) * 57.29577951308232; if (deg > 45) deg = 90 - deg;
+  const f = deg / 5, i = Math.min(8, Math.floor(f)), t = f - i;
+  return (STAR_RHO[i] * (1 - t) + STAR_RHO[i + 1] * t) * P.r - Math.hypot(dx, dy);
+};
+const pillShape = (P) => (X, Y) => { const rr = P.h / 2; return rr - Math.hypot(Math.max(0, Math.abs(X - P.cx) - (P.w / 2 - rr)), Y - P.cy); };
+const STAR = { shape: starShape, thin: true, reach: (P) => [P.r, P.r] };
+const PILLS = { shape: pillShape, thin: false, reach: (P) => [P.w / 2, P.h / 2] };
+const boxAround = (kind, P, W, H, pad) => { const [rx, ry] = kind.reach(P); return [Math.max(1, Math.floor(P.cx - rx - pad)), Math.max(1, Math.floor(P.cy - ry - pad)), Math.min(W - 2, Math.ceil(P.cx + rx + pad)), Math.min(H - 2, Math.ceil(P.cy + ry + pad))]; };
+
+// How much of each pixel of box the mark covers: the share of SUB x SUB points spread over s px that fall inside the shape (a box
+// filtered edge, as the drawn mark is anti-aliased). The shape gives a signed distance, positive inside; only its sign is trusted
+// near the edge and along the axes of the star, where its tips are thinner than a pixel.
+function coverage(kind, P, box, s = P.s) {
+  const [x0, y0, x1, y1] = box, w = x1 - x0 + 1, out = new Float32Array(w * (y1 - y0 + 1)), inside = kind.shape(P), reach = s + 2;
+  for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
+    const X = x + 0.5, Y = y + 0.5, d = inside(X, Y), j = (y - y0) * w + x - x0;
+    if (d < -reach) continue;
+    if (d > reach * 1.6 && !(kind.thin && (Math.abs(X - P.cx) < reach + 1 || Math.abs(Y - P.cy) < reach + 1))) { out[j] = 1; continue; }
+    let n = 0;
+    for (let b = 0; b < SUB; b++) for (let a = 0; a < SUB; a++) if (inside(X + ((a + 0.5) / SUB - 0.5) * s, Y + ((b + 0.5) / SUB - 0.5) * s) > 0) n++;
+    out[j] = n / (SUB * SUB);
+  }
+  return out;
+}
+
+// The star as Flow draws it, as a full-size cover map (for tests): centre (cx, cy), radius r, edge softness s px.
+export function flowStarCover(width, height, cx, cy, r, s = 1.2) {
+  const P = { cx, cy, r }, box = boxAround(STAR, P, width, height, 4), c = coverage(STAR, P, box, s), cover = new Float32Array(width * height), w = box[2] - box[0] + 1;
+  for (let y = box[1]; y <= box[3]; y++) for (let x = box[0]; x <= box[2]; x++) cover[y * width + x] = c[(y - box[1]) * w + x - box[0]];
+  return { cover, box };
+}
+
+// The fit: the mark (strength P.a, colour P.m) taken off with these parameters must leave no step along its edge. Score = mean jump of
+// the unveiled luminance between neighbouring pixels across the edge; the pairs and their weights come from a softened copy of the
+// starting shape, so they stay put while the parameters move. Coordinate descent with halving steps, each parameter within lim.
+function fitMark(lum, W, H, kind, start, free, lim) {
+  const box = boxAround(kind, start, W, H, 9), [x0, y0, x1, y1] = box, w = x1 - x0 + 1, h = y1 - y0 + 1, soft = coverage(kind, start, box, 2.5), pairs = [];
+  for (const [dx, dy] of [[1, 0], [0, 1], [2, 0], [0, 2], [1, 1], [1, -1]]) for (let y = 1; y < h - 2; y++) for (let x = 1; x < w - 2; x++) {
+    const i = y * w + x, j = (y + dy) * w + x + dx, wt = Math.abs(soft[i] - soft[j]);
+    if (wt >= 1e-3) pairs.push(i, j, wt);
+  }
+  const L = new Float32Array(w * h), B = new Float32Array(w * h);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) L[y * w + x] = lum[(y + y0) * W + x + x0];
+  const score = (P) => {
+    const c = coverage(kind, P, box);
+    for (let k = 0; k < L.length; k++) { const a = P.a * c[k]; B[k] = (L[k] - P.m * a) / (1 - a); }
+    let e = 0, s = 0;
+    for (let k = 0; k < pairs.length; k += 3) { e += pairs[k + 2] * Math.min(Math.abs(B[pairs[k]] - B[pairs[k + 1]]), 50); s += pairs[k + 2]; }
+    return s ? e / s : Infinity;
+  };
+  const steps = { cx: 0.5, cy: 0.5, r: 0.3, w: 0.3, h: 0.3, a: 0.01, s: 0.15, m: 3 };
+  let P = { ...start }, e0 = score(P);
+  for (let it = 0; it < 80 && steps.cx >= 0.04; it++) {
+    let moved = false;
+    for (const k of free) for (const sign of [1, -1]) {
+      const v = P[k] + sign * steps[k];
+      if (v < lim[k][0] || v > lim[k][1]) continue;
+      const Q = { ...P, [k]: v }, e = score(Q);
+      if (e < e0 - 1e-6) { P = Q; e0 = e; moved = true; }
+    }
+    if (!moved) for (const k in steps) steps[k] /= 2;
+  }
+  return { P, e: e0 };
+}
+
+// Takes the fitted mark off: shown = bg (1 - a) + m a, so bg = (shown - m a) / (1 - a), per channel. Along the edge (where the drawn
+// outline and the model can differ by a fraction of a pixel, and Flow adds a faint dark rim) each pixel's own strength is then tuned
+// within half the mark's strength (and down to a slight darkening) until its unveiled value sits inside the range of its neighbours;
+// a pixel already inside that range keeps the model's value, so texture is not smoothed. Returns the pixels too veiled to recover.
+function unveil(image, kind, P) {
+  const { width: W, height: H, data } = image, box = boxAround(kind, P, W, H, 6), [x0, y0, x1, y1] = box, w = x1 - x0 + 1, h = y1 - y0 + 1;
+  const c = coverage(kind, P, box), A = new Float32Array(w * h), O = new Float32Array(w * h), m = P.m;
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { const j = y * w + x, i = ((y + y0) * W + x + x0) * 4; A[j] = P.a * c[j]; O[j] = 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2]; }
+  const value = (j, a) => a >= 0 ? (O[j] - m * a) / (1 - a) : O[j] / (1 + a);
+  const edge = new Uint8Array(w * h), band = [];
+  for (let y = 1; y < h - 1; y++) for (let x = 1; x < w - 1; x++) {
+    let lo = 1, hi = 0;
+    for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) { const v = c[(y + dy) * w + x + dx]; if (v < lo) lo = v; if (v > hi) hi = v; }
+    if (hi - lo > 0.05) { edge[y * w + x] = 1; band.push(y * w + x); }
+  }
+  for (let pass = 0; pass < 3; pass++) for (const j of band) {
+    const x = j % w, y = (j / w) | 0, near = [];
+    for (let dy = -2; dy <= 2; dy++) for (let dx = -2; dx <= 2; dx++) {
+      const xx = x + dx, yy = y + dy, q = yy * w + xx;
+      if ((dx || dy) && xx >= 0 && yy >= 0 && xx < w && yy < h && !(pass === 0 && edge[q])) near.push(value(q, A[q]));
+    }
+    if (near.length < 6) continue;
+    near.sort((p, q) => p - q);
+    const lo = near[Math.floor(near.length * 0.15)], hi = near[Math.floor(near.length * 0.85)], now = value(j, A[j]);
+    if (now >= lo && now <= hi) continue;
+    const target = now < lo ? lo : hi, up = (O[j] - target) / (m - target);
+    const a = up >= 0 && target < m ? up : target > 0 ? O[j] / target - 1 : 0;
+    A[j] = Math.max(Math.max(-0.08, A[j] - P.a / 2), Math.min(Math.min(P.a, A[j] + P.a / 2), a));
+  }
+  const lost = [];
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    const j = y * w + x, a = A[j]; if (a === 0) continue;
+    const i = ((y + y0) * W + x + x0) * 4;
+    if (a >= UNSTABLE) { lost.push((y + y0) * W + x + x0); continue; }
+    for (let k = 0; k < 3; k++) data[i + k] = clamp(a >= 0 ? (data[i + k] - m * a) / (1 - a) : data[i + k] / (1 + a));
+  }
+  return lost;
+}
+
+// Exemplar inpainting (Criminisi): the hole is filled from its edge inwards, most confident and most structured spot first, each time
+// with the best matching patch (sum of squared differences over its known pixels) from the clean surroundings, so lines and edges
+// run on through the hole and texture stays texture (no average, no blur). Only the pixels of the hole are written.
+function exemplarFill(image, hole, S) {
+  const { width: W, height: H, data } = image, half = Math.max(2, Math.round(S / 300)), margin = Math.max(24, Math.round(S * 0.06));
+  const todo = new Uint8Array(W * H); let left = 0, mx0 = W, my0 = H, mx1 = 0, my1 = 0;
+  for (const p of hole) { if (todo[p]) continue; todo[p] = 1; left++; const x = p % W, y = (p / W) | 0; mx0 = Math.min(mx0, x); my0 = Math.min(my0, y); mx1 = Math.max(mx1, x); my1 = Math.max(my1, y); }
+  if (!left) return;
+  const sx0 = Math.max(half, mx0 - margin), sy0 = Math.max(half, my0 - margin), sx1 = Math.min(W - 1 - half, mx1 + margin), sy1 = Math.min(H - 1 - half, my1 + margin);
+  const conf = new Float32Array(W * H).fill(1); for (const p of hole) conf[p] = 0;
+  const src = [];
+  for (let y = sy0; y <= sy1; y++) for (let x = sx0; x <= sx1; x++) {
+    let ok = true;
+    for (let dy = -half; dy <= half && ok; dy++) for (let dx = -half; dx <= half; dx++) if (todo[(y + dy) * W + x + dx]) { ok = false; break; }
+    if (ok) src.push(y * W + x);
+  }
+  if (!src.length) return;
+  const lum = (p) => 0.299 * data[p * 4] + 0.587 * data[p * 4 + 1] + 0.114 * data[p * 4 + 2], area = (2 * half + 1) ** 2;
+  const fx0 = Math.max(half, mx0), fy0 = Math.max(half, my0), fx1 = Math.min(W - 1 - half, mx1), fy1 = Math.min(H - 1 - half, my1);
+  for (let guard = 0; left > 0 && guard < 20000; guard++) {
+    let best = -1, at = -1;
+    for (let y = fy0; y <= fy1; y++) for (let x = fx0; x <= fx1; x++) {
+      const p = y * W + x;
+      if (!todo[p] || (todo[p - 1] && todo[p + 1] && todo[p - W] && todo[p + W])) continue;
+      let cf = 0, g = 0;
+      for (let dy = -half; dy <= half; dy++) for (let dx = -half; dx <= half; dx++) {
+        const q = p + dy * W + dx; cf += conf[q];
+        if (dx < half && dy < half && !todo[q] && !todo[q + 1] && !todo[q + W]) g = Math.max(g, Math.abs(lum(q + 1) - lum(q)) + Math.abs(lum(q + W) - lum(q)));
+      }
+      const priority = (cf / area) * (0.2 + g / 255);
+      if (priority > best) { best = priority; at = p; }
+    }
+    if (at < 0) break;
+    const known = [];
+    for (let dy = -half; dy <= half; dy++) for (let dx = -half; dx <= half; dx++) if (!todo[at + dy * W + dx]) known.push(dy * W + dx);
+    const ax = at % W, ay = (at / W) | 0;
+    let from = -1, low = Infinity;
+    for (const q of src) {
+      let e = known.length * 0.02 * Math.hypot(q % W - ax, ((q / W) | 0) - ay);   // a slight pull to nearby patches keeps the fill local
+      for (let k = 0; k < known.length && e < low; k++) {
+        const a = (at + known[k]) * 4, b = (q + known[k]) * 4, d0 = data[a] - data[b], d1 = data[a + 1] - data[b + 1], d2 = data[a + 2] - data[b + 2];
+        e += d0 * d0 + d1 * d1 + d2 * d2;
+      }
+      if (e < low) { low = e; from = q; }
+    }
+    let cp = 0; for (const o of known) cp += conf[at + o]; cp /= area;
+    for (let dy = -half; dy <= half; dy++) for (let dx = -half; dx <= half; dx++) {
+      const o = dy * W + dx, p = at + o; if (!todo[p]) continue;
+      for (let k = 0; k < 3; k++) data[p * 4 + k] = data[(from + o) * 4 + k];
+      todo[p] = 0; conf[p] = cp; left--;
+    }
+  }
+}
+
 function unveilStar(image, lum, star, assumePresent) {
-  const { width: W, height: H, data } = image, at = (x, y) => (y * W + x) * 4;
+  const { width: W, height: H } = image, S = Math.min(W, H);
   const clearFit = star.score >= STAR_SCORE;
   // A star that does not show (white or busy corner) is still taken at the usual place when the picture is known to come from Flow.
   const found = clearFit || !assumePresent ? star : star.scaled;
@@ -212,60 +377,89 @@ function unveilStar(image, lum, star, assumePresent) {
     method = "weak";
     alpha = ia.share >= 0.75 && plausible(ia.alpha, ALPHA_LOW, ALPHA_HIGH) ? ia.alpha : plausible(ea, ALPHA_LOW, ALPHA_HIGH) ? ea : ALPHA_DEFAULT;
   } else return null;
-  // The newer Flow files carry the veil at one fixed strength (0.30, measured on every one of 40 pictures, 0.28..0.33 along the outline),
-  // so the strength is not guessed from the picture there (that guess is what leaves a ghost).
+  // The newer Flow files carry the veil at one fixed strength (0.30, measured on every one of 40 pictures, 0.28..0.33 along the outline).
   if (found.family === "scaled") alpha = plausible(ea, 0.26, 0.34) ? ea : 0.30;
-  for (const [x, y] of inside) {
-    const a = alpha * cover[y * W + x], i = at(x, y);
-    for (let c = 0; c < 3; c++) data[i + c] = clamp((data[i + c] - 255 * a) / (1 - a));
-  }
-  // A strong veil squeezes what lies under it hard: the colour there comes from the smooth background, the detail from the unveil.
-  if (alpha > BAND_HIGH) {
-    const lumOf = (r, g, b) => 0.299 * r + 0.587 * g + 0.114 * b;
-    for (const [x, y] of inside) {
-      const i = at(x, y), j = (y * W + x) * 3, w = cover[y * W + x], yr = lumOf(data[i], data[i + 1], data[i + 2]), yb = lumOf(bgGuess[j], bgGuess[j + 1], bgGuess[j + 2]);
-      for (let c = 0; c < 3; c++) data[i + c] = clamp(data[i + c] * (1 - w) + (yr * (1 - STRONG_MIX) + yb * STRONG_MIX + (bgGuess[j + c] - yb)) * w);
-    }
-  }
-  // The rim of the star (the pixels within 2 px of its edge, where the measured shape is least certain) takes the mean of the clean pixels
-  // around it, so no faint outline is left.
-  const rimBox = [Math.max(1, box[0] - 3), Math.max(1, box[1] - 3), Math.min(W - 2, box[2] + 3), Math.min(H - 2, box[3] + 3)];
-  const near = (x, y) => { let hi = 0, lo = 1; for (let dy = -2; dy <= 2; dy++) for (let dx = -2; dx <= 2; dx++) { const v = cover[(y + dy) * W + x + dx]; if (v > hi) hi = v; if (v < lo) lo = v; } return hi >= 0.5 && lo < 0.99 ? 1 : (hi > 0 && hi < 0.5 && lo < 0.02 ? 1 : 0); };
-  const rim = new Uint8Array(W * H), rimPts = [];
-  for (let y = rimBox[1] + 2; y <= rimBox[3] - 2; y++) for (let x = rimBox[0] + 2; x <= rimBox[2] - 2; x++) if (near(x, y)) { rim[y * W + x] = 1; rimPts.push([x, y]); }
-  const before = Uint8Array.from(data);
-  for (const [x, y] of rimPts) {
-    const t = [0, 0, 0]; let m = 0;
-    for (let dy = -4; dy <= 4; dy++) for (let dx = -4; dx <= 4; dx++) {
-      const xx = x + dx, yy = y + dy;
-      if (xx < 0 || yy < 0 || xx >= W || yy >= H || rim[yy * W + xx]) continue;
-      const j = at(xx, yy); t[0] += before[j]; t[1] += before[j + 1]; t[2] += before[j + 2]; m++;
-    }
-    if (!m) continue;
-    const i = at(x, y);
-    for (let c = 0; c < 3; c++) data[i + c] = clamp(before[i + c] * 0.1 + (t[c] / m) * 0.9);
-  }
-  return { applied: true, kind: "star", alpha, method, score: found.score, family: found.family, right: W - pos.cx, bottom: H - pos.cy };
+  // Two fits from the found place: one held to the measured Flow star (size within 1 %, strength 0.27..0.33), one free (size within 15 %,
+  // strength near the estimate above). The free one is only taken when it explains the edge clearly better (a star that is not Flow's
+  // usual one); on a busy corner the held one is the safe answer, as a free fit there drifts to a fainter, smaller star and leaves a ghost.
+  const legacy = found.family === "legacy", r0 = legacy ? LEGACY_R : STAR_R * S;
+  const start = { cx: pos.cx, cy: pos.cy, r: r0, a: Math.max(0.27, Math.min(0.32, alpha)), s: 1.3, m: 255 };
+  const place = { cx: [pos.cx - 3, pos.cx + 3], cy: [pos.cy - 3, pos.cy + 3], s: [0.6, 2.2], m: [255, 255] };
+  const held = fitMark(lum, W, H, STAR, start, ["cx", "cy", "r", "a", "s"], { ...place, r: [r0 * 0.99, r0 * 1.01], a: [0.27, 0.32] });
+  const free = fitMark(lum, W, H, STAR, { ...start, a: alpha }, ["cx", "cy", "r", "a", "s"], { ...place, r: [r0 * 0.85, r0 * 1.15], a: [Math.max(0.12, alpha - 0.1), Math.min(0.6, alpha + 0.1)] });
+  const fitted = free.e < held.e * FREE_GAIN ? free.P : held.P;
+  const lost = unveil(image, STAR, fitted);
+  if (lost.length) exemplarFill(image, lost, S);
+  return { applied: true, kind: "star", alpha: fitted.a, method, score: found.score, family: found.family, right: W - fitted.cx, bottom: H - fitted.cy };
 }
 
-// The pill hides the picture under its letters, so it is inpainted: smooth fill diffused in from the ring, plus grain like the ring's.
-function inpaintPill(image, found) {
-  const { width: W, height: H, data } = image, at = (x, y) => (y * W + x) * 4;
-  const grow = pillCover(W, H, found.cx, found.cy, found.w + 5, found.h + 5);
-  const inside = insideOf(grow.cover, grow.box, W), box = grow.box.map((v, k) => k < 2 ? Math.max(1, v - 1) : Math.min(k === 2 ? W - 2 : H - 2, v + 1));
-  const bg = smoothBackground(image, grow.cover, inside, box);
-  // grain: spread of the ring's pixel-to-pixel differences
-  const diffs = [];
-  for (let y = box[1]; y <= box[3]; y++) for (let x = box[0]; x < box[2]; x++) if (grow.cover[y * W + x] <= 0.02 && grow.cover[y * W + x + 1] <= 0.02) diffs.push(Math.abs(data[at(x, y) + 1] - data[at(x + 1, y) + 1]));
-  diffs.sort((a, b) => a - b);
-  const sigma = diffs.length ? diffs[diffs.length >> 1] * 1.05 : 0;
-  let seed = 12345; const rnd = () => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; };
-  const gauss = () => (rnd() + rnd() + rnd() + rnd() - 2) * 1.73;
-  for (const [x, y] of inside) {
-    const w = grow.cover[y * W + x], g = gauss() * sigma, i = at(x, y), j = (y * W + x) * 3;
-    for (let c = 0; c < 3; c++) data[i + c] = clamp(data[i + c] * (1 - w) + (bg[j + c] + g) * w);
+// The pill is a grey veil (about 0.55 strength, colour about 235) with dark letters on it. The veil is fitted and undone like the star;
+// the letters (darker than the veil can make any picture) and anything under a veil too strong to undo are filled by exemplar
+// inpainting from the unveiled surroundings. When the veil does not fit like Flow's, the whole pill is filled that way.
+// The strength and colour of the pill's veil, by least squares on its edge step: just inside = (1 - a) just outside + a m, over every
+// outline point and channel. A corner of one flat colour cannot tell a from m (any pair undoes it the same there), so a stays 0.55 then.
+function pillVeil(image, P) {
+  const { width: W, data } = image, rr = P.h / 2, half = P.w / 2 - rr, side = 2 * half, arc = Math.PI * rr, total = 2 * side + 2 * arc;
+  let n = 0, sx = 0, sy = 0, sxx = 0, sxy = 0;
+  for (let k = 0; k < 400; k++) {
+    let s = (k / 400) * total, px, py, nx, ny;
+    if (s < side) { px = -half + s; py = -rr; nx = 0; ny = -1; }
+    else if ((s -= side) < arc) { const t = -Math.PI / 2 + s / rr; px = half + rr * Math.cos(t); py = rr * Math.sin(t); nx = Math.cos(t); ny = Math.sin(t); }
+    else if ((s -= arc) < side) { px = half - s; py = rr; nx = 0; ny = 1; }
+    else { const t = Math.PI / 2 + (s - side) / rr; px = -half + rr * Math.cos(t); py = rr * Math.sin(t); nx = Math.cos(t); ny = Math.sin(t); }
+    const ii = (Math.round(P.cy + py - 3 * ny) * W + Math.round(P.cx + px - 3 * nx)) * 4, io = (Math.round(P.cy + py + 3 * ny) * W + Math.round(P.cx + px + 3 * nx)) * 4;
+    for (let c = 0; c < 3; c++) { const o = data[io + c], v = data[ii + c]; n++; sx += o; sy += v; sxx += o * o; sxy += o * v; }
   }
-  return { applied: true, kind: "pill", alpha: 0, method: "detected", score: found.score, right: W - found.cx, bottom: H - found.cy };
+  // Flow's pill measures 0.52..0.58 on clean corners; a busy edge (cables, strong colour) pulls the regression off, so it is held there.
+  const mo = sx / n, mi = sy / n, vo = sxx / n - mo * mo;
+  const a = Math.max(0.5, Math.min(0.6, vo >= 150 ? 1 - (sxy / n - mo * mi) / vo : 0.55)), m = (mi - (1 - a) * mo) / a;
+  return { a, m: m >= 200 && m <= 252 ? m : 236 };
+}
+
+function repairPill(image, lum, found) {
+  const { width: W, height: H, data } = image, S = Math.min(W, H);
+  const start = { cx: found.cx, cy: found.cy, w: found.w, h: found.h, s: 1.2, a: 0.55, m: 235 };
+  const lim = { cx: [found.cx - 3, found.cx + 3], cy: [found.cy - 3, found.cy + 3], w: [found.w * 0.9, found.w * 1.1], h: [found.h * 0.9, found.h * 1.1], s: [0.6, 2.5] };
+  let { P } = fitMark(lum, W, H, PILLS, start, ["cx", "cy", "w", "h", "s"], lim);
+  Object.assign(P, pillVeil(image, P));
+  if (P.a >= 0.3 && P.a <= 0.8) P = fitMark(lum, W, H, PILLS, P, ["cx", "cy", "w", "h", "s"], lim).P;
+  const grown = { ...P, w: P.w + 3, h: P.h + 3 }, box = boxAround(PILLS, grown, W, H, 1), c = coverage(PILLS, grown, box, 1), bw = box[2] - box[0] + 1;
+  const hole = [], before = Uint8Array.from(data);
+  let veilOk = P.a >= 0.3 && P.a <= 0.75 && P.m >= 150 && P.m <= 260;
+  if (veilOk) {
+    // letters: a dark veil of their own, well below the grey body around them (under 0.62 of its median, measured on 14 Flow pills:
+    // letters 10..112, body 127..228), grown by a pixel or two to take their anti-aliased edge
+    const letter = new Uint8Array(W * H), grow = S >= 700 ? 2 : 1, inner = coverage(PILLS, { ...P, w: P.w - 4, h: P.h - 4 }, box, 1), body = [];
+    const lumAt = (x, y) => { const i = (y * W + x) * 4; return 0.299 * data[i] + 0.587 * data[i + 1] + 0.114 * data[i + 2]; };
+    for (let y = box[1]; y <= box[3]; y++) for (let x = box[0]; x <= box[2]; x++) if (inner[(y - box[1]) * bw + x - box[0]] >= 1) body.push(lumAt(x, y));
+    body.sort((p, q) => p - q);
+    const floor = (body[body.length >> 1] || 0) * 0.62;
+    for (let y = box[1]; y <= box[3]; y++) for (let x = box[0]; x <= box[2]; x++) if (inner[(y - box[1]) * bw + x - box[0]] >= 1 && lumAt(x, y) < floor) letter[y * W + x] = 1;
+    const lost = unveil(image, PILLS, P);
+    for (let y = box[1]; y <= box[3]; y++) for (let x = box[0]; x <= box[2]; x++) {
+      let hit = false;
+      for (let dy = -grow; dy <= grow && !hit; dy++) for (let dx = -grow; dx <= grow; dx++) if (letter[(y + dy) * W + x + dx]) { hit = true; break; }
+      if (hit) hole.push(y * W + x);
+    }
+    hole.push(...lost);
+    // Some pills also soften what lies under them; then the unveiled inside does not meet the outside. Checked along the outline (3 px
+    // in against 3 px out, every channel): when they part, the unveil is dropped and the whole pill is filled instead.
+    const gaps = [];
+    for (let k = 0; k < 360; k++) {
+      const t = (k / 360) * 2 * Math.PI, rr = P.h / 2, side = Math.sign(Math.cos(t)) || 1, nx = side * Math.abs(Math.cos(t)), ny = Math.sin(t);
+      const px = P.cx + side * (P.w / 2 - rr) + rr * nx, py = P.cy + rr * ny;
+      const ii = (Math.round(py - 3 * ny) * W + Math.round(px - 3 * nx)) * 4, io = (Math.round(py + 3 * ny) * W + Math.round(px + 3 * nx)) * 4;
+      for (let ch = 0; ch < 3; ch++) gaps.push(data[ii + ch] - data[io + ch]);
+    }
+    gaps.sort((p, q) => p - q);
+    const mid = gaps[gaps.length >> 1], spread = gaps[Math.floor(gaps.length * 0.75)] - gaps[Math.floor(gaps.length * 0.25)];
+    if (Math.abs(mid) > 5 || spread > 17) { data.set(before); veilOk = false; hole.length = 0; }
+  }
+  if (!veilOk) {
+    for (let y = box[1]; y <= box[3]; y++) for (let x = box[0]; x <= box[2]; x++) if (c[(y - box[1]) * bw + x - box[0]] > 0) hole.push(y * W + x);
+  }
+  exemplarFill(image, hole, S);
+  return { applied: true, kind: "pill", alpha: veilOk ? P.a : 0, method: veilOk ? "detected" : "filled", score: found.score, right: W - P.cx, bottom: H - P.cy };
 }
 
 // Returns { applied, kind, alpha, method, score, right, bottom } and changes image.data in place when a mark was there.
@@ -277,7 +471,7 @@ export function removeSparkle(image, { assumePresent = false } = {}) {
   const lum = luminance(image, x0, y0);
   const star = findStar(image, lum), pill = findPill(image, lum);
   // The pill and the star never sit together; the better fit decides, and the star must clear its threshold unless the caller knows Flow made it.
-  if (pill.score >= PILL_SCORE && pill.score > star.score) return inpaintPill(image, pill);
+  if (pill.score >= PILL_SCORE && pill.score > star.score) return repairPill(image, lum, pill);
   const done = unveilStar(image, lum, star, assumePresent);
   if (done) return done;
   return { applied: false, alpha: 0, score: Math.max(star.score, pill.score) };
