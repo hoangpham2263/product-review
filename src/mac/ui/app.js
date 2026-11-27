@@ -1583,6 +1583,21 @@ async function showReviewDialog() {
   const pickAll = at(button("Chọn hết"), null, 8, 76, 26, { right: 96, left: false });
   const pickNone = at(button("Bỏ chọn"), null, 8, 76, 26, { right: 12, left: false });
   const runsBox = at(el("div", "runs"), 12, 40, null, 116, { right: 12 });
+  // Drag the bar under the run list to give it more or less room; the review list below follows.
+  const grip = at(el("div", ""), 12, 156, null, 6, { right: 12 });
+  Object.assign(grip.style, { cursor: "ns-resize", background: "var(--line)", borderRadius: "3px" });
+  grip.title = "Kéo lên xuống để đổi chiều cao danh sách lần chạy";
+  const setRunsHeight = (h, save = false) => {
+    const max = Math.max(116, (b.clientHeight || 600) - 330), v = Math.max(60, Math.min(max, Math.round(h)));
+    runsBox.style.height = v + "px"; grip.style.top = (40 + v) + "px"; hint.style.top = (46 + v) + "px"; flow.style.top = (72 + v) + "px";
+    if (save) { try { localStorage.setItem("pr.reviewRunsHeight", String(v)); } catch {} }
+  };
+  grip.onpointerdown = (e) => {
+    e.preventDefault(); grip.setPointerCapture(e.pointerId);
+    const y0 = e.clientY, h0 = runsBox.offsetHeight;
+    grip.onpointermove = (m) => setRunsHeight(h0 + m.clientY - y0);
+    grip.onpointerup = (u) => { grip.onpointermove = null; grip.onpointerup = null; setRunsHeight(h0 + u.clientY - y0, true); };
+  };
   const hint = at(label("Mỗi dòng một đánh giá. Bấm ảnh để xem lớn; Giữ cả ảnh, chỉ lấy nội dung hoặc bỏ từng dòng.", "muted"), 12, 162, 900, 22);
   const flow = at(el("div", "flow"), 12, 188, null, null, { right: 12, bottom: 69 });
   const status = at(label(""), 12, null, 520, 36, { bottom: 17, top: false });
@@ -1592,7 +1607,8 @@ async function showReviewDialog() {
   // Export never opens anything by itself; this opens the folder of the Loox files (the same as Mở kết quả on the main screen).
   const openBtn = at(button("Mở thư mục xuất"), null, null, 150, 40, { right: 204, left: false, bottom: 17, top: false });
   openBtn.onclick = () => api("openPath", { path: state.exports });
-  b.append(heading, pickAll, pickNone, runsBox, hint, flow, status, openBtn, exportBtn);
+  b.append(heading, pickAll, pickNone, runsBox, grip, hint, flow, status, openBtn, exportBtn);
+  try { const h = Number(localStorage.getItem("pr.reviewRunsHeight")); if (h) setRunsHeight(h); } catch {}
   let items = [], runs = [];
   const chosen = () => runs.filter((r) => r.input.checked).map((r) => r.path);
   const refresh = () => {
