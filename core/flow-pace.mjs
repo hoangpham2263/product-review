@@ -5,7 +5,7 @@
 //   node core/flow-pace.mjs reset                  clears the record (a new Flow project / a new run).
 //   node core/flow-pace.mjs download-lock acquire --tag <id> [--stale-min 5] [--wait-min 10]   BLOCKS until no other window is downloading.
 //   node core/flow-pace.mjs download-lock release --tag <id>
-//   node core/flow-pace.mjs download-collect --tag <id> [--dest <dir>] [--wait-s 30]   after the download click: wait for the file, move it to <dest>/<id>.<ext>, check it, release the lock.
+//   node core/flow-pace.mjs download-collect --tag <id> [--dest <dir>] [--wait-s 30] [--since-ms t --expect <file title> --tile <label>] (collect prints them)   after the download click: wait for the file, move it to <dest>/<id>.<ext>, check it, release the lock.
 // The agent runs `gate` right BEFORE every prompt it submits and submits right after it returns. Nothing else paces the run, so the
 // pauses cannot be skipped by writing a faster browser script. Rules (fast, but never a rhythm):
 //   - 5-12 s random gap between two prompts;
@@ -153,28 +153,38 @@ async function downloadCollect(args) {
   const dir = args.dir || process.env.PR_DOWNLOADS_DIR || path.join(os.homedir(), 'Downloads');
   const dest = args.dest || path.join(process.env.PR_WORKSPACE || path.join(ROOT, 'workspace'), 'tmp', 'flow-downloads');
   const since = args['since-ms'] ? Number(args['since-ms']) : Date.now() - 120000, until = Date.now() + Math.max(3, Number(args['wait-s']) || 30) * 1000;
-  let found = null;
+  // --expect <Edit_title_image>: the file name Flow gives the tile collect clicked (collect prints it). A fresh file with ANOTHER title is another item's download:
+  // never taken when it competes with others; a single fresh file with a different name is taken but flagged (the naming of Flow is not guaranteed).
+  const norm = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+  const expect = norm(args.expect === true ? '' : args.expect);
+  let found = null, fresh = [];
   try {
     while (!found && Date.now() < until) {
       const cands = [];
       for (const n of fs.readdirSync(dir)) {
         if (!/\.(png|jpe?g|webp)$/i.test(n) || /^pr-ref-.*-[12]\.(png|jpe?g|webp)$/i.test(n)) continue;
         let st; try { st = fs.statSync(path.join(dir, n)); } catch { continue; }
-        if (st.isFile() && st.mtimeMs >= since && st.size > 2000) cands.push({ n, mtime: st.mtimeMs, size: st.size, tagged: n.includes(tag) });
+        if (st.isFile() && st.mtimeMs >= since && st.size > 2000) cands.push({ n, mtime: st.mtimeMs, size: st.size, tagged: n.includes(tag), named: !!expect && norm(n).startsWith(expect) });
       }
-      cands.sort((a, b) => (b.tagged - a.tagged) || (b.mtime - a.mtime));
-      const c = cands[0];
+      cands.sort((a, b) => (b.tagged - a.tagged) || (b.named - a.named) || (b.mtime - a.mtime));
+      fresh = cands;
+      const c = expect && cands.length > 1 && !cands[0].named && !cands[0].tagged ? null : cands[0];
       if (c) { await sleep(400); try { if (fs.statSync(path.join(dir, c.n)).size === c.size) { found = c; break; } } catch {} }
       else await sleep(400);
     }
+    if (!found && fresh.length > 1) { out({ ok: false, error: `Several new images in ${dir} and none is named like the tile (${expect}): not taking a file that may belong to another item. Remove/collect them, then collect this item again.`, cause: 'AMBIGUOUS_DOWNLOAD', files: fresh.map((c) => c.n) }); return; }
     if (!found) { out({ ok: false, error: 'No new image appeared in ' + dir + ' within the wait (is the 1K download menu item clicked?).', cause: 'NO_DOWNLOAD' }); return; }
     fs.mkdirSync(dest, { recursive: true });
     const ext = path.extname(found.n).toLowerCase(), target = path.join(dest, tag + ext);
     try { fs.renameSync(path.join(dir, found.n), target); } catch { fs.copyFileSync(path.join(dir, found.n), target); fs.rmSync(path.join(dir, found.n), { force: true }); }
     const buf = fs.readFileSync(target), info = imageInfo(buf);
     if (!info) { out({ ok: false, error: 'The moved file is not a PNG/JPEG/WebP image.', cause: 'NOT_IMAGE', path: target }); return; }
-    out({ ok: true, tag, path: target, bytes: buf.length, type: info.type, width: info.width, height: info.height, from: found.n, tagged: found.tagged, lock_released: true,
-      next: 'LOOK at the picture once (Read), then register-image -Item ' + tag + ' -From <path>' });
+    const nameMatch = expect ? found.named : null;
+    // sidecar <dest>/<tag>.download.json: register-image records where the item's picture came from (and refuses a file collected for another item)
+    try { fs.writeFileSync(path.join(dest, tag + '.download.json'), JSON.stringify({ tag, from: found.n, tile: args.tile === true ? '' : String(args.tile || ''), expect, name_match: nameMatch, at: new Date().toISOString() })); } catch {}
+    out({ ok: true, tag, path: target, bytes: buf.length, type: info.type, width: info.width, height: info.height, from: found.n, tagged: found.tagged, name_match: nameMatch, lock_released: true,
+      ...(nameMatch === false ? { warning: `The file name ${found.n} does not match the tile (${expect}): LOOK carefully that it is THIS item's product and wording.` } : {}),
+      next: 'LOOK at the picture once (Read): read the sign from THIS picture, then register-image -Item ' + tag + ' -From <path>' });
   } finally { try { const cur = JSON.parse(fs.readFileSync(DOWNLOAD_LOCK, 'utf8')); if (cur.tag === tag || args.force) fs.rmSync(DOWNLOAD_LOCK, { force: true }); } catch {} }
 }
 

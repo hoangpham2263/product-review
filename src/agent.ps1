@@ -524,7 +524,7 @@ function Invoke-AgentFlowBrief {
     # Ready-made Playwright snippets for THIS item (core/flow-snippets.mjs): the agent runs them with browser_run_code_unsafe {filename} instead of ~10 hand-made calls. Never fatal.
     try {
         $briefFile = Join-Path $script:Batch.Logs "$($entry.id)-flow-brief.json"
-        [IO.File]::WriteAllText($briefFile, ([ordered]@{ aspect = $out.aspect; uploads = @($uploads); prompt = $out.condensed_prompt } | ConvertTo-Json -Depth 4), $script:Utf8)
+        [IO.File]::WriteAllText($briefFile, ([ordered]@{ aspect = $out.aspect; uploads = @($uploads); prompt = $out.condensed_prompt; product = [string]$context.product } | ConvertTo-Json -Depth 4), $script:Utf8)
         $snipJson = & node (Join-Path $ProjectRoot 'core/flow-snippets.mjs') write $briefFile $script:Batch.Logs $entry.id 2>$null
         $snip = $snipJson | ConvertFrom-Json
         if ($snip.ok) { $out.js = [ordered]@{ ready = $snip.ready; prep = $snip.prep; submit = $snip.submit; collect = $snip.collect } }
@@ -542,34 +542,58 @@ function Invoke-AgentRegisterImage {
     $id = $entry.id
     $output = Join-Path $script:Batch.Images "$id.png"
     $statusPath = Join-Path $script:Batch.Logs "$id-review-status.json"
+    # WRONG-ITEM GUARD (bug 2026-11-26: two items got a neighbour's picture while the self-reported sign read matched): the incoming file must not be another
+    # item's picture, nor this item's own earlier picture registered again as new. Checked on the raw file first (before the sign check counts a try)...
+    $source = Get-AgentDownloadInfo $From
+    if ($source -and $source.tag -and [string]$source.tag -ne $id) { throw "[CAUSE:WRONG_ITEM_IMAGE] $From was collected for item $($source.tag), not $($id). Not registered. Collect the result tile of THIS item's own prompt (collect snippet of $id), then register again." }
+    $fromBase = [IO.Path]::GetFileNameWithoutExtension($From)
+    if ($fromBase -ne $id -and @(Read-AgentItems | Where-Object { $_.id -eq $fromBase }).Count) { throw "[CAUSE:WRONG_ITEM_IMAGE] $From is the download of item $fromBase, not $($id). Not registered. Collect the result tile of THIS item's own prompt, then register again." }
+    $known = Get-AgentKnownImageHashes $id
+    $rawHash = (Get-FileHash -LiteralPath $From -Algorithm SHA256).Hash.ToLowerInvariant()
+    Assert-AgentImageIsNew $id $rawHash $known 'the downloaded file'
     $signCheck = Test-AgentSignRead $entry
     $attempt = 1
     if (Test-Path -LiteralPath $statusPath) { try { $attempt = [int](Get-Content -LiteralPath $statusPath -Raw -Encoding UTF8 | ConvertFrom-Json).generation_attempt + 1 } catch { $attempt = 2 } }
-    if (Test-Path -LiteralPath $output) {
-        Copy-Item -LiteralPath $output -Destination (Join-Path $script:Batch.Logs "$id-attempt-$($attempt - 1)-generated.png") -Force
-    }
-    Copy-Item -LiteralPath $From -Destination $output -Force
+    # ...and again on the processed picture (PNG, Google mark removed): the stored pictures of the run are processed ones. Work on a temp copy, commit only when it passes.
+    $work = Join-Path $script:Batch.Logs "$id-incoming.png"
+    $workOrig = Join-Path $script:Batch.Logs "$id-incoming-original.png"
+    Remove-Item -LiteralPath $work, $workOrig -Force -ErrorAction SilentlyContinue
+    Copy-Item -LiteralPath $From -Destination $work -Force
     $sparkle = 'none'; $sparkleWarning = $null
     # Flow always stamps a mark (sparkle or 'AI' pill); Antigravity's own generator does not, so only a Flow picture can MISS one.
     $fromFlow = ($env:PR_AGENT_ENGINE -eq 'antigravity-flow') -or ($env:PR_AGENT_ENGINE -ne 'antigravity' -and $From -notmatch '[\\/]\.gemini[\\/]')
     try {
-        ConvertTo-PngFile $output
-        Assert-GeneratedImage $output
-        $mark = Remove-ReviewImageSparkle $output (Join-Path $script:Batch.Logs "$id-flow-original.png") -Flow:$fromFlow
+        ConvertTo-PngFile $work
+        Assert-GeneratedImage $work
+        $pngHash = (Get-FileHash -LiteralPath $work -Algorithm SHA256).Hash.ToLowerInvariant()
+        $mark = Remove-ReviewImageSparkle $work $workOrig -Flow:$fromFlow
         if ($mark.applied) { $sparkle = $(if ($mark.kind -eq 'pill') { 'pill-removed' } elseif ($mark.method -eq 'weak') { 'removed-weak' } else { 'removed' }) }
         elseif ($fromFlow) {
             $sparkle = 'not-found'
             $sparkleWarning = "WARNING: no Google mark (star or AI pill) found on the Flow image of item $id; check the bottom right corner and clean it by hand if it shows."
             [Console]::Error.WriteLine($sparkleWarning)
         }
-        Assert-GeneratedImage $output
+        Assert-GeneratedImage $work
     } catch {
-        Remove-Item -LiteralPath $output -Force -ErrorAction SilentlyContinue
+        Remove-Item -LiteralPath $work, $workOrig -Force -ErrorAction SilentlyContinue
         throw "[CAUSE:OUTPUT_INVALID] $($_.Exception.Message)"
     }
+    try {
+        Assert-AgentImageIsNew $id $pngHash $known 'the picture'
+        Assert-AgentImageIsNew $id ((Get-FileHash -LiteralPath $work -Algorithm SHA256).Hash.ToLowerInvariant()) $known 'the cleaned picture'
+    } catch { Remove-Item -LiteralPath $work, $workOrig -Force -ErrorAction SilentlyContinue; throw }
+    if (Test-Path -LiteralPath $output) {
+        Copy-Item -LiteralPath $output -Destination (Join-Path $script:Batch.Logs "$id-attempt-$($attempt - 1)-generated.png") -Force
+    }
+    Move-Item -LiteralPath $work -Destination $output -Force
+    if (Test-Path -LiteralPath $workOrig) { Move-Item -LiteralPath $workOrig -Destination (Join-Path $script:Batch.Logs "$id-flow-original.png") -Force }
     $bytes = [IO.File]::ReadAllBytes($output)
     $hash = Get-BytesHash $bytes
     $status = [ordered]@{ status = 'awaiting_user_review'; ai_image_qa_performed = $false; generation_attempt = $attempt; output = $output; engine = $(if ($env:PR_AGENT_ENGINE -eq 'antigravity-flow') { 'antigravity-flow' } elseif ($env:PR_AGENT_ENGINE -eq 'antigravity' -or $From -match '[\\/]\.gemini[\\/]') { 'antigravity' } else { 'claude-flow' }) }
+    # Where the picture came from (raw file hash + the Flow download name when download-collect left its note), so a later item can never reuse it unnoticed.
+    $status.source_file = [IO.Path]::GetFileName($From)
+    $status.source_sha256 = $rawHash
+    if ($source) { $status.source_download = [string]$source.from; if ($source.tile) { $status.source_tile = [string]$source.tile }; if ($null -ne $source.name_match) { $status.source_name_match = [bool]$source.name_match } }
     $status.sparkle = $sparkle
     if ($sparkleWarning) { $status.sparkle_warning = $sparkleWarning }
     if ($signCheck) { $status.sign_check = $signCheck }
@@ -580,7 +604,43 @@ function Invoke-AgentRegisterImage {
     if ($sparkleWarning) { $out.warning_sparkle = $sparkleWarning }
     if ($duplicates.Count) { $out.warning = "Same image hash as: $($duplicates -join ', ')"; $out.duplicate_of = $duplicates }
     if ($signCheck) { $out.sign_check = $signCheck }
+    $out.source_file = $status.source_file
+    if ($source) { $out.source_download = $status.source_download }
     Write-AgentJson $out
+}
+
+# The note download-collect leaves next to the file it moved (<dest>/<tag>.download.json): which Flow download it was and for which item. $null when there is none.
+function Get-AgentDownloadInfo([string]$Path) {
+    $note = Join-Path (Split-Path $Path -Parent) ([IO.Path]::GetFileNameWithoutExtension($Path) + '.download.json')
+    if (-not (Test-Path -LiteralPath $note)) { return $null }
+    try { Get-Content -LiteralPath $note -Raw -Encoding UTF8 | ConvertFrom-Json } catch { $null }
+}
+
+# Every picture the run already holds, by sha256: current images, earlier attempts, Flow originals, sign-check misses and the raw sources recorded by register-image.
+# owner = the item it belongs to; own = $true for the item being registered (its earlier pictures may not come back as a "new" one either).
+function Get-AgentKnownImageHashes([string]$Id) {
+    $list = New-Object System.Collections.Generic.List[object]
+    $add = { param($Path, $Owner, $Kind) $list.Add([pscustomobject]@{ hash = (Get-FileHash -LiteralPath $Path -Algorithm SHA256).Hash.ToLowerInvariant(); owner = $Owner; kind = $Kind; own = ($Owner -eq $Id) }) }
+    foreach ($f in @(Get-ChildItem -LiteralPath $script:Batch.Images -Filter '*.png' -File -ErrorAction SilentlyContinue)) { & $add $f.FullName $f.BaseName 'image' }
+    foreach ($f in @(Get-ChildItem -LiteralPath $script:Batch.Logs -File -ErrorAction SilentlyContinue)) {
+        if ($f.Name -match '^(.+)-attempt-\d+-generated\.png$') { & $add $f.FullName $Matches[1] 'earlier attempt' }
+        elseif ($f.Name -match '^(.+)-flow-original\.png$') { & $add $f.FullName $Matches[1] 'Flow original' }
+        elseif ($f.Name -match '^(.+)-sign-miss-\d+\.\w+$') { & $add $f.FullName $Matches[1] 'sign-check miss' }
+        elseif ($f.Name -match '^(.+)-review-status\.json$') {
+            $owner = $Matches[1]
+            try { $s = Get-Content -LiteralPath $f.FullName -Raw -Encoding UTF8 | ConvertFrom-Json } catch { continue }
+            if ($s.PSObject.Properties['source_sha256'] -and $s.source_sha256) { $list.Add([pscustomobject]@{ hash = ([string]$s.source_sha256).ToLowerInvariant(); owner = $owner; kind = 'downloaded file'; own = ($owner -eq $Id) }) }
+        }
+    }
+    $list
+}
+
+function Assert-AgentImageIsNew([string]$Id, [string]$Hash, $Known, [string]$What) {
+    $hit = @($Known | Where-Object { $_.hash -eq $Hash })
+    $other = @($hit | Where-Object { -not $_.own } | Select-Object -First 1)
+    if ($other.Count) { throw "[CAUSE:WRONG_ITEM_IMAGE] $What for item $Id is byte-identical to the $($other[0].kind) of item $($other[0].owner): it is ANOTHER item's picture. Not registered. Collect the result tile of $Id's OWN prompt (its references and prompt text), LOOK at it, then register again." }
+    $own = @($hit | Select-Object -First 1)
+    if ($own.Count) { throw "[CAUSE:WRONG_ITEM_IMAGE] $What for item $Id is the same picture as its own $($own[0].kind): an old picture cannot be registered as a new one. Not registered. Collect the NEW result tile of $Id's latest prompt, LOOK at it, then register again." }
 }
 
 # SIGN CHECK before an image of a lettered item is registered: the agent LOOKS at the image and passes -SignRead (what the sign reads);

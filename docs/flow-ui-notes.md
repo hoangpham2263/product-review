@@ -4,6 +4,7 @@ Nhãn đúng như UI. Rút từ các lượt chạy thành công (khoảng 40 �
 
 ## Tốc độ (đo 2026-11-26: Grenheim và DreamyVows đều ~3,4 phút/ảnh; Flow render xong từ lâu, cổ chai là số lượt gọi tool của agent)
 - `flow-brief` in `js.{ready,prep,submit,collect}`: file trong logs của lượt (sinh bởi `core/flow-snippets.mjs`, mỗi file cho đúng MỘT mục). Chạy bằng `browser_run_code_unsafe` với `filename`. prep = bước 4-9 gộp một lệnh; submit = bước 10; collect = bước 12 (mở ô kết quả + bấm 1K).
+- collect chọn ô kết quả CỦA MỤC (không còn chỉ "ô ngay trước ảnh tham chiếu"): bỏ ô đã có trước lúc gửi prompt của mục (submit lưu ảnh chụp lưới trong sessionStorage của tab), bỏ ô đã collect cho mục khác, bỏ ô có tên mang từ của mục khác đang chờ; trả `stop:'ambiguous'` thì collect mục khác trước rồi thử lại. collect in sẵn lệnh download-collect kèm `--since-ms/--expect/--tile` (chỉ nhận file tải sau cú bấm, tên khớp ô); chạy đúng lệnh đó.
 - Tải: `download-lock acquire` > collect > `node core/flow-pace.mjs download-collect --tag <mục>` (đợi file, chuyển vào workspace/tmp/flow-downloads/<mục>.<ext>, kiểm là ảnh, tự nhả khoá) > NHÌN ảnh một lần > register-image. Khoá chỉ giữ lúc bấm + chuyển file (trước đây giữ cả lúc agent xem ảnh, các cửa sổ khác phải chờ).
 - Không dùng browser_snapshot / chụp màn hình / browser_wait_for. Chưa có ảnh thì làm bước ngữ cảnh của nhóm sau rồi kiểm lại bằng `ready`.
 - Gate không đổi (5-12 s, 20-45 s sau nhóm, tối đa 8 prompt/2 phút).
